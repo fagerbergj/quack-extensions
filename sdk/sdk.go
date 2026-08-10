@@ -168,8 +168,11 @@ type ChatOrigin struct {
 	Extension string // registration name, e.g. "remarkable"
 	Label     string // human handle, e.g. the doc title or "owner/repo#42"
 	Kind      string // grouping category, e.g. "document", "pr", "issue"
-	URL       string // optional external link - the ONE link for the chat's subject
-	Badge     string // optional short status chip, e.g. "draft"
+	// Href is the ONE navigable link for the chat's subject. Named for the
+	// role (a hypermedia reference), not the datatype - a plain URL type
+	// would say what it IS, not what it's FOR.
+	Href  string
+	Badge string // optional short status chip, e.g. "draft"
 
 	// Labels carries extra grouping dimensions beyond Kind - repo, state,
 	// folder, tags, whatever the extension's domain needs - keyed for
@@ -187,7 +190,7 @@ type ChatOrigin struct {
 type LabelValue struct {
 	Value   string // raw value; what matching/counting keys on
 	Display string // display text; "" falls back to Value
-	URL     string // optional link-out for THIS value; "" = no link
+	Href    string // optional link-out for THIS value; "" = no link
 }
 
 // Ask is what the dispatched run is being asked to do.
