@@ -352,6 +352,24 @@ type GitCredential struct {
 
 // Factory builds an extension. config is the raw bytes of the deployment's
 // extensions.<name> block - the extension unmarshals its own config; quack
-// treats extension blocks as opaque. Factories must be side-effect free:
-// validate config and construct, nothing more (see Starter/Stopper).
+// treats extension blocks as opaque beyond the reserved BaseConfig keys
+// (see its doc comment). Factories must be side-effect free: validate
+// config and construct, nothing more (see Starter/Stopper).
 type Factory func(host Host, config []byte) (Extension, error)
+
+// BaseConfig is the small set of keys quack itself reads from every
+// extensions.<name> block before handing the same raw bytes to Factory -
+// "enabled" and "data_dir" are reserved: an extension's own config struct
+// should not redefine them (yaml silently ignores unknown fields, so
+// leaving them out of an extension's struct is enough).
+type BaseConfig struct {
+	// Enabled, read from the "enabled" key, defaults to true when the
+	// extensions.<name> block exists at all - so a deployment can disable
+	// a module (dormant, exactly like an absent block) without deleting
+	// its config.
+	Enabled *bool `yaml:"enabled"`
+
+	// DataDir, read from the "data_dir" key, overrides Host.DataDir's
+	// default (<workspace>/extensions/<name>) when non-empty.
+	DataDir string `yaml:"data_dir"`
+}
