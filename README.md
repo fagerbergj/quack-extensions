@@ -1,6 +1,6 @@
 # quack-extensions
 
-The extension SDK for [quack](https://github.com/fagerbergj/quack), plus quack's first-party extensions. Full design: [`docs/design/extension-modules.md`](https://github.com/fagerbergj/quack/blob/main/docs/design/extension-modules.md) in the quack repo.
+The extension SDK for [quack](https://github.com/fagerbergj/quack), plus quack's first-party extensions. Full design: [issue #275](https://github.com/fagerbergj/quack/issues/275#issuecomment-5245275574) in the quack repo.
 
 ## The invariant
 
@@ -8,9 +8,13 @@ The extension SDK for [quack](https://github.com/fagerbergj/quack), plus quack's
 
 A consequence: extensions shape a run only at dispatch time (`DispatchRequest`'s `Chat`/`Ask`/`Run`/`Delivery` groups). There are no agent-loop hooks - enforcement stays gate-owned inside quack.
 
-## SDK v0.2.0
+## SDK v0.2.x
 
-`DispatchRequest` regroups into `Chat`/`Ask`/`Run`/`Delivery`. `ChatRef.LocalID` replaces `ChatID` - extension-scoped; quack namespaces it as `ext:<extension>:<localID>`. `ChatOrigin.Facets` adds multi-valued provenance dimensions. `RunObserver.RunEnded` now carries a full `RunOutcome`. New inverse-capability interfaces `Deliverer` and `GitCredentialSource` let quack call back into an extension for delivery and git credentials. Rationale: quack's `.quack/design/sdk-v2-github.md`.
+v0.2.0: `DispatchRequest` regroups into `Chat`/`Ask`/`Run`/`Delivery`. `ChatRef.LocalID` replaces `ChatID` - extension-scoped; quack namespaces it as `ext:<extension>:<localID>`. `ChatOrigin.Labels` adds multi-valued provenance dimensions, each `LabelValue{Value, Display, Href}`. `RunObserver.RunEnded` now carries a full `RunOutcome`. New inverse-capability interfaces `Deliverer` and `GitCredentialSource` let quack call back into an extension for delivery and git credentials. Rationale: quack's `.quack/design/sdk-v2-github.md`.
+
+v0.2.1: additive `BaseConfig{Enabled, DataDir}` - the `enabled`/`data_dir` keys quack itself reads from every `extensions.<name>` block before handing the same raw bytes to `Factory`.
+
+v0.2.2: `ChatOrigin.Facets`/`FacetValue` renamed to `Labels`/`LabelValue` (labels is the domain word - GitHub labels, reMarkable tablet tags); `FacetValue.Label` renamed to `Display` (avoids a `labels[].label` stutter); `ChatOrigin.URL` and `LabelValue.URL` renamed to `Href` (names the role - a navigable reference - not the datatype).
 
 ## Module layout
 
