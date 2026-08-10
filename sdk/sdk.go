@@ -163,28 +163,31 @@ type ChatRef struct {
 
 // ChatOrigin is generic provenance the SPA renders without knowing the
 // extension that produced it: a label chip, an optional badge and external
-// link, and facet grouping by extension/kind/whatever dimensions Facets
-// carries.
+// link, and grouping by extension/kind/whatever dimensions Labels carries.
 type ChatOrigin struct {
 	Extension string // registration name, e.g. "remarkable"
 	Label     string // human handle, e.g. the doc title or "owner/repo#42"
-	Kind      string // facet group, e.g. "document", "pr", "issue"
+	Kind      string // grouping category, e.g. "document", "pr", "issue"
 	URL       string // optional external link - the ONE link for the chat's subject
 	Badge     string // optional short status chip, e.g. "draft"
 
-	// Facets carries extra facet dimensions beyond Kind - repo, state,
+	// Labels carries extra grouping dimensions beyond Kind - repo, state,
 	// folder, tags, whatever the extension's domain needs - keyed for
 	// grouping (the sidebar renders one labeled section per key) and
 	// slice-valued because a single chat can carry several values on one
-	// dimension (e.g. a document with multiple tags).
-	Facets map[string][]FacetValue
+	// dimension (e.g. a document with multiple tags). Named for the domain
+	// word extensions actually deal in (GitHub labels, reMarkable tablet
+	// tags), not frontend rendering jargon.
+	Labels map[string][]LabelValue
 }
 
-// FacetValue is one value within a ChatOrigin facet dimension.
-type FacetValue struct {
-	Value string // raw value; what matching/counting keys on
-	Label string // display text; "" falls back to Value
-	URL   string // optional link-out for THIS value; "" = no link
+// LabelValue is one value within a ChatOrigin.Labels dimension. Display
+// (not Label) so a Labels[...] value's own display text doesn't stutter
+// against the map it lives in.
+type LabelValue struct {
+	Value   string // raw value; what matching/counting keys on
+	Display string // display text; "" falls back to Value
+	URL     string // optional link-out for THIS value; "" = no link
 }
 
 // Ask is what the dispatched run is being asked to do.
