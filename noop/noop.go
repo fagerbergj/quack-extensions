@@ -66,7 +66,7 @@ func (e *extension) RegisterRoutes(authed chi.Router, public chi.Router) {
 // RunEnded is the completion signal for a dispatched run - /status only
 // counts runs that finished, so the counter is proof the whole loop
 // (dispatch through orchestration back to this callback) actually ran.
-func (e *extension) RunEnded(chatID string, status sdk.RunStatus) {
+func (e *extension) RunEnded(chatID string, outcome sdk.RunOutcome) {
 	e.runEnded.Add(1)
 }
 
@@ -94,18 +94,21 @@ func (e *extension) handleDispatch(w http.ResponseWriter, r *http.Request) {
 
 	id := e.chatCounter.Add(1)
 	req := sdk.DispatchRequest{
-		ChatID:   fmt.Sprintf("noop-%d", id),
-		Message:  string(body),
-		Workflow: "",
-		Origin: &sdk.ChatOrigin{
-			Extension: "noop",
-			Label:     "noop test",
-			Kind:      "test",
+		Chat: sdk.ChatRef{
+			LocalID: fmt.Sprintf("noop-%d", id),
+			Origin: &sdk.ChatOrigin{
+				Extension: "noop",
+				Label:     "noop test",
+				Kind:      "test",
+			},
+		},
+		Ask: sdk.Ask{
+			Message: string(body),
 		},
 	}
 
 	if err := e.host.Dispatch(r.Context(), req); err != nil {
-		e.host.Log.Error("noop: dispatch failed", "err", err, "chat_id", req.ChatID)
+		e.host.Log.Error("noop: dispatch failed", "err", err, "chat_id", req.Chat.LocalID)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

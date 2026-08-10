@@ -2,6 +2,21 @@
 // never import github.com/fagerbergj/quack, so an extension written against
 // it can never accidentally depend on quack internals. quack imports this
 // package (and each extension package) - never the reverse.
+//
+// Design principles that shape every type below:
+//   - Dispatch-time shaping only: DispatchRequest is the entire surface an
+//     extension has to influence a run. There are no agent-loop hooks -
+//     enforcement stays gate-owned inside quack.
+//   - Ownership test for strings: a field stays a plain string only if
+//     quack-core never interprets it, only passes it through or matches it
+//     opaquely. A string quack-core parses, branches on, or must keep in
+//     sync with the extension becomes a named type (DeliveryKind, RunStatus)
+//     so a typo is a compile error, not silent behavior loss.
+//   - RunObserver is observation-only: it never blocks or mutates a run,
+//     and fires only after the run's outcome is final.
+//   - Factories must be side-effect free: validate config and construct,
+//     nothing more - they also run in contexts that never serve, such as
+//     config checks. Background resources belong in Start/Stop.
 package sdk
 
 import (
@@ -57,13 +72,39 @@ const (
 // mutates the run - dispatch-time shaping (DispatchRequest) is the only
 // place an extension influences a run; there are no agent-loop hooks.
 type RunObserver interface {
-	RunEnded(chatID string, status RunStatus)
+	RunEnded(chatID string, outcome RunOutcome)
+}
+
+// RunOutcome is the terminal state of a dispatched run. Status is always
+// set; the rest is populated to the extent that status makes them
+// meaningful (Question/NodeID only for RunNeedsInput, Answer best-effort
+// partial text when TimedOut).
+type RunOutcome struct {
+	Status RunStatus
+
+	// Answer is the run's final text; a best-effort partial answer if
+	// TimedOut is true.
+	Answer string
+
+	// Question is the paused node's question when Status is
+	// RunNeedsInput.
+	Question string
+
+	// NodeID is which node paused when Status is RunNeedsInput.
+	NodeID string
+
+	// PlanRan is false when a label/trigger-driven dispatch produced no
+	// plan at all - the caller may choose to re-dispatch once.
+	PlanRan bool
+
+	// TimedOut is true when the run hit its time budget before finishing.
+	TimedOut bool
 }
 
 // Host is what quack hands an extension's Factory.
 type Host struct {
 	// Dispatch starts a run, or appends a turn to one already in progress -
-	// see DispatchRequest.ChatID.
+	// see ChatRef.LocalID.
 	Dispatch DispatchFunc
 
 	// Log is pre-tagged component=ext.<name>; extensions should log through
@@ -77,42 +118,98 @@ type Host struct {
 	DataDir string
 }
 
-// DispatchFunc starts or continues a run. See DispatchRequest.ChatID for the
+// DispatchFunc starts or continues a run. See ChatRef.LocalID for the
 // new-chat-vs-append-a-turn semantics.
 type DispatchFunc func(ctx context.Context, req DispatchRequest) error
 
-// DispatchRequest is the dispatch-time shape of a run. This is the entire
-// surface an extension has to influence a run - there are no agent-loop
-// hooks (see the package doc): everything here is decided once, before the
-// workflow starts.
+// DispatchRequest is the dispatch-time shape of a run, grouped by concern:
+// where it goes (Chat), what it asks (Ask), how it runs (Run), and what it
+// may deliver (Delivery). This is the entire surface an extension has to
+// influence a run - there are no agent-loop hooks (see the package doc):
+// everything here is decided once, before the workflow starts.
 type DispatchRequest struct {
-	// ChatID is a stable identity chosen by the extension, e.g.
-	// "remarkable-<doc-id>". Dispatching to a ChatID that already has a
-	// chat appends a turn to it (the GitHub webhook's resume semantics);
-	// a ChatID quack hasn't seen starts a fresh chat.
-	ChatID string
+	Chat     ChatRef
+	Ask      Ask
+	Run      RunConfig
+	Delivery DeliveryAuthority
+}
+
+// ChatRef identifies and titles the chat a dispatch targets.
+type ChatRef struct {
+	// LocalID is a stable identity chosen by the extension, scoped to that
+	// extension - e.g. "doc-42", not "remarkable-doc-42". quack namespaces
+	// it into the global chat id as "ext:<extension>:<localID>", so two
+	// extensions (or an extension and a user chat) can never collide.
+	// Dispatching to a LocalID that already has a chat appends a turn to
+	// it (the GitHub webhook's resume semantics); one quack hasn't seen
+	// starts a fresh chat.
+	LocalID string
 
 	// User is the ADK session identity the run executes as.
 	User string
 
-	// Message is the ask the workflow sees - the turn content.
-	Message string
-
-	// Background is planning-scale context, envelope-style: the evidence a
-	// planner needs but that shouldn't crowd out a node's own ask.
-	Background string
-
-	// Workflow names a workflow-catalog shape, e.g. "document-ingest".
-	// Empty selects quack's default planner-driven flow.
-	Workflow string
-
-	// Attachments are delivered alongside Message.
-	Attachments []Attachment
+	// Title is applied only if the chat has no title yet.
+	Title string
 
 	// Origin is sidebar provenance: how the chat should present itself and
 	// group with others from the same extension. Nil is fine - the chat
 	// just renders with no origin chip.
 	Origin *ChatOrigin
+
+	// ResetHistory clears the chat's prior turns before this one is
+	// appended, replacing v1's Runner.ResetSession call.
+	ResetHistory bool
+}
+
+// ChatOrigin is generic provenance the SPA renders without knowing the
+// extension that produced it: a label chip, an optional badge and external
+// link, and facet grouping by extension/kind/whatever dimensions Facets
+// carries.
+type ChatOrigin struct {
+	Extension string // registration name, e.g. "remarkable"
+	Label     string // human handle, e.g. the doc title or "owner/repo#42"
+	Kind      string // facet group, e.g. "document", "pr", "issue"
+	URL       string // optional external link - the ONE link for the chat's subject
+	Badge     string // optional short status chip, e.g. "draft"
+
+	// Facets carries extra facet dimensions beyond Kind - repo, state,
+	// folder, tags, whatever the extension's domain needs - keyed for
+	// grouping (the sidebar renders one labeled section per key) and
+	// slice-valued because a single chat can carry several values on one
+	// dimension (e.g. a document with multiple tags).
+	Facets map[string][]FacetValue
+}
+
+// FacetValue is one value within a ChatOrigin facet dimension.
+type FacetValue struct {
+	Value string // raw value; what matching/counting keys on
+	Label string // display text; "" falls back to Value
+	URL   string // optional link-out for THIS value; "" = no link
+}
+
+// Ask is what the dispatched run is being asked to do.
+type Ask struct {
+	// Message is the turn content the planner sees.
+	Message string
+
+	// NodeContext is per-node background text - a narrower ask than
+	// Message, injected into a specific node's task rather than the
+	// planner-scoped evidence Message carries.
+	NodeContext string
+
+	// Attachments are delivered alongside Message.
+	Attachments []Attachment
+
+	// ContextItems are name-keyed detail a node's task may reference by
+	// name - e.g. one failing check's detail, one lint finding's detail.
+	ContextItems []NamedContext
+}
+
+// NamedContext is one name-keyed piece of context a node's task text may
+// reference by Name.
+type NamedContext struct {
+	Name   string
+	Detail string
 }
 
 // Attachment is a byte payload delivered with a DispatchRequest.
@@ -122,15 +219,135 @@ type Attachment struct {
 	Data []byte
 }
 
-// ChatOrigin is generic provenance the SPA renders without knowing the
-// extension that produced it: a label chip, an optional badge and external
-// link, and facet grouping by extension/kind.
-type ChatOrigin struct {
-	Extension string // registration name, e.g. "remarkable"
-	Label     string // human handle, e.g. the doc title or "owner/repo#42"
-	Kind      string // facet group, e.g. "document", "pr", "issue"
-	URL       string // optional external link
-	Badge     string // optional short status chip, e.g. "draft"
+// RunConfig controls how the dispatched run executes.
+type RunConfig struct {
+	// Workflow names a workflow-catalog shape, e.g. "document-ingest".
+	// Empty selects quack's default planner-driven flow.
+	Workflow string
+
+	// ReadOnly forces every node read-only, with no delivery target.
+	ReadOnly bool
+
+	// Setup is pre-clone coordinates; nil means no pre-provisioned clone.
+	Setup *Setup
+}
+
+// Setup is the pre-provisioned clone a run should use.
+type Setup struct {
+	Repo       string
+	BaseRef    string
+	WorkBranch string
+}
+
+// DeliveryKind is the closed vocabulary of things a run can stage for
+// delivery. It is core-owned (quack stages delivery items; the extension
+// only allowlists kinds), so it is a typed constant rather than an open
+// string - two parties matching untyped strings means a typo is silent
+// non-delivery.
+type DeliveryKind string
+
+const (
+	KindCommit  DeliveryKind = "commit"
+	KindPR      DeliveryKind = "pull_request"
+	KindReview  DeliveryKind = "review"
+	KindComment DeliveryKind = "comment"
+)
+
+// DeliveryAuthority declares which delivery kinds a run may use.
+type DeliveryAuthority struct {
+	// AllowedKinds nil = unrestricted (today's nil-Grant semantics);
+	// non-nil empty = deny all. The extension resolves its own permission
+	// logic (labels, authorship, scope) down to this flat list before
+	// dispatch.
+	AllowedKinds []DeliveryKind
+}
+
+// --- Inverse capabilities: quack calls into the extension. ---
+
+// Deliverer is an optional interface an extension implements to receive
+// staged delivery items quack has already gated and pushed. Detected via
+// type assertion on the registered Extension, the same pattern as
+// Starter/Stopper.
+type Deliverer interface {
+	Deliver(ctx context.Context, dc DeliveryContext) ([]DeliveryItemOutcome, error)
+}
+
+// DeliveryContext is everything a Deliverer needs to turn staged items into
+// calls against its own external system.
+type DeliveryContext struct {
+	NodeID string
+	ChatID string
+	Items  []StagedDelivery
+
+	CloneURL string
+
+	// PushedSHA is proof quack already pushed Branch before calling
+	// Deliver - the extension never touches quack's clone directory
+	// itself.
+	PushedSHA string
+
+	Branch string
+
+	IssueNumber int
+
+	GatePassed     bool
+	GateFeedback   string
+	ChecksSkipNote string
+}
+
+// StagedDelivery is one item quack has gated and is ready to deliver.
+type StagedDelivery struct {
+	Kind DeliveryKind
+
+	Branch string
+	Title  string
+	Body   string
+
+	TitleOmitted bool
+	BodyOmitted  bool
+
+	// Event and Slot are opaque to quack-core: Event is dropped into the
+	// judge prompt as label text (never parsed against an enum), Slot is
+	// used only as half of a dedup key. Both stay plain strings - the
+	// extension owns their vocabulary.
+	Event string
+	Slot  string
+
+	Comments []ReviewComment
+
+	Recovered bool
+}
+
+// ReviewComment is one inline comment on a staged review. Path/Line earn
+// their place as structural fields (not opaque strings) because quack-core
+// itself formats them for the judge's findings report.
+type ReviewComment struct {
+	Path string
+	Line int
+	Body string
+}
+
+// DeliveryItemOutcome reports what happened when one staged item was
+// delivered.
+type DeliveryItemOutcome struct {
+	Kind  string
+	URL   string
+	Error string
+}
+
+// GitCredentialSource is an optional interface an extension implements to
+// hand quack credentials for cloning or pushing to its own remotes. Used
+// both for the initial clone and for quack's own push before Deliver is
+// called.
+type GitCredentialSource interface {
+	GitCredential(ctx context.Context, rawURL string) (*GitCredential, error)
+}
+
+// GitCredential is a credential for one git remote host.
+type GitCredential struct {
+	Host     string
+	Username string
+	Token    string
 }
 
 // Factory builds an extension. config is the raw bytes of the deployment's

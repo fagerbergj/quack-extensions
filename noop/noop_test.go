@@ -126,20 +126,20 @@ func TestDispatchCallsHostWithFixedShape(t *testing.T) {
 	}
 	got := fh.captured[0]
 
-	if !strings.HasPrefix(got.ChatID, "noop-") {
-		t.Errorf("ChatID = %q, want noop-<counter> prefix", got.ChatID)
+	if !strings.HasPrefix(got.Chat.LocalID, "noop-") {
+		t.Errorf("Chat.LocalID = %q, want noop-<counter> prefix", got.Chat.LocalID)
 	}
-	if got.Message != "hello world" {
-		t.Errorf("Message = %q, want %q", got.Message, "hello world")
+	if got.Ask.Message != "hello world" {
+		t.Errorf("Ask.Message = %q, want %q", got.Ask.Message, "hello world")
 	}
-	if got.Workflow != "" {
-		t.Errorf("Workflow = %q, want empty", got.Workflow)
+	if got.Run.Workflow != "" {
+		t.Errorf("Run.Workflow = %q, want empty", got.Run.Workflow)
 	}
-	if got.Origin == nil {
-		t.Fatal("Origin is nil")
+	if got.Chat.Origin == nil {
+		t.Fatal("Chat.Origin is nil")
 	}
-	if got.Origin.Extension != "noop" || got.Origin.Label != "noop test" || got.Origin.Kind != "test" {
-		t.Errorf("Origin = %+v, want {noop, noop test, test}", got.Origin)
+	if got.Chat.Origin.Extension != "noop" || got.Chat.Origin.Label != "noop test" || got.Chat.Origin.Kind != "test" {
+		t.Errorf("Chat.Origin = %+v, want {noop, noop test, test}", got.Chat.Origin)
 	}
 }
 
@@ -163,10 +163,10 @@ func TestDispatchAssignsDistinctChatIDs(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for _, req := range fh.captured {
-		if seen[req.ChatID] {
-			t.Fatalf("duplicate ChatID %q", req.ChatID)
+		if seen[req.Chat.LocalID] {
+			t.Fatalf("duplicate Chat.LocalID %q", req.Chat.LocalID)
 		}
-		seen[req.ChatID] = true
+		seen[req.Chat.LocalID] = true
 	}
 }
 
@@ -195,8 +195,8 @@ func TestStatusCountsRunEndedNotDispatchCalls(t *testing.T) {
 		t.Fatalf("dispatches = %d before any RunEnded, want 0", got.Dispatches)
 	}
 
-	ext.RunEnded("noop-1", sdk.RunDone)
-	ext.RunEnded("noop-2", sdk.RunFailed)
+	ext.RunEnded("noop-1", sdk.RunOutcome{Status: sdk.RunDone})
+	ext.RunEnded("noop-2", sdk.RunOutcome{Status: sdk.RunFailed})
 
 	rec = httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/status", nil))

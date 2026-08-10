@@ -66,7 +66,7 @@ func (f *fakeExtension) Tools() []tool.Tool                       { return nil }
 func (f *fakeExtension) RegisterRoutes(authed, public chi.Router) {}
 func (f *fakeExtension) Start(ctx context.Context) error          { f.started = true; return nil }
 func (f *fakeExtension) Stop(ctx context.Context) error           { f.stopped = true; return nil }
-func (f *fakeExtension) RunEnded(chatID string, status sdk.RunStatus) {
+func (f *fakeExtension) RunEnded(chatID string, outcome sdk.RunOutcome) {
 	f.runEnded = append(f.runEnded, chatID)
 }
 
@@ -93,7 +93,7 @@ func TestFakeExtensionSatisfiesOptionalInterfaces(t *testing.T) {
 	}
 
 	if o, ok := ext.(sdk.RunObserver); ok {
-		o.RunEnded("chat-1", sdk.RunDone)
+		o.RunEnded("chat-1", sdk.RunOutcome{Status: sdk.RunDone})
 	} else {
 		t.Fatal("fakeExtension does not satisfy sdk.RunObserver")
 	}
