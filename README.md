@@ -14,9 +14,25 @@ packages for registration - never the reverse. This is what lets an
 extension live outside quack's repo, compile into quack's binary, and still
 be enabled or left dormant per deployment by config alone.
 
-A consequence: extensions shape a run only at dispatch time (`Message`,
-`Background`, `Workflow`, `Attachments`). There are no agent-loop hooks -
-enforcement stays gate-owned inside quack.
+A consequence: extensions shape a run only at dispatch time
+(`DispatchRequest`'s `Chat`/`Ask`/`Run`/`Delivery` groups). There are no
+agent-loop hooks - enforcement stays gate-owned inside quack.
+
+## SDK v0.2.0 (breaking, per the 0.x policy above)
+
+Regroups `DispatchRequest` into `Chat`/`Ask`/`Run`/`Delivery` (v0.1.0's flat
+`ChatID`/`Message`/`Background`/`Workflow`/`Attachments` collapse - `Message`
+and `Background` had no distinct behavior once serve's adapter just
+concatenated them); adds `ChatOrigin.Facets` for multi-valued provenance
+dimensions (repo, state, tags); reworks `RunObserver.RunEnded` to carry a
+full `RunOutcome` instead of a bare status; and adds two inverse-capability
+interfaces, `Deliverer` and `GitCredentialSource`, so quack can call back
+into an extension to deliver gated, pushed work and to fetch git
+credentials. `ChatRef.LocalID` replaces `ChatID`: it's extension-scoped,
+and quack namespaces it into the global chat id as
+`ext:<extension>:<localID>` so extensions can never collide with each other
+or with user chats. Full rationale in quack's
+`.quack/design/sdk-v2-github.md`.
 
 ## Module layout
 
