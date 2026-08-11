@@ -22,6 +22,7 @@ package sdk
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"google.golang.org/adk/v2/tool"
@@ -131,6 +132,32 @@ type Host struct {
 	// contents; quack only guarantees the directory exists and is theirs
 	// alone.
 	DataDir string
+
+	// EnsureContextDir allocates (creating if needed) a sandboxed directory
+	// alongside a dispatched run's own clone, for evidence files too large
+	// or too raw for Ask.Message/ContextItems - the extension writes into it
+	// directly; quack only guarantees the path is sandboxed for chatID.
+	EnsureContextDir func(userID, chatID string) (string, error)
+
+	// ChatUser returns the ADK session identity a chat is running as -
+	// e.g. recovering the acting user when an extension re-engages a chat
+	// with no fresh triggering user available. ok is false for an unknown
+	// chatID.
+	ChatUser func(chatID string) (user string, ok bool)
+
+	// ArchiveChat archives a chat, e.g. on the extension's own "this is
+	// resolved" signal.
+	ArchiveChat func(chatID string) error
+
+	// Classify is a single free-text model round trip - a classification or
+	// short judgment call an extension needs INLINE, before it decides how
+	// to shape a DispatchRequest (e.g. "is this comment asking for work, or
+	// just conversation?"). It is not a dispatched, gated, observed run: no
+	// RunObserver callback, no delivery, no session history - just a prompt
+	// in, an answer out, bound to quack's judge/advisor model. nil is a
+	// valid value (no judge model configured); callers must degrade
+	// gracefully, matching every other best-effort Host call.
+	Classify func(ctx context.Context, prompt string) (string, error)
 }
 
 // DispatchFunc starts or continues a run. See ChatRef.LocalID for the
@@ -251,6 +278,12 @@ type RunConfig struct {
 
 	// Setup is pre-clone coordinates; nil means no pre-provisioned clone.
 	Setup *Setup
+
+	// Timeout bounds this run's execution (not queue wait); zero means no
+	// per-run bound. Populating RunOutcome.TimedOut needs this: without a
+	// deadline scoped to the dispatch itself, "did this run time out" has
+	// nothing to compare against.
+	Timeout time.Duration
 }
 
 // Setup is the pre-provisioned clone a run should use.
@@ -258,6 +291,12 @@ type Setup struct {
 	Repo       string
 	BaseRef    string
 	WorkBranch string
+
+	// ExistingHeadRef, when non-empty, names a branch that already exists on
+	// Repo and must be checked out as-is instead of creating WorkBranch fresh
+	// from BaseRef - e.g. resuming work on a pull request's own head branch.
+	// It overrides WorkBranch for the checkout, not just supplements it.
+	ExistingHeadRef string
 }
 
 // DeliveryKind is the closed vocabulary of things a run can stage for
