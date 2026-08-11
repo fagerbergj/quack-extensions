@@ -29,6 +29,11 @@ type docState struct {
 	LastOutcome string `json:"last_outcome,omitempty"`
 	LastError   string `json:"last_error,omitempty"`
 
+	// GaveUp is true once Attempts has reached the configured cap for this
+	// LastModified value - the poller stops retrying until the document
+	// changes again. Set alongside the one-time Warn log.
+	GaveUp bool `json:"gave_up"`
+
 	Attempts  int       `json:"attempts"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

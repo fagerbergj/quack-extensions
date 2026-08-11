@@ -21,6 +21,12 @@ type poller struct {
 	folderFilter string
 	statePath    string
 
+	// maxAttempts caps retries of a permanently-failing document (real
+	// case: quack's model layer rejecting application/pdf until PDF
+	// decoding lands - without a cap that re-dispatches, and re-runs the
+	// LLM pipeline, once per poll interval forever). 0 = unlimited.
+	maxAttempts int
+
 	mu sync.Mutex
 	st *state
 
@@ -116,22 +122,41 @@ func (p *poller) pollOnce(ctx context.Context) {
 	}
 }
 
-// needsDispatchLocked decides new/updated/retry-once-per-cycle. Callers
-// must hold p.mu.
+// needsDispatchLocked decides new/updated/retry-once-per-cycle, capped by
+// maxAttempts. Callers must hold p.mu.
 func (p *poller) needsDispatchLocked(d remoteDoc) bool {
 	existing, seen := p.st.Documents[d.ID]
-	switch {
-	case !seen:
+	if !seen {
 		return true
-	case !existing.LastModified.Equal(d.LastModified):
-		return true
-	case existing.InFlight:
+	}
+	if !existing.LastModified.Equal(d.LastModified) {
+		return true // new version: always try, regardless of a prior give-up
+	}
+	if existing.InFlight {
 		return false // still running from a previous cycle
-	case existing.LastOutcome == outcomeFailed:
-		return true // exactly one retry: this poll cycle visits the doc once
-	default:
+	}
+	if existing.LastOutcome != outcomeFailed {
+		return false // done / needs_input: no retry
+	}
+	if p.maxAttempts > 0 && existing.Attempts >= p.maxAttempts {
+		if !existing.GaveUp {
+			p.giveUpLocked(d, existing)
+		}
 		return false
 	}
+	return true // failed, unchanged, under the cap: exactly one retry this cycle
+}
+
+// giveUpLocked marks a document as no longer retried at its current
+// LastModified and logs once - the caller has already confirmed this is
+// the first cycle crossing the cap. Callers must hold p.mu; the resulting
+// state change is persisted by pollOnce's end-of-cycle save.
+func (p *poller) giveUpLocked(d remoteDoc, existing docState) {
+	existing.GaveUp = true
+	p.st.Documents[d.ID] = existing
+	p.host.Log.Warn("remarkable: giving up on document after repeated failures",
+		"doc_id", d.ID, "name", d.Name, "attempts", existing.Attempts,
+		"max_attempts", p.maxAttempts, "last_error", existing.LastError)
 }
 
 // dispatchLocked downloads the PDF and calls Host.Dispatch. Callers must
@@ -176,20 +201,18 @@ func (p *poller) dispatchLocked(ctx context.Context, d remoteDoc) {
 		return
 	}
 
-	prev := p.st.Documents[d.ID]
 	p.st.Documents[d.ID] = docState{
 		ID:           d.ID,
 		Name:         d.Name,
 		Folder:       d.Folder,
 		LastModified: d.LastModified,
 		InFlight:     true,
-		Attempts:     prev.Attempts + 1,
+		Attempts:     p.nextAttemptsLocked(d),
 		UpdatedAt:    time.Now().UTC(),
 	}
 }
 
 func (p *poller) recordFailureLocked(d remoteDoc, cause error) {
-	prev := p.st.Documents[d.ID]
 	p.st.Documents[d.ID] = docState{
 		ID:           d.ID,
 		Name:         d.Name,
@@ -198,9 +221,21 @@ func (p *poller) recordFailureLocked(d remoteDoc, cause error) {
 		InFlight:     false,
 		LastOutcome:  outcomeFailed,
 		LastError:    cause.Error(),
-		Attempts:     prev.Attempts + 1,
+		Attempts:     p.nextAttemptsLocked(d),
 		UpdatedAt:    time.Now().UTC(),
 	}
+}
+
+// nextAttemptsLocked is the attempt count this dispatch represents: 1 for a
+// document we've never seen, or whose LastModified just changed (a new
+// version resets the cap); otherwise the previous count plus one. Callers
+// must hold p.mu and call this before overwriting p.st.Documents[d.ID].
+func (p *poller) nextAttemptsLocked(d remoteDoc) int {
+	prev, seen := p.st.Documents[d.ID]
+	if !seen || !prev.LastModified.Equal(d.LastModified) {
+		return 1
+	}
+	return prev.Attempts + 1
 }
 
 // runEnded is the RunObserver callback: it clears InFlight and records the

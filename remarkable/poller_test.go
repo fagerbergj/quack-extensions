@@ -341,3 +341,173 @@ func TestPollerStartAndStopLifecycle(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 }
+
+// warnCountingHandler counts Warn-level records so a test can assert a log
+// fires exactly once rather than once per poll cycle.
+type warnCountingHandler struct {
+	mu    sync.Mutex
+	warns int
+}
+
+func (h *warnCountingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *warnCountingHandler) Handle(_ context.Context, r slog.Record) error {
+	if r.Level == slog.LevelWarn {
+		h.mu.Lock()
+		h.warns++
+		h.mu.Unlock()
+	}
+	return nil
+}
+func (h *warnCountingHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *warnCountingHandler) WithGroup(_ string) slog.Handler      { return h }
+func (h *warnCountingHandler) count() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.warns
+}
+
+// alwaysFailDispatch is a fakeDispatchHost.fn that simulates a
+// permanently-failing document - the real case being quack's model layer
+// rejecting application/pdf until PDF decoding lands.
+func alwaysFailDispatch(sdk.DispatchRequest) error { return errors.New("model rejected attachment") }
+
+func TestPollOnceStopsRetryingAfterMaxAttempts(t *testing.T) {
+	fc := newFakeRMCloud("user@example.com", "pw")
+	defer fc.Close()
+	mod := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	fc.setDocs([]fixtureDoc{{ID: "doc-1", Name: "Notes", LastModified: mod, PDF: []byte("x")}})
+
+	fh := &fakeDispatchHost{fn: alwaysFailDispatch}
+	p := newTestPoller(t, fc, fh)
+	p.maxAttempts = 2
+	ctx := context.Background()
+
+	p.pollOnce(ctx) // attempt 1: fails
+	p.pollOnce(ctx) // attempt 2: fails, Attempts now == maxAttempts
+	if n := fh.callCount(); n != 2 {
+		t.Fatalf("calls after 2 polls = %d, want 2", n)
+	}
+
+	p.pollOnce(ctx) // cap reached: must not dispatch a 3rd time
+	if n := fh.callCount(); n != 2 {
+		t.Fatalf("calls after cap reached = %d, want still 2 (no dispatch past max_attempts)", n)
+	}
+	ds := p.st.Documents["doc-1"]
+	if !ds.GaveUp {
+		t.Errorf("doc-1 GaveUp = false, want true once Attempts >= max_attempts")
+	}
+	if ds.Attempts != 2 {
+		t.Errorf("doc-1 Attempts = %d, want 2 (unchanged once capped)", ds.Attempts)
+	}
+
+	p.pollOnce(ctx) // still capped: still no dispatch
+	if n := fh.callCount(); n != 2 {
+		t.Fatalf("calls after a further capped poll = %d, want still 2", n)
+	}
+}
+
+func TestPollOnceRetriesAfterModifiedDocumentPastCap(t *testing.T) {
+	fc := newFakeRMCloud("user@example.com", "pw")
+	defer fc.Close()
+	mod := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	fc.setDocs([]fixtureDoc{{ID: "doc-1", Name: "Notes", LastModified: mod, PDF: []byte("v1")}})
+
+	fh := &fakeDispatchHost{fn: alwaysFailDispatch}
+	p := newTestPoller(t, fc, fh)
+	p.maxAttempts = 2
+
+	ctx := context.Background()
+	p.pollOnce(ctx) // attempt 1: fails
+	p.pollOnce(ctx) // attempt 2: fails, at cap
+	p.pollOnce(ctx) // capped: skipped
+	if n := fh.callCount(); n != 2 {
+		t.Fatalf("calls before edit = %d, want 2", n)
+	}
+	if !p.st.Documents["doc-1"].GaveUp {
+		t.Fatal("doc-1 should have GaveUp before the edit")
+	}
+
+	// the user edits the document on the tablet: a new LastModified must
+	// reset the cap and try again, even though the prior version gave up.
+	mod2 := mod.Add(time.Hour)
+	fc.setDocs([]fixtureDoc{{ID: "doc-1", Name: "Notes", LastModified: mod2, PDF: []byte("v2")}})
+
+	fh.mu.Lock()
+	fh.fn = nil // let this attempt succeed
+	fh.mu.Unlock()
+	p.pollOnce(ctx)
+
+	if n := fh.callCount(); n != 3 {
+		t.Fatalf("calls after the doc changed = %d, want 3 (one more dispatch)", n)
+	}
+	ds := p.st.Documents["doc-1"]
+	if ds.GaveUp {
+		t.Error("doc-1 GaveUp should reset to false on a new version")
+	}
+	if ds.Attempts != 1 {
+		t.Errorf("doc-1 Attempts = %d, want 1 (reset by the new version)", ds.Attempts)
+	}
+	if !ds.LastModified.Equal(mod2) {
+		t.Errorf("doc-1 LastModified = %v, want %v", ds.LastModified, mod2)
+	}
+}
+
+func TestGiveUpLogsWarnExactlyOnce(t *testing.T) {
+	fc := newFakeRMCloud("user@example.com", "pw")
+	defer fc.Close()
+	mod := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	fc.setDocs([]fixtureDoc{{ID: "doc-1", Name: "Notes", LastModified: mod, PDF: []byte("x")}})
+
+	handler := &warnCountingHandler{}
+	fh := &fakeDispatchHost{fn: alwaysFailDispatch}
+	dataDir := t.TempDir()
+	p := &poller{
+		host:        sdk.Host{Dispatch: fh.dispatch, Log: slog.New(handler), DataDir: dataDir},
+		client:      newRMClient(fc.Server.URL, fc.email, fc.password, nil),
+		interval:    time.Hour,
+		maxAttempts: 2,
+		statePath:   statePath(dataDir),
+	}
+	var err error
+	p.st, err = loadState(p.statePath)
+	if err != nil {
+		t.Fatalf("loadState: %v", err)
+	}
+
+	ctx := context.Background()
+	p.pollOnce(ctx) // attempt 1
+	p.pollOnce(ctx) // attempt 2, reaches the cap
+	if got := handler.count(); got != 0 {
+		t.Fatalf("warns before the cap is crossed = %d, want 0", got)
+	}
+
+	p.pollOnce(ctx) // first cycle to observe the cap: exactly one Warn
+	p.pollOnce(ctx)
+	p.pollOnce(ctx)
+
+	if got := handler.count(); got != 1 {
+		t.Fatalf("warns after 3 further capped polls = %d, want exactly 1", got)
+	}
+}
+
+func TestMaxAttemptsZeroMeansUnlimited(t *testing.T) {
+	fc := newFakeRMCloud("user@example.com", "pw")
+	defer fc.Close()
+	mod := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	fc.setDocs([]fixtureDoc{{ID: "doc-1", Name: "Notes", LastModified: mod, PDF: []byte("x")}})
+
+	fh := &fakeDispatchHost{fn: alwaysFailDispatch}
+	p := newTestPoller(t, fc, fh)
+	p.maxAttempts = 0 // explicit unlimited
+
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		p.pollOnce(ctx)
+	}
+	if n := fh.callCount(); n != 5 {
+		t.Fatalf("calls after 5 polls with max_attempts=0 = %d, want 5 (uncapped)", n)
+	}
+	if p.st.Documents["doc-1"].GaveUp {
+		t.Error("GaveUp should never be set when max_attempts is 0 (unlimited)")
+	}
+}
