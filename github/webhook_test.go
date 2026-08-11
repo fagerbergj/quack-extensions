@@ -2751,3 +2751,703 @@ func TestDispatchTitleFromLabelDrivenIssue(t *testing.T) {
 // advances the watermark, by construction; there is no "started but the
 // extension must specifically avoid treating it as complete" scenario left
 // to construct at this seam. Not ported.
+
+// ---- merge-label / issue-label / request-changes batch (ported from quack's internal/github/webhook_test.go) ----
+
+// newTestExtensionWithStore is newTestExtension but reuses an existing
+// *ghStore instead of opening a fresh one - lets a test simulate a process
+// restart (a new Extension over the SAME durable state).
+func newTestExtensionWithStore(t *testing.T, apiBase string, triggers []string, st *ghStore) (*Extension, *fakeDispatchHost) {
+	t.Helper()
+	e, fh := newTestExtension(t, apiBase, triggers)
+	e.store = st
+	return e, fh
+}
+
+// mergeStub serves the REST endpoints mergeIfApproved/tryMergeStandingIntent
+// touch: reviewsJSON seeds GET .../reviews, commentsJSON seeds GET
+// .../comments (own-PR verdict-marker comments), merged fires on the PUT
+// .../merge.
+func mergeStub(t *testing.T, reviewsJSON, commentsJSON string, posted chan<- string, merged chan<- struct{}) *httptest.Server {
+	t.Helper()
+	if commentsJSON == "" {
+		commentsJSON = "[]"
+	}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			fmt.Fprint(w, `{"id":5}`)
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		case strings.HasSuffix(r.URL.Path, "/reactions"):
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":1}`)
+		case strings.HasSuffix(r.URL.Path, "/app"):
+			fmt.Fprint(w, `{"slug":"quack"}`)
+		case strings.HasSuffix(r.URL.Path, "/reviews"):
+			fmt.Fprint(w, reviewsJSON)
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/merge"):
+			merged <- struct{}{}
+			fmt.Fprint(w, `{"merged":true}`)
+		case strings.HasSuffix(r.URL.Path, "/files"):
+			fmt.Fprint(w, `[]`)
+		case strings.HasSuffix(r.URL.Path, "/commits"):
+			fmt.Fprint(w, `[]`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+			fmt.Fprint(w, commentsJSON)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+			body, _ := io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{}`)
+			posted <- string(body)
+		case strings.Contains(r.URL.Path, "/pulls/"):
+			fmt.Fprint(w, `{"title":"Test PR","body":"A test PR.","state":"open","head":{"ref":"feature-branch","sha":"headsha1"},"base":{"ref":"main"}}`)
+		case isIssueMetaPath(r.URL.Path):
+			fmt.Fprint(w, `{"title":"Test issue","body":"A test issue.","state":"open"}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+}
+
+// mergeStubDynamic is mergeStub with reviews served from a mutable value (an
+// empty review list to start) so a test can simulate a review landing
+// mid-dispatch via the returned setReviews. merged carries the PUT
+// .../merge request body so a test can assert the head-sha merge guard.
+func mergeStubDynamic(t *testing.T, posted chan<- string, merged chan<- string) (srv *httptest.Server, setReviews func(string)) {
+	t.Helper()
+	var reviews atomic.Value
+	reviews.Store("[]")
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			fmt.Fprint(w, `{"id":5}`)
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		case strings.HasSuffix(r.URL.Path, "/reactions"):
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":1}`)
+		case strings.HasSuffix(r.URL.Path, "/app"):
+			fmt.Fprint(w, `{"slug":"quack"}`)
+		case strings.HasSuffix(r.URL.Path, "/reviews"):
+			fmt.Fprint(w, reviews.Load().(string))
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/merge"):
+			body, _ := io.ReadAll(r.Body)
+			merged <- string(body)
+			fmt.Fprint(w, `{"merged":true}`)
+		case strings.HasSuffix(r.URL.Path, "/files"):
+			fmt.Fprint(w, `[]`)
+		case strings.HasSuffix(r.URL.Path, "/commits"):
+			fmt.Fprint(w, `[]`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+			fmt.Fprint(w, `[]`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+			body, _ := io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{}`)
+			posted <- string(body)
+		case strings.Contains(r.URL.Path, "/pulls/"):
+			fmt.Fprint(w, `{"title":"Test PR","body":"A test PR.","state":"open","head":{"ref":"feature-branch","sha":"headsha1"},"base":{"ref":"main"}}`)
+		case isIssueMetaPath(r.URL.Path):
+			fmt.Fprint(w, `{"title":"Test issue","body":"A test issue.","state":"open"}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	return srv, func(j string) { reviews.Store(j) }
+}
+
+func mergeLabelBody(sender string) []byte {
+	return []byte(fmt.Sprintf(`{
+		"action":"labeled",
+		"number":7,
+		"label":{"name":"quack:merge"},
+		"repository":{"name":"widgets","owner":{"login":"acme"},"clone_url":"https://github.com/acme/widgets.git","default_branch":"main"},
+		"installation":{"id":5},
+		"sender":{"login":%q}
+	}`, sender))
+}
+
+// TestHandleWebhookMergeLabel covers the cases where the merge label's fate is
+// decided WITHOUT needing to dispatch a run: an approving review already
+// exists (merges immediately, unchanged), a non-approving verdict already
+// exists (refuses and leaves the standing intent recorded so a later approval
+// can still merge it), the trigger is off, or the sender is a bot. The "no
+// review at all yet" case dispatches a review run and is covered separately
+// (TestHandleWebhookMergeLabelQueuesAndDispatchesReview).
+func TestHandleWebhookMergeLabel(t *testing.T) {
+	approved := `[{"state":"CHANGES_REQUESTED","user":{"login":"quack[bot]"}},{"state":"APPROVED","user":{"login":"quack[bot]"}}]`
+	tests := []struct {
+		name        string
+		triggers    []string
+		reviews     string
+		comments    string
+		sender      string
+		wantMerge   bool
+		wantComment string
+		wantIntent  bool
+	}{
+		{"approved review merges", []string{"merge"}, approved, "", "alice", true, "Merged", false},
+		{"changes-requested stands by with the intent recorded", []string{"merge"},
+			`[{"state":"APPROVED","user":{"login":"quack[bot]"}},{"state":"CHANGES_REQUESTED","user":{"login":"quack[bot]"}}]`,
+			"", "alice", false, "Standing by: my latest review is request_changes, not an approval", true},
+		{"COMMENTED carries no verdict but still stands by without a later approve", []string{"merge"},
+			`[{"state":"APPROVED","user":{"login":"quack[bot]"},"submitted_at":"2026-01-01T00:00:00Z"},{"state":"COMMENTED","user":{"login":"quack[bot]"},"submitted_at":"2026-01-02T00:00:00Z"}]`,
+			"", "alice", false, "Standing by: my latest review is comment, not an approval", true},
+		{"own-PR comment-review marker approves and merges", []string{"merge"}, `[]`,
+			`[{"user":{"login":"quack[bot]"},"body":"LGTM\n\n<!-- quack:delivery:review:approve -->","created_at":"2026-01-01T00:00:00Z"}]`,
+			"alice", true, "Merged", false},
+		{"own-PR comment-review marker request_changes stands by", []string{"merge"}, `[]`,
+			`[{"user":{"login":"quack[bot]"},"body":"needs work\n\n<!-- quack:delivery:review:request_changes -->","created_at":"2026-01-01T00:00:00Z"}]`,
+			"alice", false, "Standing by: my latest review is request_changes, not an approval", true},
+		{"trigger not enabled is a no-op", []string{"mention"}, approved, "", "alice", false, "", false},
+		{"bot sender cannot authorize", []string{"merge"}, approved, "", "other[bot]", false, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			posted := make(chan string, 2)
+			merged := make(chan struct{}, 1)
+			srv := mergeStub(t, tt.reviews, tt.comments, posted, merged)
+			defer srv.Close()
+			ext, fh := newTestExtension(t, srv.URL, tt.triggers)
+
+			rec := httptest.NewRecorder()
+			ext.handleWebhook(rec, signedRequest("pull_request", mergeLabelBody(tt.sender)))
+			if rec.Code != http.StatusAccepted && rec.Code != http.StatusOK {
+				t.Fatalf("status = %d", rec.Code)
+			}
+
+			if tt.wantComment != "" {
+				select {
+				case c := <-posted:
+					if !strings.Contains(c, tt.wantComment) {
+						t.Errorf("comment = %q, want substring %q", c, tt.wantComment)
+					}
+				case <-time.After(2 * time.Second):
+					t.Fatal("expected an outcome comment")
+				}
+			}
+			if tt.wantMerge {
+				select {
+				case <-merged:
+				case <-time.After(2 * time.Second):
+					t.Fatal("expected a merge PUT")
+				}
+			} else {
+				select {
+				case <-merged:
+					t.Error("merge must not have been called")
+				default:
+				}
+			}
+			// None of these cases dispatches an orchestrator run - either the
+			// verdict was already decided, or the trigger/sender gate refused first.
+			select {
+			case <-fh.notify:
+				t.Error("this case must not dispatch an orchestrator run")
+			default:
+			}
+
+			intent, err := ext.store.GetMergeIntent(context.Background(), globalChatID("github-acme-widgets-7"))
+			if err != nil {
+				t.Fatalf("GetMergeIntent: %v", err)
+			}
+			if tt.wantIntent && (intent == nil || intent.RequestedBy != "alice") {
+				t.Errorf("intent = %+v; want a recorded standing intent for alice", intent)
+			}
+			if !tt.wantIntent && intent != nil {
+				t.Errorf("intent = %+v; want none recorded", intent)
+			}
+		})
+	}
+}
+
+// TestHandleWebhookMergeLabelQueuesAndDispatchesReview covers applying
+// quack:merge to a PR quack has never looked at: the label becomes a standing
+// intent AND dispatches a review itself - otherwise the label would silently
+// do nothing until someone separately asked for a review.
+func TestHandleWebhookMergeLabelQueuesAndDispatchesReview(t *testing.T) {
+	posted := make(chan string, 4)
+	merged := make(chan struct{}, 1)
+	srv := mergeStub(t, "[]", "", posted, merged)
+	defer srv.Close()
+	ext, fh := newTestExtension(t, srv.URL, []string{"merge"})
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("pull_request", mergeLabelBody("alice")))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d", rec.Code)
+	}
+
+	select {
+	case c := <-posted:
+		if !strings.Contains(c, "Queued") || !strings.Contains(c, "Reviewing it now") {
+			t.Errorf("comment = %q; want a queued+reviewing message", c)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no queued comment posted")
+	}
+	req := fh.waitForDispatch(t, 2*time.Second)
+	if !strings.Contains(req.Ask.Message, "<deliverable>a review with inline comments and a verdict</deliverable>") {
+		t.Errorf("dispatched envelope = %q; want the auto-review deliverable", req.Ask.Message)
+	}
+
+	intent, err := ext.store.GetMergeIntent(context.Background(), globalChatID("github-acme-widgets-7"))
+	if err != nil || intent == nil || intent.RequestedBy != "alice" {
+		t.Fatalf("GetMergeIntent = %+v, %v; want a recorded intent for alice", intent, err)
+	}
+}
+
+// TestHandleWebhookMergeLabelWaitsForInFlightReview covers applying
+// quack:merge while a review is ALREADY running on the PR (a common race: the
+// label lands while a review dispatched moments earlier is still in
+// progress) - it must record the intent and wait, never dispatch a SECOND
+// concurrent review on the same session. In this port a dispatched run stays
+// "in flight" (inflight map held) until its RunEnded arrives - never called
+// here - so the label lands while the first is still open, no blocking
+// channel needed.
+func TestHandleWebhookMergeLabelWaitsForInFlightReview(t *testing.T) {
+	posted := make(chan string, 4)
+	merged := make(chan struct{}, 1)
+	srv := mergeStub(t, "[]", "", posted, merged)
+	defer srv.Close()
+	ext, fh := newTestExtension(t, srv.URL, []string{"mention", "merge"})
+
+	rec1 := httptest.NewRecorder()
+	ext.handleWebhook(rec1, signedRequest("issue_comment", pullCommentBody("@quack review this")))
+	if rec1.Code != http.StatusAccepted {
+		t.Fatalf("status = %d", rec1.Code)
+	}
+	fh.waitForDispatch(t, 2*time.Second)
+
+	rec2 := httptest.NewRecorder()
+	ext.handleWebhook(rec2, signedRequest("pull_request", mergeLabelBody("alice")))
+	if rec2.Code != http.StatusAccepted {
+		t.Fatalf("status = %d", rec2.Code)
+	}
+
+	select {
+	case c := <-posted:
+		if !strings.Contains(c, "already in progress") {
+			t.Errorf("comment = %q; want it to note a review is already running", c)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no queued comment posted")
+	}
+
+	intent, err := ext.store.GetMergeIntent(context.Background(), globalChatID("github-acme-widgets-7"))
+	if err != nil || intent == nil {
+		t.Fatalf("GetMergeIntent = %+v, %v; want a recorded intent", intent, err)
+	}
+	if calls := fh.calls(); len(calls) != 1 {
+		t.Errorf("Host.Dispatch calls = %d; want 1 (the label must not dispatch a second review while one is in flight)", len(calls))
+	}
+}
+
+// TestHandleWebhookMergeLabelReviewLandsConsumesIntent covers the standing
+// intent's whole point: no review existed when quack:merge was applied, the
+// label queued a review AND recorded the intent, and once that review is
+// actually delivered with an approving verdict, the PR merges on its own -
+// naming the original label-applier.
+func TestHandleWebhookMergeLabelReviewLandsConsumesIntent(t *testing.T) {
+	posted := make(chan string, 4)
+	merged := make(chan string, 1)
+	srv, setReviews := mergeStubDynamic(t, posted, merged)
+	defer srv.Close()
+	ext, fh := newTestExtension(t, srv.URL, []string{"merge"})
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("pull_request", mergeLabelBody("alice")))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d", rec.Code)
+	}
+
+	select {
+	case c := <-posted:
+		if !strings.Contains(c, "Queued") {
+			t.Errorf("comment = %q; want the queued message", c)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no queued comment posted")
+	}
+	fh.waitForDispatch(t, 2*time.Second)
+
+	// The review "lands" as an approval, then the dispatched review run
+	// completes and records its delivery - simulating quack's own review
+	// being posted and the worker's RunEnded arriving.
+	setReviews(`[{"state":"APPROVED","user":{"login":"quack[bot]"},"submitted_at":"2026-01-01T00:00:00Z"}]`)
+	chatID := globalChatID("github-acme-widgets-7")
+	recordDelivery(chatID, deliveryOutcome{reviewDelivered: true})
+	ext.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "reviewed"})
+
+	select {
+	case body := <-merged:
+		if !strings.Contains(body, `"sha":"headsha1"`) {
+			t.Errorf("merge request body = %q; want it pinned to the reviewed head sha", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected a merge PUT once the review landed approving")
+	}
+	select {
+	case c := <-posted:
+		if !strings.Contains(c, "Merged") || !strings.Contains(c, "@alice") {
+			t.Errorf("comment = %q; want it to name the original authorizer", c)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no merge comment posted")
+	}
+
+	intent, err := ext.store.GetMergeIntent(context.Background(), chatID)
+	if err != nil || intent != nil {
+		t.Errorf("intent = %+v, %v; want it cleared after the merge", intent, err)
+	}
+}
+
+// TestHandleWebhookMergeLabelRestartSurvival pins that the standing intent
+// survives a process restart: a FRESH Extension over the SAME store - with no
+// in-memory memory of the label event that recorded it - still honours it
+// once a review lands.
+func TestHandleWebhookMergeLabelRestartSurvival(t *testing.T) {
+	st, err := openStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	chatID := globalChatID("github-acme-widgets-7")
+	if err := st.SetMergeIntent(context.Background(), chatID, "alice"); err != nil {
+		t.Fatalf("seed merge intent: %v", err)
+	}
+
+	posted := make(chan string, 4)
+	merged := make(chan struct{}, 1)
+	approved := `[{"state":"APPROVED","user":{"login":"quack[bot]"},"submitted_at":"2026-01-01T00:00:00Z"}]`
+	srv := mergeStub(t, approved, "", posted, merged)
+	defer srv.Close()
+	ext, fh := newTestExtensionWithStore(t, srv.URL, []string{"mention"}, st)
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("issue_comment", pullCommentBody("@quack review this")))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	fh.waitForDispatch(t, 2*time.Second)
+	recordDelivery(chatID, deliveryOutcome{reviewDelivered: true})
+	ext.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "reviewed"})
+
+	select {
+	case <-merged:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the pre-restart standing intent did not merge once the review landed")
+	}
+	select {
+	case c := <-posted:
+		if !strings.Contains(c, "Merged") || !strings.Contains(c, "@alice") {
+			t.Errorf("comment = %q; want it to name the pre-restart authorizer", c)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no merge comment posted")
+	}
+
+	intent, err := st.GetMergeIntent(context.Background(), chatID)
+	if err != nil || intent != nil {
+		t.Errorf("intent = %+v, %v; want it cleared after the merge", intent, err)
+	}
+}
+
+// TestHandleWebhookMergeLabelRespectsAllowlist pins the merge-label
+// enforcement point: a sender outside allowed_users can never authorize a
+// merge, even with an APPROVED review already on the PR.
+func TestHandleWebhookMergeLabelRespectsAllowlist(t *testing.T) {
+	approved := `[{"state":"APPROVED","user":{"login":"quack[bot]"}}]`
+	posted := make(chan string, 2)
+	merged := make(chan struct{}, 1)
+	srv := mergeStub(t, approved, "", posted, merged)
+	defer srv.Close()
+	ext, _ := newTestExtension(t, srv.URL, []string{"merge"})
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("pull_request", mergeLabelBody("mallory")))
+	if rec.Code != http.StatusAccepted && rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	select {
+	case <-merged:
+		t.Error("merge-label sender not in allowed_users must not authorize a merge")
+	default:
+	}
+}
+
+// TestHandleWebhookPlanLabelPostsPlanEvenWhenDelivered pins the regression
+// where a plan-only run silently dropped its plan: a label trigger implies
+// work, so a proxy "delivered" signal must never suppress a plan-only run's
+// summary comment - that comment IS the deliverable.
+func TestHandleWebhookPlanLabelPostsPlanEvenWhenDelivered(t *testing.T) {
+	posted := make(chan string, 1)
+	srv := stubGitHub(t, posted)
+	defer srv.Close()
+	ext, fh := newTestExtension(t, srv.URL, []string{"issue_plan"})
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("issues", issuesBody("labeled", "quack:plan", "alice", false)))
+	if rec.Code != http.StatusAccepted && rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	fh.waitForDispatch(t, 2*time.Second)
+
+	chatID := globalChatID("github-acme-widgets-7")
+	// No takeDeliveryDetail entry recorded - a plan-only run never delivers
+	// anything staged, so finalize must fall through to posting the answer.
+	ext.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "## Plan\n\nthe plan"})
+
+	select {
+	case body := <-posted:
+		if !strings.Contains(body, "the plan") {
+			t.Errorf("posted comment is not the plan: %q", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("plan-only run did not post its plan - the delivered-skip dropped it")
+	}
+}
+
+// TestHandleWebhookLabelPostsEyesReactionOnIssue pins #252: a label-triggered
+// run (quack:plan / quack:implement) posts an instant 👀 on the ISSUE - POST
+// to /issues/{number}/reactions, NOT the comment-reaction endpoint (a label
+// event carries no comment ID, so ackReaction can't be reused).
+func TestHandleWebhookLabelPostsEyesReactionOnIssue(t *testing.T) {
+	for _, tc := range []struct{ trigger, label string }{
+		{"issue_plan", "quack:plan"},
+		{"issue_implement", "quack:implement"},
+	} {
+		t.Run(tc.trigger, func(t *testing.T) {
+			reacted := make(chan string, 1)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/installation"):
+					fmt.Fprint(w, `{"id":5}`)
+				case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+					fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+				case strings.HasSuffix(r.URL.Path, "/reactions"):
+					b, _ := io.ReadAll(r.Body)
+					w.WriteHeader(http.StatusCreated)
+					fmt.Fprint(w, `{"id":1}`)
+					select {
+					case reacted <- r.URL.Path + " " + string(b):
+					default:
+					}
+				default:
+					w.WriteHeader(http.StatusCreated)
+					fmt.Fprint(w, `{}`)
+				}
+			}))
+			defer srv.Close()
+
+			ext, _ := newTestExtension(t, srv.URL, []string{tc.trigger})
+
+			rec := httptest.NewRecorder()
+			ext.handleWebhook(rec, signedRequest("issues", issuesBody("labeled", tc.label, "alice", false)))
+			if rec.Code != http.StatusAccepted && rec.Code != http.StatusOK {
+				t.Fatalf("status = %d", rec.Code)
+			}
+			select {
+			case got := <-reacted:
+				if !strings.Contains(got, "/repos/acme/widgets/issues/7/reactions") {
+					t.Errorf("reaction hit wrong endpoint: %q (want /issues/7/reactions)", got)
+				}
+				if !strings.Contains(got, `"content":"eyes"`) {
+					t.Errorf("reaction content not eyes: %q", got)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("no 👀 reaction posted on the issue for a label-triggered run")
+			}
+		})
+	}
+}
+
+// TestHandleWebhookIssuePlanLabel pins the quack:plan label routing and the
+// dispatched plan message's framing.
+func TestHandleWebhookIssuePlanLabel(t *testing.T) {
+	tests := []struct {
+		name     string
+		triggers []string
+		label    string
+		sender   string
+		isPR     bool
+		wantRun  bool
+	}{
+		{"plan label + issue_plan trigger fires", []string{"issue_plan"}, "quack:plan", "alice", false, true},
+		{"non-matching label is a no-op", []string{"issue_plan"}, "bug", "alice", false, false},
+		{"trigger not enabled is a no-op", []string{"mention"}, "quack:plan", "alice", false, false},
+		{"bot sender is a no-op", []string{"issue_plan"}, "quack:plan", "quack[bot]", false, false},
+		{"PR-shaped issue is a no-op", []string{"issue_plan"}, "quack:plan", "alice", true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := stubGitHub(t, make(chan string, 1))
+			defer srv.Close()
+			ext, fh := newTestExtension(t, srv.URL, tt.triggers)
+
+			rec := httptest.NewRecorder()
+			ext.handleWebhook(rec, signedRequest("issues", issuesBody("labeled", tt.label, tt.sender, tt.isPR)))
+			if rec.Code != http.StatusAccepted && rec.Code != http.StatusOK {
+				t.Fatalf("status = %d", rec.Code)
+			}
+
+			if !tt.wantRun {
+				select {
+				case <-fh.notify:
+					t.Error("issues event should not have dispatched a run")
+				case <-time.After(200 * time.Millisecond):
+				}
+				return
+			}
+			req := fh.waitForDispatch(t, 2*time.Second)
+			msg := req.Ask.Message
+			if !strings.Contains(msg, "Add widget cache") {
+				t.Errorf("plan message missing issue context: %q", msg)
+			}
+			if !strings.Contains(msg, "PLANNING-ONLY") {
+				t.Errorf("plan message not framed planning-only: %q", msg)
+			}
+			// #569: the plan-only prompt must state that the answer text IS the
+			// deliverable, not a pointer to a file the run wrote and discarded.
+			if !strings.Contains(msg, "ANSWER TEXT is the plan") {
+				t.Errorf("plan message does not state the answer text is the deliverable: %q", msg)
+			}
+			// #662: the file-path and stale-version cautions are constant, not
+			// per-event - they moved to agents/orchestrator/prompt.md (a quack-repo
+			// file this module doesn't own/ship), so the trigger itself no longer
+			// carries them.
+			for _, moved := range []string{"discarded", "current stable"} {
+				if strings.Contains(msg, moved) {
+					t.Errorf("plan message still carries the %q caution - it should have moved to the orchestrator bundle prompt: %q", moved, msg)
+				}
+			}
+			for _, banned := range []string{"git_push", "github_pull_request", "create a branch"} {
+				if strings.Contains(msg, banned) {
+					t.Errorf("planning-only message contains delivery instruction %q: %q", banned, msg)
+				}
+			}
+			if req.Chat.LocalID != "github-acme-widgets-7" {
+				t.Errorf("LocalID = %q, want issue-tied github-acme-widgets-7", req.Chat.LocalID)
+			}
+		})
+	}
+}
+
+// TestHandleWebhookIssueOpenedNoOp pins that non-labeled issue actions are
+// ignored - the workflow is label-driven, not event-driven.
+func TestHandleWebhookIssueOpenedNoOp(t *testing.T) {
+	ext, fh := newTestExtension(t, "http://unused", []string{"issue_plan"})
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("issues", issuesBody("opened", "", "alice", false)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 no-op ack", rec.Code)
+	}
+	if calls := fh.calls(); len(calls) != 0 {
+		t.Error("issues opened should not dispatch a run")
+	}
+}
+
+// TestHandleWebhookIssueImplementLabel pins the quack:implement label routing
+// and its dispatched task's Closes-trailer framing.
+func TestHandleWebhookIssueImplementLabel(t *testing.T) {
+	tests := []struct {
+		name     string
+		triggers []string
+		label    string
+		wantRun  bool
+	}{
+		{"implement label + trigger fires", []string{"issue_implement"}, "quack:implement", true},
+		{"trigger not enabled is a no-op", []string{"issue_plan"}, "quack:implement", false},
+		{"plan label does not fire implement", []string{"issue_implement"}, "quack:plan", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := stubGitHub(t, make(chan string, 4))
+			defer srv.Close()
+			ext, fh := newTestExtension(t, srv.URL, tt.triggers)
+
+			rec := httptest.NewRecorder()
+			ext.handleWebhook(rec, signedRequest("issues", issuesBody("labeled", tt.label, "alice", false)))
+			if rec.Code != http.StatusAccepted && rec.Code != http.StatusOK {
+				t.Fatalf("status = %d", rec.Code)
+			}
+			if !tt.wantRun {
+				select {
+				case <-fh.notify:
+					t.Error("issues event should not have dispatched a run")
+				case <-time.After(200 * time.Millisecond):
+				}
+				return
+			}
+			req := fh.waitForDispatch(t, 2*time.Second)
+			for _, want := range []string{"Closes #7", `<issue number="7">`} {
+				if !strings.Contains(req.Ask.Message, want) {
+					t.Errorf("implement message missing %q: %q", want, req.Ask.Message)
+				}
+			}
+			if req.Chat.LocalID != "github-acme-widgets-7" {
+				t.Errorf("LocalID = %q, want the issue's session (plan continuity)", req.Chat.LocalID)
+			}
+		})
+	}
+}
+
+// TestHandleWebhookRequestChangesEngagesOwnPR pins #656 test case 3 (closes
+// #655): a request_changes review on a PR quack authored engages it to
+// address the findings - authorship IS the flag, no label on the PR at all.
+func TestHandleWebhookRequestChangesEngagesOwnPR(t *testing.T) {
+	posted := make(chan string, 4)
+	srv := stubFixGitHubFull(t, posted, nil, false, "", "quack[bot]") // no labels; PR authored by quack itself
+	defer srv.Close()
+	ext, fh := newTestExtension(t, srv.URL, []string{"ci_fix"})
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("pull_request_review", pullRequestReviewBody("changes_requested", "alice", 7)))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d; want 202", rec.Code)
+	}
+	req := fh.waitForDispatch(t, 2*time.Second)
+	for _, want := range []string{"requested changes", `"login":"alice"`} {
+		if !strings.Contains(req.Ask.Message, want) {
+			t.Errorf("engagement message missing %q: %q", want, req.Ask.Message)
+		}
+	}
+}
+
+// TestHandleWebhookRequestChangesIgnoresOtherPRs proves the label/mention
+// triggers, not this path, still own a PR quack did NOT author - and an
+// approving/commented review never engages regardless of authorship.
+func TestHandleWebhookRequestChangesIgnoresOtherPRs(t *testing.T) {
+	tests := []struct {
+		name          string
+		state         string
+		prAuthorLogin string
+	}{
+		{"not quack's PR", "changes_requested", "someone-else"},
+		{"quack's PR but an approval, not changes requested", "approved", "quack[bot]"},
+		{"quack's PR but a plain comment review", "commented", "quack[bot]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			posted := make(chan string, 4)
+			srv := stubFixGitHubFull(t, posted, nil, false, "", tt.prAuthorLogin)
+			defer srv.Close()
+			ext, fh := newTestExtension(t, srv.URL, []string{"ci_fix"})
+
+			rec := httptest.NewRecorder()
+			ext.handleWebhook(rec, signedRequest("pull_request_review", pullRequestReviewBody(tt.state, "alice", 7)))
+			if rec.Code != http.StatusAccepted && rec.Code != http.StatusOK {
+				t.Fatalf("status = %d", rec.Code)
+			}
+			// Authorship resolves async (an HTTP round trip); bound the wait and
+			// fail immediately if it fires.
+			select {
+			case <-fh.notify:
+				t.Error("must not engage")
+			case <-time.After(150 * time.Millisecond):
+			}
+		})
+	}
+}
