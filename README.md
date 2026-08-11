@@ -24,11 +24,12 @@ Multi-module monorepo, one Go module per directory, each independently tagged (t
 
 ```text
 sdk/         github.com/fagerbergj/quack-extensions/sdk         - the Extension API
+github/      github.com/fagerbergj/quack-extensions/github      - GitHub App integration (migrated from quack's internal/github)
 noop/        github.com/fagerbergj/quack-extensions/noop        - proves the loop end to end
 remarkable/  github.com/fagerbergj/quack-extensions/remarkable  - rmfakecloud poller -> document-ingest
 ```
 
-Future extensions (eventually a migrated `github/`) land as sibling modules the same way.
+Future extensions land as sibling modules the same way.
 
 ## Tagging
 
