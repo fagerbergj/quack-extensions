@@ -69,9 +69,45 @@ func TestFactoryDefaultsPollInterval(t *testing.T) {
 	}
 }
 
+func TestFactoryDefaultsMaxAttempts(t *testing.T) {
+	fh := &fakeDispatchHost{}
+	extVal, err := factory(testHost(t, fh), []byte("base_url: http://example.com\nemail: a@b.com\npassword: pw\n"))
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	ext := extVal.(*extension)
+	if ext.poller.maxAttempts != defaultMaxAttempts {
+		t.Errorf("maxAttempts = %d, want default %d (0/unlimited must not be the default)", ext.poller.maxAttempts, defaultMaxAttempts)
+	}
+	if ext.poller.maxAttempts == 0 {
+		t.Fatal("default max_attempts must not be 0 (unlimited)")
+	}
+}
+
+func TestFactoryMaxAttemptsExplicitZeroMeansUnlimited(t *testing.T) {
+	fh := &fakeDispatchHost{}
+	raw := []byte("base_url: http://example.com\nemail: a@b.com\npassword: pw\nmax_attempts: 0\n")
+	extVal, err := factory(testHost(t, fh), raw)
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	ext := extVal.(*extension)
+	if ext.poller.maxAttempts != 0 {
+		t.Errorf("maxAttempts = %d, want 0 (explicit unlimited)", ext.poller.maxAttempts)
+	}
+}
+
+func TestFactoryRejectsNegativeMaxAttempts(t *testing.T) {
+	fh := &fakeDispatchHost{}
+	raw := []byte("base_url: http://example.com\nemail: a@b.com\npassword: pw\nmax_attempts: -1\n")
+	if _, err := factory(testHost(t, fh), raw); err == nil {
+		t.Fatal("expected an error for negative max_attempts, got nil")
+	}
+}
+
 func TestFactoryParsesConfig(t *testing.T) {
 	fh := &fakeDispatchHost{}
-	raw := []byte("base_url: http://example.com\nemail: a@b.com\npassword: pw\npoll_interval: 5m\nfolder_filter: Inbox\n")
+	raw := []byte("base_url: http://example.com\nemail: a@b.com\npassword: pw\npoll_interval: 5m\nfolder_filter: Inbox\nmax_attempts: 7\n")
 	extVal, err := factory(testHost(t, fh), raw)
 	if err != nil {
 		t.Fatalf("factory: %v", err)
@@ -82,6 +118,9 @@ func TestFactoryParsesConfig(t *testing.T) {
 	}
 	if ext.poller.folderFilter != "Inbox" {
 		t.Errorf("folderFilter = %q, want Inbox", ext.poller.folderFilter)
+	}
+	if ext.poller.maxAttempts != 7 {
+		t.Errorf("maxAttempts = %d, want 7", ext.poller.maxAttempts)
 	}
 	if ext.poller.client.baseURL != "http://example.com" {
 		t.Errorf("baseURL = %q, want http://example.com", ext.poller.client.baseURL)
@@ -157,6 +196,41 @@ func TestStatusRouteReportsDocuments(t *testing.T) {
 	}
 	if got.Documents[0].Folder != "Inbox" {
 		t.Errorf("Folder = %q, want Inbox", got.Documents[0].Folder)
+	}
+	if got.Documents[0].GaveUp {
+		t.Error("GaveUp = true for a freshly-dispatched document, want false")
+	}
+}
+
+func TestStatusRouteReportsGaveUp(t *testing.T) {
+	fc := newFakeRMCloud("user@example.com", "pw")
+	defer fc.Close()
+	mod := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	fc.setDocs([]fixtureDoc{{ID: "doc-1", Name: "Notes", LastModified: mod, PDF: []byte("x")}})
+
+	fh := &fakeDispatchHost{fn: alwaysFailDispatch}
+	p := newTestPoller(t, fc, fh)
+	p.maxAttempts = 1
+	ctx := context.Background()
+	p.pollOnce(ctx) // attempt 1: fails, at cap
+	p.pollOnce(ctx) // cap reached: GaveUp set
+
+	ext := &extension{host: p.host, poller: p}
+	r := chi.NewRouter()
+	ext.RegisterRoutes(r, chi.NewRouter())
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/status", nil))
+
+	var got statusResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Documents) != 1 || !got.Documents[0].GaveUp {
+		t.Fatalf("Documents = %+v, want one entry with GaveUp=true", got.Documents)
+	}
+	if got.Documents[0].LastOutcome != outcomeFailed {
+		t.Errorf("LastOutcome = %q, want %q", got.Documents[0].LastOutcome, outcomeFailed)
 	}
 }
 

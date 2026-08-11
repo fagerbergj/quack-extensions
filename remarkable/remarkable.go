@@ -20,6 +20,11 @@ const extensionName = "remarkable"
 
 const defaultPollInterval = time.Minute
 
+// defaultMaxAttempts caps retries of a permanently-failing document so a
+// bad doc can't become a runaway per-poll-interval LLM-cost loop. 0 means
+// unlimited and must never be the default - it's opt-in only.
+const defaultMaxAttempts = 3
+
 func init() {
 	sdk.Register(extensionName, factory)
 }
@@ -46,6 +51,13 @@ type config struct {
 	// subfolders (e.g. "Inbox" matches "Inbox" and "Inbox/Scans"). Empty
 	// means all folders.
 	FolderFilter string `yaml:"folder_filter"`
+
+	// MaxAttempts caps retries of a document that keeps failing at the same
+	// LastModified value. A pointer so an absent key defaults to
+	// defaultMaxAttempts while an explicit "max_attempts: 0" means
+	// unlimited - the same absent-vs-explicit-zero pattern as
+	// sdk.BaseConfig.Enabled.
+	MaxAttempts *int `yaml:"max_attempts"`
 }
 
 func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
@@ -77,11 +89,20 @@ func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
 		interval = parsed
 	}
 
+	maxAttempts := defaultMaxAttempts
+	if cfg.MaxAttempts != nil {
+		if *cfg.MaxAttempts < 0 {
+			return nil, fmt.Errorf("remarkable: max_attempts must be >= 0, got %d", *cfg.MaxAttempts)
+		}
+		maxAttempts = *cfg.MaxAttempts
+	}
+
 	p := &poller{
 		host:         host,
 		client:       newRMClient(cfg.BaseURL, cfg.Email, cfg.Password, nil),
 		interval:     interval,
 		folderFilter: cfg.FolderFilter,
+		maxAttempts:  maxAttempts,
 		statePath:    statePath(host.DataDir),
 	}
 

@@ -24,6 +24,7 @@ type statusDoc struct {
 	InFlight     bool      `json:"in_flight"`
 	LastOutcome  string    `json:"last_outcome,omitempty"`
 	LastError    string    `json:"last_error,omitempty"`
+	GaveUp       bool      `json:"gave_up"`
 	Attempts     int       `json:"attempts"`
 }
 
@@ -45,6 +46,7 @@ func (e *extension) handleStatus(w http.ResponseWriter, r *http.Request) {
 			InFlight:     d.InFlight,
 			LastOutcome:  d.LastOutcome,
 			LastError:    d.LastError,
+			GaveUp:       d.GaveUp,
 			Attempts:     d.Attempts,
 		})
 	}
