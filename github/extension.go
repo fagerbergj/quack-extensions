@@ -206,7 +206,22 @@ func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
 		runTimeout:         time.Duration(cfg.RunTimeoutMinutes) * time.Minute,
 		autoArchiveOnMerge: cfg.AutoArchiveOnMerge,
 	}
+	if host.Classify != nil {
+		e.intentClassifier = hostClassifier{host: host}
+	}
 	return e, nil
+}
+
+// hostClassifier adapts Host.Classify to the IntentClassifier interface
+// intent.go already codes against - Host.Classify didn't exist when that
+// interface was written (quack's former SetIntentClassifier was a
+// post-construction setter carrying a Go model object sdk.Factory's
+// (Host, []byte) signature has no room for); this closes that gap now that
+// the SDK has a single free-text classify call.
+type hostClassifier struct{ host sdk.Host }
+
+func (h hostClassifier) Classify(ctx context.Context, prompt string) (string, error) {
+	return h.host.Classify(ctx, prompt)
 }
 
 // Extension is the GitHub App extension: tools + git auth + inbound webhook.
@@ -225,12 +240,10 @@ type Extension struct {
 	runTimeout         time.Duration
 	autoArchiveOnMerge bool
 
-	// intentClassifier backs the mention-intent classification in intent.go.
-	// Always nil: quack's former SetIntentClassifier was a post-construction
-	// setter carrying a Go model object (judgeModel) that sdk.Factory's
-	// (Host, []byte) signature has no room for - intent.go's own "nil
-	// degrades to conversational" path is the deliberate, smallest-footprint
-	// answer here (see the migration report), not a bug.
+	// intentClassifier backs the mention-intent classification in intent.go -
+	// wired to Host.Classify in factory when non-nil; nil (degrades to
+	// conversational, intent.go's own documented fallback) when the
+	// deployment's Host has no classify capability configured.
 	intentClassifier IntentClassifier
 }
 

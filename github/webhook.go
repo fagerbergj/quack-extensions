@@ -909,6 +909,7 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 		Run: sdk.RunConfig{
 			Setup:    setup,
 			ReadOnly: p.planOnly,
+			Timeout:  e.runTimeout,
 		},
 		Delivery: sdk.DeliveryAuthority{AllowedKinds: sdkDeliveryKinds(allowedKinds)},
 	}

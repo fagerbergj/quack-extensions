@@ -52,7 +52,11 @@ func (e *Extension) RunEnded(chatID string, outcome sdk.RunOutcome) {
 
 	if !pr.nudged && !outcome.PlanRan && pr.isLabelTrigger {
 		pr.nudged = true
-		nudgeReq := sdk.DispatchRequest{Chat: sdk.ChatRef{LocalID: pr.sessionID, User: pr.login}, Ask: sdk.Ask{Message: runNudge}}
+		nudgeReq := sdk.DispatchRequest{
+			Chat: sdk.ChatRef{LocalID: pr.sessionID, User: pr.login},
+			Ask:  sdk.Ask{Message: runNudge},
+			Run:  sdk.RunConfig{Timeout: e.runTimeout},
+		}
 		e.host.Log.Warn("github: work request produced no plan; nudging it to run the work once",
 			"repo", pr.owner+"/"+pr.repo, "issue", pr.number)
 		if err := e.host.Dispatch(context.Background(), nudgeReq); err != nil {
