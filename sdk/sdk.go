@@ -131,6 +131,22 @@ type Host struct {
 	// contents; quack only guarantees the directory exists and is theirs
 	// alone.
 	DataDir string
+
+	// EnsureContextDir allocates (creating if needed) a sandboxed directory
+	// alongside a dispatched run's own clone, for evidence files too large
+	// or too raw for Ask.Message/ContextItems - the extension writes into it
+	// directly; quack only guarantees the path is sandboxed for chatID.
+	EnsureContextDir func(userID, chatID string) (string, error)
+
+	// ChatUser returns the ADK session identity a chat is running as -
+	// e.g. recovering the acting user when an extension re-engages a chat
+	// with no fresh triggering user available. ok is false for an unknown
+	// chatID.
+	ChatUser func(chatID string) (user string, ok bool)
+
+	// ArchiveChat archives a chat, e.g. on the extension's own "this is
+	// resolved" signal.
+	ArchiveChat func(chatID string) error
 }
 
 // DispatchFunc starts or continues a run. See ChatRef.LocalID for the
@@ -258,6 +274,12 @@ type Setup struct {
 	Repo       string
 	BaseRef    string
 	WorkBranch string
+
+	// ExistingHeadRef, when non-empty, names a branch that already exists on
+	// Repo and must be checked out as-is instead of creating WorkBranch fresh
+	// from BaseRef - e.g. resuming work on a pull request's own head branch.
+	// It overrides WorkBranch for the checkout, not just supplements it.
+	ExistingHeadRef string
 }
 
 // DeliveryKind is the closed vocabulary of things a run can stage for

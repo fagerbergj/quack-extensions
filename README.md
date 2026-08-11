@@ -16,6 +16,8 @@ v0.2.1: additive `BaseConfig{Enabled, DataDir}` - the `enabled`/`data_dir` keys 
 
 v0.2.2: `ChatOrigin.Facets`/`FacetValue` renamed to `Labels`/`LabelValue` (labels is the domain word - GitHub labels, reMarkable tablet tags); `FacetValue.Label` renamed to `Display` (avoids a `labels[].label` stutter); `ChatOrigin.URL` and `LabelValue.URL` renamed to `Href` (names the role - a navigable reference - not the datatype).
 
+v0.3.0: additive `Host.EnsureContextDir`/`ChatUser`/`ArchiveChat` - the three small synchronous Host calls the GitHub migration's physical move needs (`.quack/design/sdk-v2-github.md`'s Host-capabilities section), alongside the existing `Dispatch`/`Log`/`DataDir`. `Setup.ExistingHeadRef` - checkout an already-existing branch as-is instead of creating `WorkBranch` fresh from `BaseRef` (a PR's own head branch, generalized past GitHub: any extension resuming work on a real branch needs this, not just GitHub).
+
 ## Module layout
 
 Multi-module monorepo, one Go module per directory, each independently tagged (the otel-contrib shape):
