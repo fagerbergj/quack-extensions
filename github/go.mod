@@ -54,7 +54,3 @@ require (
 	rsc.io/omap v1.2.0 // indirect
 	rsc.io/ordered v1.1.1 // indirect
 )
-
-// Development-only: sdk v0.3.0 isn't tagged yet. Removed before this branch
-// merges (see quack-extensions PR description / report) once the tag exists.
-replace github.com/fagerbergj/quack-extensions/sdk => ../sdk
