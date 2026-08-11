@@ -5,11 +5,11 @@ go 1.26.5
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/fagerbergj/quack-extensions/sdk v0.3.0
+	github.com/glebarez/go-sqlite v1.21.2
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	google.golang.org/adk/v2 v2.2.0
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.46.1
 )
 
 require (
@@ -50,6 +50,7 @@ require (
 	modernc.org/libc v1.67.6 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
+	modernc.org/sqlite v1.46.1 // indirect
 	rsc.io/omap v1.2.0 // indirect
 	rsc.io/ordered v1.1.1 // indirect
 )

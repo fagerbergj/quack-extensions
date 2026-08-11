@@ -8,7 +8,15 @@ import (
 	"path/filepath"
 	"time"
 
-	_ "modernc.org/sqlite"
+	// glebarez/go-sqlite, not modernc.org/sqlite directly: quack itself
+	// already imports glebarez/go-sqlite (transitively via glebarez/sqlite's
+	// GORM dialector, internal/store.go) to register the "sqlite"
+	// database/sql driver - importing modernc.org/sqlite here too would
+	// register the SAME driver name a second time and panic at init
+	// ("sql: Register called twice for driver sqlite"). glebarez/go-sqlite
+	// is itself a modernc.org/sqlite wrapper, so this is the same engine,
+	// not a different one.
+	_ "github.com/glebarez/go-sqlite"
 )
 
 // ghStore is this extension's private persistence for the four
