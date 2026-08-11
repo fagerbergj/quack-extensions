@@ -1,8 +1,10 @@
 package sdk_test
 
 import (
+	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/fagerbergj/quack-extensions/sdk"
 )
@@ -48,6 +50,40 @@ func TestHostContextDirChatUserArchiveChat(t *testing.T) {
 	}
 	if len(archived) != 1 || archived[0] != "c1" {
 		t.Errorf("archived = %v, want [c1]", archived)
+	}
+}
+
+// TestHostClassifyDegradesGracefullyWhenNil pins that a nil Classify (no
+// judge model configured) is a valid, expected state - callers must check
+// before calling, not assume it's always wired.
+func TestHostClassifyDegradesGracefullyWhenNil(t *testing.T) {
+	var h sdk.Host
+	if h.Classify != nil {
+		t.Fatalf("zero-value Host.Classify = non-nil, want nil")
+	}
+
+	h.Classify = func(ctx context.Context, prompt string) (string, error) {
+		if prompt == "" {
+			return "", errors.New("empty prompt")
+		}
+		return "WORK", nil
+	}
+	answer, err := h.Classify(context.Background(), "please review this PR")
+	if err != nil || answer != "WORK" {
+		t.Errorf("Classify = (%q, %v), want (WORK, nil)", answer, err)
+	}
+}
+
+// TestRunConfigTimeoutZeroMeansUnbounded pins the field's zero-value
+// meaning at the type level.
+func TestRunConfigTimeoutZeroMeansUnbounded(t *testing.T) {
+	var rc sdk.RunConfig
+	if rc.Timeout != 0 {
+		t.Errorf("zero-value RunConfig.Timeout = %v, want 0 (unbounded)", rc.Timeout)
+	}
+	rc.Timeout = 2 * time.Hour
+	if rc.Timeout != 2*time.Hour {
+		t.Errorf("RunConfig.Timeout = %v, want 2h", rc.Timeout)
 	}
 }
 
