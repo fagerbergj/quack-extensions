@@ -21,11 +21,12 @@ v0.2.2: `ChatOrigin.Facets`/`FacetValue` renamed to `Labels`/`LabelValue` (label
 Multi-module monorepo, one Go module per directory, each independently tagged (the otel-contrib shape):
 
 ```text
-sdk/       github.com/fagerbergj/quack-extensions/sdk     - the Extension API
-noop/      github.com/fagerbergj/quack-extensions/noop    - proves the loop end to end
+sdk/         github.com/fagerbergj/quack-extensions/sdk         - the Extension API
+noop/        github.com/fagerbergj/quack-extensions/noop        - proves the loop end to end
+remarkable/  github.com/fagerbergj/quack-extensions/remarkable  - rmfakecloud poller -> document-ingest
 ```
 
-Future extensions (`remarkable/`, and eventually a migrated `github/`) land as sibling modules the same way.
+Future extensions (eventually a migrated `github/`) land as sibling modules the same way.
 
 ## Tagging
 
