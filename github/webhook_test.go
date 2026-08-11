@@ -9,7 +9,9 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1134,3 +1137,1617 @@ func TestDispatchSkipsNudgeOnPause(t *testing.T) {
 		t.Errorf("Host.Dispatch calls = %d, want 1 (HITL pause must not trigger the nudge)", len(calls))
 	}
 }
+
+// ---- Batch 2: deliverable classification / isWorkRequest / dispatch internals / plan-collapse / title (ported from quack's internal/github/webhook_test.go) ----
+
+func TestBuildEnvelopeDeliverableClassification(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	ext.intentClassifier = &fakeIntentClassifier{verdict: "WORK"}
+
+	var pr issueCommentPayload
+	if err := json.Unmarshal(pullCommentBody("@quack review this, focusing on the auth path"), &pr); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	env := ext.buildEnvelope(context.Background(), pr, "review this, focusing on the auth path", seedGC(Snapshot{IsPR: true}, 0), nil, "", nil)
+	if !strings.Contains(env, "<deliverable>a review with inline comments and a verdict</deliverable>") {
+		t.Errorf("review-intent PR envelope missing the review deliverable:\n%s", env)
+	}
+	if !strings.Contains(env, `<pull_request number="7">`) {
+		t.Errorf("envelope missing the hoisted pull_request ask block:\n%s", env)
+	}
+
+	// A PR request that DOES ask to change code gets the implement deliverable.
+	implEnv := ext.buildEnvelope(context.Background(), pr, "fix the null dereference in the auth path and open a PR", seedGC(Snapshot{IsPR: true}, 0), nil, "", nil)
+	if !strings.Contains(implEnv, "<deliverable>a commit addressing the requested change</deliverable>") {
+		t.Errorf("implement-intent PR envelope missing the implement deliverable:\n%s", implEnv)
+	}
+
+	// A non-PR issue mention never mentions review, and hoists <issue> not <pull_request>.
+	var issue issueCommentPayload
+	if err := json.Unmarshal(issueCommentBody("@quack add a feature"), &issue); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	imsg := ext.buildEnvelope(context.Background(), issue, "add a feature", seedGC(Snapshot{}, 0), nil, "", nil)
+	if strings.Contains(imsg, "a review with inline comments") {
+		t.Errorf("issue envelope should not mention the review deliverable:\n%s", imsg)
+	}
+	if !strings.Contains(imsg, `<issue number="7">`) {
+		t.Errorf("issue envelope missing the hoisted issue ask block:\n%s", imsg)
+	}
+}
+
+// TestBuildEnvelopeDeliverableClassifierResolvesFindingsAddress pins #689's
+// exact production failure: "please address these findings" has no delivery
+// word and its impl verb isn't clause-initial, so ImplementationIntent
+// misreads it as review-only. With "pull_request" granted (the real ledger's
+// permission set), classifyGrantedPRDeliverable (#760) - not the regex -
+// picks the deliverable, and gets this one right.
+func TestBuildEnvelopeDeliverableClassifierResolvesFindingsAddress(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	ext.intentClassifier = &fakeIntentClassifier{grantedDeliverable: "COMMIT"}
+	// PRScoped grant{PostReview,PushCommitsToPR} (no JoinPRConversation) →
+	// computeGrant's PRScoped branch: postReview→"review", pushCommitsToPR→"pull_request".
+	allowedKinds := []string{"review", "pull_request"}
+
+	var pr issueCommentPayload
+	if err := json.Unmarshal(pullCommentBody("@quack please address these findings make sure they are valid first"), &pr); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	env := ext.buildEnvelope(context.Background(), pr, "please address these findings make sure they are valid first", seedGC(Snapshot{IsPR: true}, 0), allowedKinds, "", nil)
+	if !strings.Contains(env, "<deliverable>a commit addressing the requested change</deliverable>") {
+		t.Errorf("a findings-address request with pull_request granted should get the commit deliverable, not a second review:\n%s", env)
+	}
+
+	// Same grant, a genuine review ask still gets the review deliverable.
+	ext.intentClassifier = &fakeIntentClassifier{grantedDeliverable: "REVIEW"}
+	revEnv := ext.buildEnvelope(context.Background(), pr, "take another look at the auth changes", seedGC(Snapshot{IsPR: true}, 0), allowedKinds, "", nil)
+	if !strings.Contains(revEnv, "<deliverable>a review with inline comments and a verdict</deliverable>") {
+		t.Errorf("a genuine review ask should still get the review deliverable:\n%s", revEnv)
+	}
+}
+
+// TestBuildEnvelopeDeliverableBoundedBySoleGrant pins #689's case 3: when the
+// grant permits only "review" (no "pull_request"), that's the deliverable
+// regardless of what the message reads like - classifyGrantedPRDeliverable
+// is never even consulted (mentionIsWork's pull_request gate fails first),
+// so it cannot hand back an ungranted plan.
+func TestBuildEnvelopeDeliverableBoundedBySoleGrant(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	// The original's fakeIntentClassifier also set `deliverable: "COMMIT"` for
+	// classifyPRDeliverable's old REVIEW/COMMIT model prompt - that prompt is
+	// gone in this port (classifyPRDeliverable is now a pure grant check, see
+	// intent.go), so there is nothing left for that field to drive.
+	classifier := &fakeIntentClassifier{verdict: "WORK"}
+	ext.intentClassifier = classifier
+	allowedKinds := []string{"review"} // PRScoped grant{PostReview: true} only, no pull_request
+
+	var pr issueCommentPayload
+	if err := json.Unmarshal(pullCommentBody("@quack please address these findings"), &pr); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	env := ext.buildEnvelope(context.Background(), pr, "please address these findings", seedGC(Snapshot{IsPR: true}, 0), allowedKinds, "", nil)
+	if !strings.Contains(env, "<deliverable>a review with inline comments and a verdict</deliverable>") {
+		t.Errorf("with only review granted, the deliverable must fall back to review even though the message asks for a fix:\n%s", env)
+	}
+	// One call total: isWorkRequest's WORK/CONVERSATIONAL check. classifyPRDeliverable
+	// makes no model call at all in this port.
+	if calls := atomic.LoadInt32(&classifier.calls); calls != 1 {
+		t.Errorf("classifier called %d times, want 1 (deliverable choice is bounded to the sole grant, no model call needed)", calls)
+	}
+}
+
+// TestBuildEnvelopeGrantedPRChangeRequestClassifiesAsCommit pins #760 test
+// case 1: home-server#3, a quack-authored PR with "comment"+"pull_request"
+// granted, got a comment naming three numbered defects with the exact
+// replacement values and "Pick one and say which" - an unambiguous change
+// request. classifyGrantedPRDeliverable goes straight to what the comment
+// asks for, bounded by the grant.
+func TestBuildEnvelopeGrantedPRChangeRequestClassifiesAsCommit(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	ext.intentClassifier = &fakeIntentClassifier{grantedDeliverable: "COMMIT"}
+	// PRScoped grant{JoinPRConversation, PushCommitsToPR}: pushCommitsToPR→"pull_request", joinPRConversation→"comment".
+	allowedKinds := []string{"pull_request", "comment"}
+
+	task := "1. EMBEDDING_MODEL should be qwen3-embed, not text-embedding-3-small. " +
+		"2. GENERATOR_MODEL should be qwen3.5-9b. 3. The volume paths are wrong. " +
+		"Pick one and say which. Do not silently ship a config that indexes three repos while the plan says six."
+	var pr issueCommentPayload
+	if err := json.Unmarshal(pullCommentBody(task), &pr); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	env := ext.buildEnvelope(context.Background(), pr, task, seedGC(Snapshot{IsPR: true}, 0), allowedKinds, "", nil)
+	if !strings.Contains(env, "<deliverable>a commit addressing the requested change</deliverable>") {
+		t.Errorf("a numbered change request on a push-granted PR should classify as commit, not reply:\n%s", env)
+	}
+}
+
+// TestBuildEnvelopeGrantedPRQuestionStaysReply pins #760 test case 2, the
+// regression guard: a genuine question still gets a reply even though
+// "pull_request" is granted.
+func TestBuildEnvelopeGrantedPRQuestionStaysReply(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	ext.intentClassifier = &fakeIntentClassifier{grantedDeliverable: "REPLY"}
+	allowedKinds := []string{"pull_request", "comment"}
+
+	task := "why did you vendor this instead of pulling the image?"
+	var pr issueCommentPayload
+	if err := json.Unmarshal(pullCommentBody(task), &pr); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	env := ext.buildEnvelope(context.Background(), pr, task, seedGC(Snapshot{IsPR: true}, 0), allowedKinds, "", nil)
+	if !strings.Contains(env, "<deliverable>a reply to their message") {
+		t.Errorf("a genuine question on a push-granted PR must stay a reply, not regress to commit:\n%s", env)
+	}
+}
+
+// TestBuildEnvelopeGrantedPRDeliverableFailsSafeToReply pins the fail-safe
+// direction for #760's gate: a classifier failure here has no other signal
+// to fall back on, so it must fail toward reply - never guess commit.
+func TestBuildEnvelopeGrantedPRDeliverableFailsSafeToReply(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	ext.intentClassifier = &fakeIntentClassifier{grantedDeliverableErr: errors.New("model unavailable")}
+	allowedKinds := []string{"pull_request", "comment"}
+
+	task := "please address these findings"
+	var pr issueCommentPayload
+	if err := json.Unmarshal(pullCommentBody(task), &pr); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	env := ext.buildEnvelope(context.Background(), pr, task, seedGC(Snapshot{IsPR: true}, 0), allowedKinds, "", nil)
+	if !strings.Contains(env, "<deliverable>a reply to their message") {
+		t.Errorf("a classifier failure on a push-granted PR must fail safe to reply, not guess commit:\n%s", env)
+	}
+}
+
+// TestBuildEnvelopeGrantedPRDeliverableIgnoresUngrantedReview pins that a
+// live COMMIT/REVIEW answer never surfaces an ungranted deliverable: REVIEW
+// without "review" granted degrades to reply rather than escalating to commit.
+func TestBuildEnvelopeGrantedPRDeliverableIgnoresUngrantedReview(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	ext.intentClassifier = &fakeIntentClassifier{grantedDeliverable: "REVIEW"}
+	allowedKinds := []string{"pull_request", "comment"} // no "review"
+
+	task := "take another look at the auth changes"
+	var pr issueCommentPayload
+	if err := json.Unmarshal(pullCommentBody(task), &pr); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	env := ext.buildEnvelope(context.Background(), pr, task, seedGC(Snapshot{IsPR: true}, 0), allowedKinds, "", nil)
+	if !strings.Contains(env, "<deliverable>a reply to their message") {
+		t.Errorf("a review verdict without review granted must degrade to reply, not surface an ungranted review deliverable:\n%s", env)
+	}
+}
+
+// TestBuildEnvelopeIssueDeliverableClassification pins #713: an issue comment
+// asking for implementation gets the PR deliverable when "pull_request" is
+// granted (quack:implement present), but the same comment without that grant
+// stays bounded to a plain reply - the label decides what's LEGAL, the
+// message decides what's ASKED.
+func TestBuildEnvelopeIssueDeliverableClassification(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	ext.intentClassifier = &fakeIntentClassifier{issueDeliverable: "IMPLEMENT"}
+
+	var issue issueCommentPayload
+	if err := json.Unmarshal(issueCommentBody("@quack implement this and open the PR"), &issue); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	granted := []string{"pull_request"} // issue-scoped grant{OpenPR: true}
+	env := ext.buildEnvelope(context.Background(), issue, "implement this and open the PR", seedGC(Snapshot{}, 0), granted, "", nil)
+	if !strings.Contains(env, "a pull request implementing the approved plan") {
+		t.Errorf("implement request with pull_request granted should get the PR deliverable:\n%s", env)
+	}
+
+	// Same message, no quack:implement label: the grant bounds it back to a comment.
+	ungranted := ext.buildEnvelope(context.Background(), issue, "implement this and open the PR", seedGC(Snapshot{}, 0), nil, "", nil)
+	if strings.Contains(ungranted, "a pull request implementing") {
+		t.Errorf("implement request WITHOUT pull_request granted must not surface the PR deliverable:\n%s", ungranted)
+	}
+	if !strings.Contains(ungranted, "an answer to their message") {
+		t.Errorf("ungranted implement request should fall back to the comment deliverable:\n%s", ungranted)
+	}
+
+	// A plain question with the label still present stays a comment - the
+	// classifier, not the grant alone, decides what was actually asked.
+	ext.intentClassifier = &fakeIntentClassifier{issueDeliverable: "COMMENT"}
+	question := ext.buildEnvelope(context.Background(), issue, "what do you think the right approach is here?", seedGC(Snapshot{}, 0), granted, "", nil)
+	if !strings.Contains(question, "an answer to their message") {
+		t.Errorf("a plain question should stay a comment even with pull_request granted:\n%s", question)
+	}
+}
+
+// TestBuildEnvelopeIssueDeliverableClassifierFailureFallsBack pins #713's
+// robustness requirement: a classifier failure (error, timeout, or
+// unparseable answer) must fall back to ImplementationIntent's wording
+// heuristic, never straight to conversational.
+func TestBuildEnvelopeIssueDeliverableClassifierFailureFallsBack(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	ext.intentClassifier = &fakeIntentClassifier{issueDeliverableErr: errors.New("model unavailable")}
+	granted := []string{"pull_request"}
+
+	var issue issueCommentPayload
+	if err := json.Unmarshal(issueCommentBody("@quack implement this, commit it, and open a PR"), &issue); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// ImplementationIntent("implement this, commit it, and open a PR") is true
+	// (implement verb + delivery word) - the classifier failure must still
+	// land on the PR deliverable via the heuristic, not silently downgrade it.
+	env := ext.buildEnvelope(context.Background(), issue, "implement this, commit it, and open a PR", seedGC(Snapshot{}, 0), granted, "", nil)
+	if !strings.Contains(env, "a pull request implementing the approved plan") {
+		t.Errorf("classifier failure should fall back to ImplementationIntent's reading, not conversational:\n%s", env)
+	}
+
+	// A message with no delivery wording falls back to the heuristic's negative reading too.
+	plain := ext.buildEnvelope(context.Background(), issue, "what do you think?", seedGC(Snapshot{}, 0), granted, "", nil)
+	if !strings.Contains(plain, "an answer to their message") {
+		t.Errorf("classifier failure on a non-implement message should still fall back to the comment deliverable:\n%s", plain)
+	}
+}
+
+// TestBuildEnvelopeSeedsFullOnFirstLoad pins the seed half of #666's session
+// model: session creation seeds the whole comment thread as <comments
+// count="N">, triggering comment excluded (it's already inside the <event>
+// block's own comment.body).
+func TestBuildEnvelopeSeedsFullOnFirstLoad(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	var issue issueCommentPayload
+	issue.Issue.Number = 269
+	issue.Issue.Title = "Evaluate mem0"
+	issue.Comment.ID = 999 // the triggering comment
+
+	snap := Snapshot{
+		Body: "We should evaluate mem0 as a memory backend.",
+		Comments: []snapshotComment{
+			{ID: 100, User: "hegu-1", Body: "The gate should stay the authority.", CreatedAt: "t0"},
+			{ID: 200, User: "quack-jason[bot]", Body: "# Implementation Plan: mem0 as a vector store", CreatedAt: "t1"},
+			{ID: 999, User: "fagerbergj", Body: "rework it - mem0 is not a store", CreatedAt: "t2"},
+		},
+	}
+	env := ext.buildEnvelope(context.Background(), issue, "rework it - mem0 is not a store", seedGC(snap, issue.Comment.ID), nil, "", nil)
+	if !strings.Contains(env, "evaluate mem0 as a memory backend") {
+		t.Errorf("envelope missing the seeded issue body:\n%s", env)
+	}
+	if !strings.Contains(env, `<comments count="2">`) {
+		t.Errorf("envelope missing the full first-load comment seed (2, excluding the trigger):\n%s", env)
+	}
+	if strings.Contains(env, "hegu-1") == false || strings.Contains(env, "Implementation Plan: mem0 as a vector store") == false {
+		t.Errorf("envelope missing seeded comment content:\n%s", env)
+	}
+	// The triggering comment is quoted once, inside the event block - not
+	// duplicated into the seeded comments array too.
+	if n := strings.Count(env, "rework it - mem0 is not a store"); n != 0 {
+		t.Errorf("triggering comment should not appear in the seeded comments array (n=%d):\n%s", n, env)
+	}
+}
+
+// TestBuildEnvelopeResumeSeedsOnlyDelta pins the resume half of #666: a
+// later run seeds only what changed - new/edited/deleted comments - never
+// the whole thread again.
+func TestBuildEnvelopeResumeSeedsOnlyDelta(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	var issue issueCommentPayload
+	issue.Issue.Number = 7
+
+	old := Snapshot{Body: "desc", Comments: []snapshotComment{{ID: 1, User: "bob", Body: "first comment", CreatedAt: "t0"}}}
+	cur := Snapshot{Body: "desc", Comments: []snapshotComment{
+		{ID: 1, User: "bob", Body: "first comment", CreatedAt: "t0"},
+		{ID: 2, User: "carol", Body: "a brand new comment", CreatedAt: "t1"},
+	}}
+	delta := diffSnapshots(old, cur, 0)
+	env := ext.buildEnvelope(context.Background(), issue, "what's new?", githubContext{snap: cur, delta: &delta}, nil, "", nil)
+	if !strings.Contains(env, "a brand new comment") {
+		t.Errorf("resume envelope missing the new comment:\n%s", env)
+	}
+	if strings.Contains(env, "first comment") {
+		t.Errorf("resume envelope re-injected an UNCHANGED comment (should only carry the delta):\n%s", env)
+	}
+	if !strings.Contains(env, `<comments new="1" edited="0" deleted="0">`) {
+		t.Errorf("resume envelope missing the delta attributes:\n%s", env)
+	}
+
+	// An unchanged snapshot: the delta is empty, nothing extra is injected.
+	unchanged := diffSnapshots(cur, cur, 0)
+	if !unchanged.Empty() {
+		t.Fatalf("diffSnapshots(cur, cur) = %+v; want an empty delta", unchanged)
+	}
+	noopEnv := ext.buildEnvelope(context.Background(), issue, "anything new?", githubContext{snap: cur, delta: &unchanged}, nil, "", nil)
+	if strings.Contains(noopEnv, "a brand new comment") || strings.Contains(noopEnv, "first comment") {
+		t.Errorf("an unchanged-snapshot resume should inject no comment content:\n%s", noopEnv)
+	}
+}
+
+// TestBuildEnvelopeChangedFilesOnPRRuns pins the scope note: <changed_files>
+// is seeded on PR runs only, with GitHub's own filename/additions/deletions
+// shape (no reshaping needed - changedFile already matches pulls/{n}/files
+// field-for-field).
+func TestBuildEnvelopeChangedFilesOnPRRuns(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	ext.intentClassifier = &fakeIntentClassifier{verdict: "WORK"}
+	var pr issueCommentPayload
+	if err := json.Unmarshal(pullCommentBody("@quack review this"), &pr); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	snap := Snapshot{
+		IsPR:  true,
+		Files: []changedFile{{Filename: "a.go", Additions: 10, Deletions: 2}, {Filename: "b.go", Additions: 1}},
+	}
+	env := ext.buildEnvelope(context.Background(), pr, "review this", seedGC(snap, 0), nil, "", nil)
+	if !strings.Contains(env, `<changed_files count="2" additions="11" deletions="2">`) {
+		t.Errorf("envelope missing the changed_files summary attributes:\n%s", env)
+	}
+	if !strings.Contains(env, `"filename":"a.go"`) || !strings.Contains(env, `"additions":10`) {
+		t.Errorf("envelope missing per-file churn in GitHub's own field names:\n%s", env)
+	}
+
+	var issue issueCommentPayload
+	issue.Issue.Number = 7
+	issueEnv := ext.buildEnvelope(context.Background(), issue, "task", seedGC(Snapshot{}, 0), nil, "", nil)
+	if strings.Contains(issueEnv, "<changed_files") {
+		t.Errorf("an issue-scoped envelope should carry no changed_files block:\n%s", issueEnv)
+	}
+}
+
+// TestBuildEnvelopeIncrementalReviewScoping pins #459 §5 under the envelope:
+// a resume with new commits gets the "what's new" deliverable; a resume with
+// none says a full review is not owed either.
+func TestBuildEnvelopeIncrementalReviewScoping(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	ext.intentClassifier = &fakeIntentClassifier{verdict: "WORK"}
+	var pr issueCommentPayload
+	if err := json.Unmarshal(pullCommentBody("@quack review this"), &pr); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// First-time review: no prior baseline, the full-review deliverable.
+	first := ext.buildEnvelope(context.Background(), pr, "review this", seedGC(Snapshot{IsPR: true}, 0), nil, "", nil)
+	if !strings.Contains(first, "<deliverable>a review with inline comments and a verdict</deliverable>") {
+		t.Errorf("first-time review should get the full-review deliverable:\n%s", first)
+	}
+
+	// Resume with new commits: the incremental deliverable, naming the SHA.
+	withNew := ext.buildEnvelope(context.Background(), pr, "review this", githubContext{
+		snap:       Snapshot{IsPR: true},
+		newCommits: []snapshotCommit{{SHA: "abc1234567", Message: "fix the bug"}},
+	}, nil, "", nil)
+	if !strings.Contains(withNew, "a review of what is new since the last one") || !strings.Contains(withNew, "abc1234") {
+		t.Errorf("incremental review envelope missing the scoped deliverable naming the new commit:\n%s", withNew)
+	}
+
+	// Resume with zero new commits still reads as "scoped to what's new" (a
+	// review baseline exists), not the first-time framing.
+	noneNew := ext.buildEnvelope(context.Background(), pr, "review this", githubContext{snap: Snapshot{IsPR: true}, newCommits: []snapshotCommit{}}, nil, "", nil)
+	if !strings.Contains(noneNew, "already looked at every commit") {
+		t.Errorf("zero-new-commits resume should say there's nothing new, not the first-time framing:\n%s", noneNew)
+	}
+}
+
+// TestBuildEnvelopeConversationalFollowup pins that a PR mention classified
+// CONVERSATIONAL gets the reply deliverable, never review/implement
+// language - and a genuine work request still gets the work deliverable.
+func TestBuildEnvelopeConversationalFollowup(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	var pr issueCommentPayload
+	if err := json.Unmarshal(pullCommentBody("@quack which finding matters most? No need to re-review."), &pr); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	env := ext.buildEnvelope(context.Background(), pr, "which finding matters most? No need to re-review.", seedGC(Snapshot{IsPR: true}, 0), nil, "", nil)
+	if !strings.Contains(env, "<deliverable>a reply to their message, posted as a comment") {
+		t.Errorf("conversational envelope missing the reply deliverable:\n%s", env)
+	}
+
+	// A genuine review request, classified as a work request, gets the work deliverable.
+	ext.intentClassifier = &fakeIntentClassifier{verdict: "WORK"}
+	rev := ext.buildEnvelope(context.Background(), pr, "please review this PR", seedGC(Snapshot{IsPR: true, HeadRef: "x"}, 0), nil, "", nil)
+	if !strings.Contains(rev, "<deliverable>a review with inline comments and a verdict</deliverable>") {
+		t.Errorf("a classified work request must still get the review deliverable:\n%s", rev)
+	}
+}
+
+// TestBuildEnvelopeMentionClassifiedAsWork/Conversational pin that the
+// classifier's verdict (not task wording) decides the deliverable.
+func TestBuildEnvelopeMentionClassifiedAsWork(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	ext.intentClassifier = &fakeIntentClassifier{verdict: "WORK"}
+	var pr issueCommentPayload
+	if err := json.Unmarshal(pullCommentBody("@quack review this, focusing on the auth path"), &pr); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	env := ext.buildEnvelope(context.Background(), pr, "review this, focusing on the auth path", seedGC(Snapshot{IsPR: true}, 0), nil, "", nil)
+	if strings.Contains(env, "a reply to their message") {
+		t.Errorf("a mention classified WORK should not get the conversational deliverable:\n%s", env)
+	}
+}
+
+func TestBuildEnvelopeMentionClassifiedAsConversational(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	ext.intentClassifier = &fakeIntentClassifier{verdict: "CONVERSATIONAL"}
+	var pr issueCommentPayload
+	if err := json.Unmarshal(pullCommentBody("@quack what did you mean by that finding?"), &pr); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	env := ext.buildEnvelope(context.Background(), pr, "what did you mean by that finding?", seedGC(Snapshot{IsPR: true}, 0), nil, "", nil)
+	if !strings.Contains(env, "a reply to their message") {
+		t.Errorf("a mention classified CONVERSATIONAL should get the reply deliverable:\n%s", env)
+	}
+}
+
+// TestBuildEnvelopeLabelTriggerNeverClassifies pins rule 1: a label trigger
+// is work by construction, so buildEnvelope must never call the classifier
+// for it - not even to double-check.
+func TestBuildEnvelopeLabelTriggerNeverClassifies(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	classifier := &fakeIntentClassifier{verdict: "CONVERSATIONAL"} // even a "no" verdict must not flip a label trigger
+	ext.intentClassifier = classifier
+
+	var pr issueCommentPayload
+	if err := json.Unmarshal(pullCommentBody("@quack review this"), &pr); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	pr.isLabelTrigger = true
+	env := ext.buildEnvelope(context.Background(), pr, autoReviewTask, seedGC(Snapshot{IsPR: true}, 0), nil, "", nil)
+	if strings.Contains(env, "a reply to their message") {
+		t.Errorf("a label-triggered PR request should never get the conversational deliverable:\n%s", env)
+	}
+	if calls := atomic.LoadInt32(&classifier.calls); calls != 0 {
+		t.Errorf("classifier called %d times for a label trigger, want 0 (work by construction)", calls)
+	}
+}
+
+// TestBuildEnvelopePartialFixOmitsClosesKeyword pins the partial-fix
+// deliverable distinction: quack:partial-fix suppresses the Closes keyword
+// language, read off the FRESHLY FETCHED snapshot labels (gh.snap.Labels),
+// never a separately-threaded flag.
+func TestBuildEnvelopePartialFixOmitsClosesKeyword(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	ext.labels.PartialFix = "quack:partial-fix"
+	var issue issueCommentPayload
+	issue.Issue.Number = 42
+	issue.isLabelTrigger = true
+
+	full := ext.buildEnvelope(context.Background(), issue, "implement it", seedGC(Snapshot{Labels: []string{"quack:implement"}}, 0), nil, "", nil)
+	if !strings.Contains(full, "Closes #42") {
+		t.Errorf("a non-partial implement envelope should ask for a Closes keyword:\n%s", full)
+	}
+
+	partial := ext.buildEnvelope(context.Background(), issue, "implement it", seedGC(Snapshot{Labels: []string{"quack:implement", "quack:partial-fix"}}, 0), nil, "", nil)
+	if strings.Contains(partial, "Closes #42") {
+		t.Errorf("a partial-fix envelope must not ask for a Closes keyword:\n%s", partial)
+	}
+	if !strings.Contains(partial, "partial fix") {
+		t.Errorf("a partial-fix envelope should say so:\n%s", partial)
+	}
+}
+
+// TestBuildEnvelopePlanOnlyDeliverable pins the plan-only deliverable and
+// that the issue body appears exactly once (planTask never embeds it; only
+// the hoisted <issue><description> does - #619's duplicate-body defect).
+func TestBuildEnvelopePlanOnlyDeliverable(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	const body = "Widgets are refetched on every request."
+	up := issuesPayload{}
+	up.Issue.Number = 7
+	up.Issue.Title = "Add widget cache"
+	up.Issue.Body = body
+	task := planTask(up)
+
+	var synthetic issueCommentPayload
+	synthetic.Issue.Number = 7
+	synthetic.Comment.User.Login = "alice"
+	synthetic.Repository.Name = "widgets"
+	synthetic.Repository.Owner.Login = "acme"
+	synthetic.planOnly = true
+	synthetic.isLabelTrigger = true
+
+	env := ext.buildEnvelope(context.Background(), synthetic, task, seedGC(Snapshot{Body: body}, 0), nil, "", nil)
+
+	if n := strings.Count(env, body); n != 1 {
+		t.Errorf("issue body appears %d times in the plan-only envelope, want exactly 1:\n%s", n, env)
+	}
+	if !strings.Contains(env, "PLANNING-ONLY") || !strings.Contains(env, "ANSWER TEXT is the plan") {
+		t.Errorf("plan-only envelope missing the plan deliverable:\n%s", env)
+	}
+	for _, banned := range []string{"git_push", "github_pull_request", "create a branch"} {
+		if strings.Contains(env, banned) {
+			t.Errorf("plan-only envelope contains delivery instruction %q:\n%s", banned, env)
+		}
+	}
+}
+
+// TestIsWorkRequestTolerantOfWrappedVerdict: a small instruct model rarely
+// answers with a bare word. Exact matching made "**WORK**" unparseable, which
+// fails safe to conversational - so every genuine "@quack review this" would
+// have quietly lost the review framing. CONVERSATIONAL must win when both
+// appear, since "WORK" is a substring of neither but a hedged answer can name
+// both ("not WORK, CONVERSATIONAL").
+func TestIsWorkRequestTolerantOfWrappedVerdict(t *testing.T) {
+	for _, tt := range []struct {
+		answer string
+		want   bool
+	}{
+		{"WORK", true},
+		{"**WORK**", true},
+		{"WORK.", true},
+		{" work \n", true},
+		{"CONVERSATIONAL", false},
+		{"**CONVERSATIONAL**", false},
+		{"not WORK, CONVERSATIONAL", false},
+		{"I am unable to classify this", false},
+	} {
+		t.Run(tt.answer, func(t *testing.T) {
+			ext, _ := newTestExtension(t, "http://unused", nil)
+			ext.intentClassifier = &fakeIntentClassifier{verdict: tt.answer}
+			if got := ext.isWorkRequest(context.Background(), "@quack review this"); got != tt.want {
+				t.Errorf("isWorkRequest(%q) = %v, want %v", tt.answer, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsWorkRequestFailsSafe(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+
+	cases := []struct {
+		name       string
+		classifier IntentClassifier
+	}{
+		{"nil classifier", nil},
+		{"classifier error", &fakeIntentClassifier{errAlways: errors.New("model unavailable")}},
+		{"unparseable answer", &fakeIntentClassifier{verdict: "maybe?"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ext.intentClassifier = c.classifier
+			if ext.isWorkRequest(context.Background(), "review this PR") {
+				t.Errorf("isWorkRequest = true, want false (fail safe to conversational)")
+			}
+		})
+	}
+}
+
+// blockingIntentClassifier blocks until its ctx is done, then reports the
+// ctx's error - simulating a classifier call that hangs past its deadline.
+type blockingIntentClassifier struct{}
+
+func (blockingIntentClassifier) Classify(ctx context.Context, _ string) (string, error) {
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
+// TestIsWorkRequestTimeoutFailsSafe pins the timeout bound: a classifier call
+// that hangs past its deadline fails safe to conversational, not work.
+func TestIsWorkRequestTimeoutFailsSafe(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	ext.intentClassifier = blockingIntentClassifier{}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if ext.isWorkRequest(ctx, "review this PR") {
+		t.Error("isWorkRequest = true on timeout, want false (fail safe to conversational)")
+	}
+}
+
+// TestBuildEnvelopeQuotedCodeCorrectionNotWorkRequest is the regression test
+// for the bug this classifier replaced: a naive verb regex read a method call
+// quoted inside code (it.migrate(connection)) as the imperative "migrate",
+// which armed the no-plan nudge and forced a whole re-review that discarded
+// the reply the model had already written. A real model should call this
+// CONVERSATIONAL (a correction, not an instruction); this pins that the
+// deliverable follows the classifier's verdict end to end.
+func TestBuildEnvelopeQuotedCodeCorrectionNotWorkRequest(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	classifier := &fakeIntentClassifier{verdict: "CONVERSATIONAL"}
+	ext.intentClassifier = classifier
+
+	task := "That finding was wrong - it.migrate(connection) is called during setup, not teardown."
+	var pr issueCommentPayload
+	if err := json.Unmarshal(pullCommentBody(task), &pr); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	env := ext.buildEnvelope(context.Background(), pr, task, seedGC(Snapshot{IsPR: true}, 0), nil, "", nil)
+	if !strings.Contains(env, "a reply to their message") {
+		t.Errorf("a correction quoting code must be conversational, not a work request:\n%s", env)
+	}
+	if calls := atomic.LoadInt32(&classifier.calls); calls != 1 {
+		t.Errorf("classifier called %d times, want exactly 1 for a mention", calls)
+	}
+}
+
+// TestDispatchFirstLoadSeedsThenResumeInjectsDelta is the end-to-end version
+// of #459: dispatch #1 on a fresh session seeds the FULL context (no prior
+// snapshot); a comment is added on GitHub between runs; dispatch #2 (a
+// resume) injects ONLY that new comment, not the whole thread again. Uses the
+// Extension's real (sqlite-backed) store so snapshot persistence itself is
+// exercised, not just the in-memory diff function.
+func TestDispatchFirstLoadSeedsThenResumeInjectsDelta(t *testing.T) {
+	var commentsJSON atomic.Value
+	commentsJSON.Store(`[{"id":1,"body":"the original comment","user":{"login":"bob"},"updated_at":"t0"}]`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			fmt.Fprint(w, `{"id":5}`)
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		case strings.HasSuffix(r.URL.Path, "/reactions"):
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":1}`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{}`)
+		case strings.HasSuffix(r.URL.Path, "/comments"):
+			fmt.Fprint(w, commentsJSON.Load().(string))
+		case isIssueMetaPath(r.URL.Path):
+			fmt.Fprint(w, `{"title":"Evaluate widgets","body":"Should we use widgets?","state":"open"}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	ext, fh := newTestExtension(t, srv.URL, nil)
+
+	rec1 := httptest.NewRecorder()
+	ext.handleWebhook(rec1, signedRequest("issue_comment", issueCommentBody("@quack what do you think?")))
+	if rec1.Code != http.StatusAccepted {
+		t.Fatalf("first dispatch status = %d; want 202", rec1.Code)
+	}
+	firstReq := fh.waitForDispatch(t, 2*time.Second)
+	if !strings.Contains(firstReq.Ask.Message, "the original comment") {
+		t.Errorf("first (seed) dispatch missing the existing comment:\n%s", firstReq.Ask.Message)
+	}
+	if !strings.Contains(firstReq.Ask.Message, "Should we use widgets?") {
+		t.Errorf("first (seed) dispatch missing the issue body:\n%s", firstReq.Ask.Message)
+	}
+	chatID := globalChatID("github-acme-widgets-7")
+	ext.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "ok"})
+
+	// A new comment lands on GitHub between runs.
+	commentsJSON.Store(`[
+		{"id":1,"body":"the original comment","user":{"login":"bob"},"updated_at":"t0"},
+		{"id":2,"body":"a brand-new follow-up","user":{"login":"carol"},"updated_at":"t1"}
+	]`)
+
+	rec2 := httptest.NewRecorder()
+	ext.handleWebhook(rec2, signedRequest("issue_comment", issueCommentBody("@quack anything new?")))
+	if rec2.Code != http.StatusAccepted {
+		t.Fatalf("second dispatch status = %d; want 202", rec2.Code)
+	}
+	secondReq := fh.waitForDispatch(t, 2*time.Second)
+	if !strings.Contains(secondReq.Ask.Message, "a brand-new follow-up") {
+		t.Errorf("resume dispatch missing the new comment:\n%s", secondReq.Ask.Message)
+	}
+	if strings.Contains(secondReq.Ask.Message, "the original comment") {
+		t.Errorf("resume dispatch re-injected the UNCHANGED comment - should carry only the delta:\n%s", secondReq.Ask.Message)
+	}
+}
+
+// TestReviewBaselineDecoupledFromGeneralSnapshot is the coordinator-flagged
+// fix for #459/#460: the review scope (gh.newCommits) must be keyed off the
+// commits quack actually DELIVERED a review at, never off the general
+// snapshot (which advances on every dispatch, review or not). Scenario:
+// review delivered at [c1] -> c2 pushed -> a CONVERSATIONAL dispatch lands
+// (advances the general snapshot to [c1,c2] but must NOT advance the review
+// baseline) -> a review request must still see c2 as new -> once that review
+// IS delivered, the baseline advances and the NEXT review sees zero new.
+func TestReviewBaselineDecoupledFromGeneralSnapshot(t *testing.T) {
+	// Two synthetic commits with real, distinct git patch-ids (gitPatchID
+	// reads a diff from stdin - no clone needed, see snapshot.go).
+	diffs := map[string]string{
+		"c1": "diff --git a/f1.txt b/f1.txt\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/f1.txt\n@@ -0,0 +1 @@\n+c1\n",
+		"c2": "diff --git a/f2.txt b/f2.txt\nnew file mode 100644\nindex 0000000..2222222\n--- /dev/null\n+++ b/f2.txt\n@@ -0,0 +1 @@\n+c2\n",
+	}
+	var commitsJSON atomic.Value
+	commitsJSON.Store(`[{"sha":"c1","commit":{"message":"add f1"}}]`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/app": // botLogin, called computing this run's permission grant (#662)
+			fmt.Fprint(w, `{"slug":"quack"}`)
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			fmt.Fprint(w, `{"id":5}`)
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		case strings.HasSuffix(r.URL.Path, "/reactions"):
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":1}`)
+		case strings.Contains(r.URL.Path, "/pulls/") && strings.HasSuffix(r.URL.Path, "/commits"):
+			fmt.Fprint(w, commitsJSON.Load().(string))
+		case strings.Contains(r.URL.Path, "/commits/"): // single-commit diff (Accept: v3.diff)
+			parts := strings.Split(r.URL.Path, "/")
+			sha := parts[len(parts)-1]
+			fmt.Fprint(w, diffs[sha])
+		case strings.HasSuffix(r.URL.Path, "/files"):
+			fmt.Fprint(w, `[]`)
+		case strings.HasSuffix(r.URL.Path, "/reviews"):
+			fmt.Fprint(w, `[]`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{}`)
+		case strings.HasSuffix(r.URL.Path, "/comments"):
+			fmt.Fprint(w, `[]`)
+		case strings.Contains(r.URL.Path, "/pulls/"):
+			fmt.Fprint(w, `{"title":"Test PR","body":"","state":"open","head":{"ref":"feature","sha":"headsha"},"base":{"ref":"main"}}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	ext, fh := newTestExtension(t, srv.URL, nil)
+
+	run := func(task, verdict string, reviewDelivered bool) string {
+		t.Helper()
+		ext.intentClassifier = &fakeIntentClassifier{verdict: verdict}
+		rec := httptest.NewRecorder()
+		ext.handleWebhook(rec, signedRequest("issue_comment", pullCommentBody("@quack "+task)))
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("dispatch status = %d; want 202 (task=%q)", rec.Code, task)
+		}
+		req := fh.waitForDispatch(t, 2*time.Second)
+		chatID := globalChatID("github-acme-widgets-7")
+		if reviewDelivered {
+			recordDelivery(chatID, deliveryOutcome{reviewDelivered: true})
+		}
+		ext.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "handled"})
+		return req.Ask.Message
+	}
+
+	// 1. First review ever: full review (no baseline yet), and it DELIVERS -
+	// the baseline should advance to just c1's patch-id.
+	first := run("review this", "WORK", true)
+	if strings.Contains(first, "Focus your review on what's NEW") || strings.Contains(first, "already looked at every commit") {
+		t.Errorf("first-ever review should carry no incremental scoping language:\n%s", first)
+	}
+
+	// 2. c2 lands on the PR.
+	commitsJSON.Store(`[{"sha":"c1","commit":{"message":"add f1"}},{"sha":"c2","commit":{"message":"add f2"}}]`)
+
+	// 3. A CONVERSATIONAL dispatch (no review delivered) - this advances the
+	// GENERAL snapshot (comments/commits-as-seen) but must NOT touch the
+	// review baseline.
+	_ = run("what do you think so far? no need to re-review", "CONVERSATIONAL", false)
+
+	// 4. A review request now MUST still see c2 as new - if the review scope
+	// had been keyed off the general snapshot (the bug), c2 would already
+	// read as "seen" because step 3 advanced it.
+	second := run("review this", "WORK", true)
+	if !strings.Contains(second, "Focus your review on what's NEW") || !strings.Contains(second, "c2") {
+		t.Errorf("review after a conversational dispatch must still scope to c2:\n%s", second)
+	}
+	if strings.Contains(second, "already looked at every commit") {
+		t.Errorf("review under-scoped itself off the general snapshot instead of the review baseline:\n%s", second)
+	}
+
+	// 5. Step 4 DELIVERED a review covering c2 - the baseline now advances,
+	// so the NEXT review sees zero new work.
+	third := run("review this", "WORK", false)
+	if !strings.Contains(third, "already looked at every commit") {
+		t.Errorf("after the review in step 4 delivered, the next review should see zero new commits:\n%s", third)
+	}
+}
+
+// TestLatestQuackVerdictReadsOwnPRReviewMarker pins #513's webhook half: an
+// own-PR review submits as a real review (state COMMENTED, since GitHub
+// disallows approve/request_changes on your own PR) carrying the actual
+// verdict in the hidden marker - latestQuackVerdict must read that marker,
+// not the state, or an own-PR approve would be misread as "comment".
+func TestLatestQuackVerdictReadsOwnPRReviewMarker(t *testing.T) {
+	keyPEM, _ := testKeyPEM(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/app"):
+			io.WriteString(w, `{"slug":"quack"}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/reviews"):
+			io.WriteString(w, `[{"state":"COMMENTED","body":"looks good\n\n<!-- quack:delivery:review:approve -->","user":{"login":"quack[bot]"},"submitted_at":"2026-07-20T00:00:00Z"}]`)
+		case strings.HasSuffix(r.URL.Path, "/comments"):
+			io.WriteString(w, `[]`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	app, err := NewApp("1", keyPEM)
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	app.apiBase = srv.URL
+	app.installs["acme/widgets"] = 1
+	app.tokens[1] = cachedToken{token: "ghs_x", expires: time.Now().Add(time.Hour)}
+	ext := &Extension{app: app}
+
+	verdict, err := ext.latestQuackVerdict(context.Background(), "acme", "widgets", 7)
+	if err != nil {
+		t.Fatalf("latestQuackVerdict: %v", err)
+	}
+	if verdict != "approve" {
+		t.Errorf("verdict = %q; want %q (from the review body marker, not its COMMENTED state)", verdict, "approve")
+	}
+}
+
+// TestDispatchAttachesDeterministicGitHubSetup pins that a label-driven
+// implement run's Setup is deterministic (repo clone_url, base ref from the
+// repo's default branch, a quack/issue-<N> work branch) - carried directly on
+// sdk.DispatchRequest.Run.Setup in this port, not stamped onto a context the
+// way the old ctx-based Runner design required.
+func TestDispatchAttachesDeterministicGitHubSetup(t *testing.T) {
+	srv := stubGitHub(t, make(chan string, 4))
+	defer srv.Close()
+	ext, fh := newTestExtension(t, srv.URL, []string{"issue_implement"})
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("issues", issuesBody("labeled", "quack:implement", "alice", false)))
+	if rec.Code != http.StatusAccepted && rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+
+	req := fh.waitForDispatch(t, 2*time.Second)
+	setup := req.Run.Setup
+	if setup == nil {
+		t.Fatal("no deterministic Setup attached to the dispatch request")
+	}
+	if setup.Repo != "https://github.com/acme/widgets.git" {
+		t.Errorf("Repo = %q, want the repository's clone_url", setup.Repo)
+	}
+	if setup.BaseRef != "main" {
+		t.Errorf("BaseRef = %q, want the repository's default_branch", setup.BaseRef)
+	}
+	if setup.WorkBranch != "quack/issue-7" {
+		t.Errorf("WorkBranch = %q, want quack/issue-7 (issue #7, no PR yet)", setup.WorkBranch)
+	}
+}
+
+// TestDispatchResetsSessionForLabelWorkRequest pins T4 session hygiene: a
+// LABEL-driven work request (quack:implement) resets the session before
+// running (Chat.ResetHistory), so a new attempt is not poisoned by a prior
+// attempt's history - unlike a conversational @mention, which keeps full
+// history for continuity (TestDispatchDoesNotResetSessionForMention, below).
+func TestDispatchResetsSessionForLabelWorkRequest(t *testing.T) {
+	posted := make(chan string, 4)
+	srv := stubGitHub(t, posted)
+	defer srv.Close()
+	ext, fh := newTestExtension(t, srv.URL, []string{"issue_implement"})
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("issues", issuesBody("labeled", "quack:implement", "alice", false)))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d; want 202", rec.Code)
+	}
+	req := fh.waitForDispatch(t, 2*time.Second)
+	if !req.Chat.ResetHistory {
+		t.Error("ResetHistory = false for a label-driven work request; want true")
+	}
+
+	chatID := globalChatID("github-acme-widgets-7")
+	ext.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "done"})
+	select {
+	case body := <-posted:
+		if !strings.Contains(body, "done") {
+			t.Errorf("summary comment = %q; want the run's answer", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no summary comment posted")
+	}
+}
+
+func TestDispatchDoesNotResetSessionForMention(t *testing.T) {
+	posted := make(chan string, 1)
+	srv := stubGitHub(t, posted)
+	defer srv.Close()
+	ext, fh := newTestExtension(t, srv.URL, nil)
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("issue_comment", issueCommentBody("@quack implement a feature")))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d; want 202", rec.Code)
+	}
+	req := fh.waitForDispatch(t, 2*time.Second)
+	if req.Chat.ResetHistory {
+		t.Error("ResetHistory = true for a conversational @mention; want false (needs continuity)")
+	}
+
+	chatID := globalChatID("github-acme-widgets-7")
+	ext.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "done"})
+	select {
+	case <-posted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no comment posted back")
+	}
+}
+
+// TestFetchSnapshotRequiredMetaFailureSurfacesAsUnusable pins #467's first
+// guard: when the required meta call (issueMeta) fails persistently (retries
+// at the HTTP layer exhausted), loadGithubContext must flag the context as
+// UNAVAILABLE - not silently return an empty-but-"valid" firstLoad snapshot,
+// which is indistinguishable from a legitimately empty new issue.
+func TestFetchSnapshotRequiredMetaFailureSurfacesAsUnusable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			fmt.Fprint(w, `{"id":5}`)
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		case isIssueMetaPath(r.URL.Path):
+			// Persistently unavailable - outlives doJSON's own retry budget.
+			http.Error(w, `{"message":"No server is currently available to service your request."}`, http.StatusServiceUnavailable)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	ext, _ := newTestExtension(t, srv.URL, nil)
+	got := ext.loadGithubContext(context.Background(), "sess-1", "acme", "widgets", 7, false, 0, false)
+	if !got.contextUnavailable {
+		t.Error("contextUnavailable = false; want true when the required meta fetch fails")
+	}
+	if !got.firstLoad {
+		t.Error("firstLoad = false; want true (no snapshot to diff against)")
+	}
+}
+
+// TestDispatchAbortsLabelImplementWhenContextUnavailable pins #467's second
+// guard: a label-triggered implement whose GitHub context could not be
+// loaded (required fetch failed) must NOT dispatch "implement per the plan"
+// to Host.Dispatch - it must abort with an honest comment instead.
+func TestDispatchAbortsLabelImplementWhenContextUnavailable(t *testing.T) {
+	posted := make(chan string, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			fmt.Fprint(w, `{"id":5}`)
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		case strings.HasSuffix(r.URL.Path, "/reactions"):
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":1}`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+			body, _ := io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{}`)
+			posted <- string(body)
+		case isIssueMetaPath(r.URL.Path):
+			// The transient 503 from #467's diagnosis, persisting past the retry budget.
+			http.Error(w, `{"message":"No server is currently available to service your request."}`, http.StatusServiceUnavailable)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	ext, fh := newTestExtension(t, srv.URL, []string{"issue_implement"})
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("issues", issuesBody("labeled", "quack:implement", "alice", false)))
+	if rec.Code != http.StatusAccepted && rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+
+	var abortComment string
+	select {
+	case abortComment = <-posted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no abort comment posted")
+	}
+	if !strings.Contains(abortComment, "not running blind") || !strings.Contains(abortComment, "Re-apply the label") {
+		t.Errorf("abort comment = %q; want the don't-run-blind message", abortComment)
+	}
+
+	// Host.Dispatch must never have been called - must not implement blind.
+	select {
+	case <-fh.notify:
+		t.Error("Host.Dispatch was called; want no dispatch when context is unavailable")
+	case <-time.After(200 * time.Millisecond):
+	}
+	if calls := fh.calls(); len(calls) != 0 {
+		t.Errorf("Host.Dispatch calls = %d; want 0 (must not implement blind)", len(calls))
+	}
+}
+
+// TestDispatchCollapsesPriorPlanComment pins plan half: when a NEW plan
+// is posted for an issue, any PRIOR quack plan comment (carrying the plan
+// delivery marker) is minimized via GraphQL before the new one lands, so the
+// thread shows the current plan, not a pile of dead attempts.
+func TestDispatchCollapsesPriorPlanComment(t *testing.T) {
+	posted := make(chan string, 1)
+	var minimizedID string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			fmt.Fprint(w, `{"id":5}`)
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		case strings.HasSuffix(r.URL.Path, "/app"):
+			fmt.Fprint(w, `{"slug":"quack"}`)
+		case strings.HasSuffix(r.URL.Path, "/reactions"):
+			w.WriteHeader(http.StatusCreated) // the label-triggered 👀 ack (#252); irrelevant here
+			fmt.Fprint(w, `{"id":1}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+			fmt.Fprint(w, `[{"id":11,"node_id":"PLAN1","body":"## Old Plan\n\n<!-- quack:delivery:plan -->","user":{"login":"quack[bot]"}}]`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+			body, _ := io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{}`)
+			posted <- string(body)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/graphql"):
+			data, _ := io.ReadAll(r.Body)
+			var b struct {
+				Variables struct {
+					ID string `json:"id"`
+				} `json:"variables"`
+			}
+			_ = json.Unmarshal(data, &b)
+			minimizedID = b.Variables.ID
+			fmt.Fprint(w, `{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true}}}}`)
+		case isIssueMetaPath(r.URL.Path):
+			fmt.Fprint(w, `{"title":"Some issue","body":"","state":"open"}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	ext, fh := newTestExtension(t, srv.URL, []string{"issue_plan"})
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("issues", issuesBody("labeled", "quack:plan", "alice", false)))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d; want 202", rec.Code)
+	}
+	fh.waitForDispatch(t, 2*time.Second)
+	chatID := globalChatID("github-acme-widgets-7")
+	ext.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "## New Plan\n1. do the thing"})
+
+	select {
+	case body := <-posted:
+		if !strings.Contains(body, "New Plan") || !strings.Contains(body, "quack:delivery:plan") {
+			t.Errorf("posted plan comment = %q; want the new plan carrying its delivery marker", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no plan comment posted")
+	}
+	if minimizedID != "PLAN1" {
+		t.Errorf("minimizeComment subjectId = %q; want the prior plan comment's node_id PLAN1", minimizedID)
+	}
+}
+
+// TestDispatchMarksCommentTriggeredPlan pins #731 test case 1: a plan
+// requested via a /quack comment (not the quack:plan label) still carries
+// the plan delivery marker on its tail comment.
+func TestDispatchMarksCommentTriggeredPlan(t *testing.T) {
+	posted := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			fmt.Fprint(w, `{"id":5}`)
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		case strings.HasSuffix(r.URL.Path, "/app"):
+			fmt.Fprint(w, `{"slug":"quack"}`)
+		case strings.HasSuffix(r.URL.Path, "/reactions"):
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":1}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+			fmt.Fprint(w, `[]`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+			body, _ := io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{}`)
+			posted <- string(body)
+		case isIssueMetaPath(r.URL.Path):
+			fmt.Fprint(w, `{"title":"Some issue","body":"","state":"open"}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	ext, fh := newTestExtension(t, srv.URL, nil)
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("issue_comment", issueCommentBody("@quack plan this issue")))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d; want 202", rec.Code)
+	}
+	fh.waitForDispatch(t, 2*time.Second)
+	chatID := globalChatID("github-acme-widgets-7")
+	ext.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "## The Plan\n1. do the thing"})
+
+	select {
+	case body := <-posted:
+		if !strings.Contains(body, "quack:delivery:plan") {
+			t.Errorf("comment-triggered plan comment = %q; want it to carry the plan delivery marker", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no plan comment posted")
+	}
+}
+
+// TestDispatchClassifiesIssueDeliverableOnce pins the single-call property a
+// review of #731 caught: deliverableText (via buildEnvelope AND
+// buildWorkerAsk) and deliverableIsPlan all need classifyIssueDeliverable's
+// answer for the same run. Without memoization each calls the classifier
+// independently, and a live model can disagree with itself between calls -
+// the envelope telling the worker to produce a plan while the tail decides
+// it wasn't one and skips the marker. quack:implement is on the issue so the
+// classifier is actually consulted (never bounded away for free).
+func TestDispatchClassifiesIssueDeliverableOnce(t *testing.T) {
+	posted := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			fmt.Fprint(w, `{"id":5}`)
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		case strings.HasSuffix(r.URL.Path, "/app"):
+			fmt.Fprint(w, `{"slug":"quack"}`)
+		case strings.HasSuffix(r.URL.Path, "/reactions"):
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":1}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+			fmt.Fprint(w, `[]`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+			body, _ := io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{}`)
+			posted <- string(body)
+		case isIssueMetaPath(r.URL.Path):
+			fmt.Fprint(w, `{"title":"Some issue","body":"","state":"open","labels":[{"name":"quack:implement"}]}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	classifier := &fakeIntentClassifier{issueDeliverable: "COMMENT"}
+	ext, fh := newTestExtension(t, srv.URL, nil)
+	ext.intentClassifier = classifier
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("issue_comment", issueCommentBody("@quack plan this issue")))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d; want 202", rec.Code)
+	}
+	fh.waitForDispatch(t, 2*time.Second)
+	chatID := globalChatID("github-acme-widgets-7")
+	ext.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "## The Plan\n1. do the thing"})
+
+	select {
+	case body := <-posted:
+		if !strings.Contains(body, "quack:delivery:plan") {
+			t.Errorf("plan comment = %q; want it to carry the plan delivery marker", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no plan comment posted")
+	}
+	if calls := atomic.LoadInt32(&classifier.calls); calls != 1 {
+		t.Errorf("issue deliverable classifier called %d times; want exactly 1 - buildEnvelope, buildWorkerAsk, and the plan-marker decision must share one answer", calls)
+	}
+}
+
+// TestDispatchCollapsesPriorCommentTriggeredPlan pins #731 test case 2: two
+// successive comment-triggered plan runs - the first is minimized before the
+// second posts, exactly like the label-triggered case above.
+func TestDispatchCollapsesPriorCommentTriggeredPlan(t *testing.T) {
+	var commentsJSON atomic.Value
+	commentsJSON.Store(`[]`)
+	posted := make(chan string, 2)
+	var minimizedID atomic.Value
+	minimizedID.Store("")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			fmt.Fprint(w, `{"id":5}`)
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		case strings.HasSuffix(r.URL.Path, "/app"):
+			fmt.Fprint(w, `{"slug":"quack"}`)
+		case strings.HasSuffix(r.URL.Path, "/reactions"):
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":1}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+			fmt.Fprint(w, commentsJSON.Load().(string))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+			body, _ := io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{}`)
+			posted <- string(body)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/graphql"):
+			data, _ := io.ReadAll(r.Body)
+			var b struct {
+				Variables struct {
+					ID string `json:"id"`
+				} `json:"variables"`
+			}
+			_ = json.Unmarshal(data, &b)
+			minimizedID.Store(b.Variables.ID)
+			fmt.Fprint(w, `{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true}}}}`)
+		case isIssueMetaPath(r.URL.Path):
+			fmt.Fprint(w, `{"title":"Some issue","body":"","state":"open"}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	ext, fh := newTestExtension(t, srv.URL, nil)
+	chatID := globalChatID("github-acme-widgets-7")
+
+	rec1 := httptest.NewRecorder()
+	ext.handleWebhook(rec1, signedRequest("issue_comment", issueCommentBody("@quack plan this issue")))
+	if rec1.Code != http.StatusAccepted {
+		t.Fatalf("first dispatch status = %d; want 202", rec1.Code)
+	}
+	fh.waitForDispatch(t, 2*time.Second)
+	ext.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "## First Plan\n1. step one"})
+	select {
+	case body := <-posted:
+		if !strings.Contains(body, "quack:delivery:plan") {
+			t.Fatalf("first plan comment = %q; want the plan delivery marker", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no first plan comment posted")
+	}
+
+	// The first plan is now on GitHub, marker and all - the second run's collapse must find it.
+	commentsJSON.Store(`[{"id":11,"node_id":"PLAN1","body":"## First Plan\n1. step one\n\n<!-- quack:delivery:plan -->","user":{"login":"quack[bot]"}}]`)
+
+	rec2 := httptest.NewRecorder()
+	ext.handleWebhook(rec2, signedRequest("issue_comment", issueCommentBody("@quack plan this again")))
+	if rec2.Code != http.StatusAccepted {
+		t.Fatalf("second dispatch status = %d; want 202", rec2.Code)
+	}
+	fh.waitForDispatch(t, 2*time.Second)
+	ext.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "## Second Plan\n1. step two"})
+	select {
+	case body := <-posted:
+		if !strings.Contains(body, "Second Plan") || !strings.Contains(body, "quack:delivery:plan") {
+			t.Errorf("second plan comment = %q; want the new plan carrying its delivery marker", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no second plan comment posted")
+	}
+	if got := minimizedID.Load().(string); got != "PLAN1" {
+		t.Errorf("minimizeComment subjectId = %q; want the first plan comment's node_id PLAN1", got)
+	}
+}
+
+// TestDispatchCollapsesCommentTriggeredPlanOnLabelReplan pins #731 test case
+// 3 (mixed triggers): a comment-triggered plan, then a label-triggered
+// replan - the comment-triggered predecessor must still be minimized, which
+// only works because the FIRST run also carried the marker.
+func TestDispatchCollapsesCommentTriggeredPlanOnLabelReplan(t *testing.T) {
+	var commentsJSON atomic.Value
+	commentsJSON.Store(`[]`)
+	posted := make(chan string, 2)
+	var minimizedID atomic.Value
+	minimizedID.Store("")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			fmt.Fprint(w, `{"id":5}`)
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		case strings.HasSuffix(r.URL.Path, "/app"):
+			fmt.Fprint(w, `{"slug":"quack"}`)
+		case strings.HasSuffix(r.URL.Path, "/reactions"):
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":1}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+			fmt.Fprint(w, commentsJSON.Load().(string))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+			body, _ := io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{}`)
+			posted <- string(body)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/graphql"):
+			data, _ := io.ReadAll(r.Body)
+			var b struct {
+				Variables struct {
+					ID string `json:"id"`
+				} `json:"variables"`
+			}
+			_ = json.Unmarshal(data, &b)
+			minimizedID.Store(b.Variables.ID)
+			fmt.Fprint(w, `{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true}}}}`)
+		case isIssueMetaPath(r.URL.Path):
+			fmt.Fprint(w, `{"title":"Some issue","body":"","state":"open"}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	ext, fh := newTestExtension(t, srv.URL, []string{"mention", "issue_plan"})
+	chatID := globalChatID("github-acme-widgets-7")
+
+	// First: a plain /quack comment asks for a plan.
+	rec1 := httptest.NewRecorder()
+	ext.handleWebhook(rec1, signedRequest("issue_comment", issueCommentBody("@quack plan this issue")))
+	if rec1.Code != http.StatusAccepted {
+		t.Fatalf("comment-triggered dispatch status = %d; want 202", rec1.Code)
+	}
+	fh.waitForDispatch(t, 2*time.Second)
+	ext.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "## Comment-Triggered Plan\n1. step one"})
+	select {
+	case body := <-posted:
+		if !strings.Contains(body, "quack:delivery:plan") {
+			t.Fatalf("comment-triggered plan comment = %q; want the plan delivery marker", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no comment-triggered plan comment posted")
+	}
+
+	commentsJSON.Store(`[{"id":11,"node_id":"PLAN1","body":"## Comment-Triggered Plan\n1. step one\n\n<!-- quack:delivery:plan -->","user":{"login":"quack[bot]"}}]`)
+
+	// Second: a maintainer applies quack:plan to re-plan properly.
+	rec2 := httptest.NewRecorder()
+	ext.handleWebhook(rec2, signedRequest("issues", issuesBody("labeled", "quack:plan", "alice", false)))
+	if rec2.Code != http.StatusAccepted {
+		t.Fatalf("label-triggered dispatch status = %d; want 202", rec2.Code)
+	}
+	fh.waitForDispatch(t, 2*time.Second)
+	ext.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "## Labeled Plan\n1. step two"})
+	select {
+	case body := <-posted:
+		if !strings.Contains(body, "Labeled Plan") || !strings.Contains(body, "quack:delivery:plan") {
+			t.Errorf("label-triggered plan comment = %q; want the new plan carrying its delivery marker", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no label-triggered plan comment posted")
+	}
+	if got := minimizedID.Load().(string); got != "PLAN1" {
+		t.Errorf("minimizeComment subjectId = %q; want the comment-triggered plan's node_id PLAN1 - the label-triggered replan must collapse it", got)
+	}
+}
+
+// TestDispatchImplementRunUntouchedByPlanCollapse pins #731 test case 4: a
+// non-plan deliverable's tail comment carries no plan marker and triggers no
+// collapse.
+func TestDispatchImplementRunUntouchedByPlanCollapse(t *testing.T) {
+	posted := make(chan string, 1)
+	var graphqlCalled int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			fmt.Fprint(w, `{"id":5}`)
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		case strings.HasSuffix(r.URL.Path, "/reactions"):
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":1}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+			fmt.Fprint(w, `[]`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+			body, _ := io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{}`)
+			posted <- string(body)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/graphql"):
+			atomic.AddInt32(&graphqlCalled, 1)
+			fmt.Fprint(w, `{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true}}}}`)
+		case isIssueMetaPath(r.URL.Path):
+			fmt.Fprint(w, `{"title":"Add widget cache","body":"","state":"open"}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	ext, fh := newTestExtension(t, srv.URL, []string{"issue_implement"})
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("issues", issuesBody("labeled", "quack:implement", "alice", false)))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d; want 202", rec.Code)
+	}
+	fh.waitForDispatch(t, 2*time.Second)
+	chatID := globalChatID("github-acme-widgets-7")
+	ext.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "implemented the change"})
+
+	select {
+	case body := <-posted:
+		if strings.Contains(body, "quack:delivery:plan") {
+			t.Errorf("implement run's tail comment = %q; must not carry the plan marker", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no tail comment posted")
+	}
+	if got := atomic.LoadInt32(&graphqlCalled); got != 0 {
+		t.Errorf("graphql (minimizeComment) called %d times; want 0 - an implement run must never trigger plan collapse", got)
+	}
+}
+
+// TestDispatchPostsPlanWhenCollapseFails pins #731 test case 5: collapse
+// stays best-effort - a GraphQL minimizeComment failure must not block or
+// fail the new plan's delivery.
+func TestDispatchPostsPlanWhenCollapseFails(t *testing.T) {
+	posted := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			fmt.Fprint(w, `{"id":5}`)
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		case strings.HasSuffix(r.URL.Path, "/app"):
+			fmt.Fprint(w, `{"slug":"quack"}`)
+		case strings.HasSuffix(r.URL.Path, "/reactions"):
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":1}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+			fmt.Fprint(w, `[{"id":11,"node_id":"PLAN1","body":"## Old Plan\n\n<!-- quack:delivery:plan -->","user":{"login":"quack[bot]"}}]`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+			body, _ := io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{}`)
+			posted <- string(body)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/graphql"):
+			http.Error(w, `{"errors":[{"message":"internal error"}]}`, http.StatusInternalServerError)
+		case isIssueMetaPath(r.URL.Path):
+			fmt.Fprint(w, `{"title":"Some issue","body":"","state":"open"}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	ext, fh := newTestExtension(t, srv.URL, nil)
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("issue_comment", issueCommentBody("@quack plan this issue")))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d; want 202", rec.Code)
+	}
+	fh.waitForDispatch(t, 2*time.Second)
+	chatID := globalChatID("github-acme-widgets-7")
+	ext.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "## New Plan\n1. do the thing"})
+
+	select {
+	case body := <-posted:
+		if !strings.Contains(body, "New Plan") || !strings.Contains(body, "quack:delivery:plan") {
+			t.Errorf("plan comment = %q; want it posted with its marker despite the collapse failure", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no plan comment posted - a collapse failure must not block delivery")
+	}
+}
+
+// TestPlanTaskNoIssueBodyDuplicate pins #619 defect 2: planTask must not
+// embed the issue body - the envelope's #459 context block already carries
+// it verbatim, so planTask's own copy is a straight duplicate of the same
+// text in the same prompt.
+func TestPlanTaskNoIssueBodyDuplicate(t *testing.T) {
+	var p issuesPayload
+	p.Issue.Number = 7
+	p.Issue.Title = "Add widget cache"
+	p.Issue.Body = "Widgets are refetched on every request."
+	msg := planTask(p)
+	if !strings.Contains(msg, "Add widget cache") {
+		t.Errorf("planTask missing the issue title:\n%s", msg)
+	}
+	if strings.Contains(msg, p.Issue.Body) {
+		t.Errorf("planTask embeds the issue body itself - the envelope's context block already carries it:\n%s", msg)
+	}
+}
+
+// TestImplementTaskCore pins implementTask's own contribution - the issue
+// number/title and the delivery instructions. The discussion (the approved
+// plan) is no longer implementTask's job: it arrives via dispatch's unified
+// loadGithubContext, the same path every other trigger uses (#459).
+func TestImplementTaskCore(t *testing.T) {
+	var p issuesPayload
+	p.Issue.Number = 7
+	p.Issue.Title = "Add widget cache"
+	p.Issue.Body = "Widgets are refetched on every request."
+	msg := implementTask(p, nil, "quack:partial-fix")
+	for _, want := range []string{"Implement issue #7", "Add widget cache", "Closes #7", "stage_pr", "Never merge"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("implementTask missing %q:\n%s", want, msg)
+		}
+	}
+
+	// A CUSTOM configured partial-fix label is what's honoured - not a hardcoded
+	// default (the blocking finding on #505).
+	custom := implementTask(p, []string{"bug", "my-org:incomplete"}, "my-org:incomplete")
+	if strings.Contains(custom, "`Closes #7`") {
+		t.Errorf("custom partial-fix label ignored - Closes still present:\n%s", custom)
+	}
+	// The default string must NOT trigger partial-fix when a custom label is configured.
+	notCustom := implementTask(p, []string{"quack:partial-fix"}, "my-org:incomplete")
+	if !strings.Contains(notCustom, "`Closes #7`") {
+		t.Errorf("non-matching label wrongly suppressed Closes:\n%s", notCustom)
+	}
+
+	// Partial-fix: should NOT instruct a Closes keyword.
+	partialMsg := implementTask(p, []string{"bug", "quack:partial-fix"}, "quack:partial-fix")
+	for _, absent := range []string{"`Closes #7`"} {
+		if strings.Contains(partialMsg, absent) {
+			t.Errorf("partial-fix task must not instruct closing with the keyword %q:\n%s", absent, partialMsg)
+		}
+	}
+	for _, want := range []string{"part" + "ial fix", "Do NOT use a Closes keyword", "stage_pr"} {
+		if !strings.Contains(partialMsg, want) {
+			t.Errorf("partial-fix task missing %q:\n%s", want, partialMsg)
+		}
+	}
+}
+
+// mentionCommentBody is issueCommentBody with the issue's title present, as a
+// real issue_comment payload carries it - used to pin #380's title backfill.
+func mentionCommentBody(commentBody, issueTitle string) []byte {
+	return []byte(fmt.Sprintf(`{
+		"action":"created",
+		"comment":{"id":999,"body":%q,"user":{"login":"alice"}},
+		"issue":{"number":7,"title":%q},
+		"repository":{"name":"widgets","owner":{"login":"acme"},"clone_url":"https://github.com/acme/widgets.git","default_branch":"main"},
+		"installation":{"id":5}
+	}`, commentBody, issueTitle))
+}
+
+// TestDispatchGeneratesTitle pins #380: a GitHub-webhook-dispatched chat gets
+// a real, non-placeholder title derived from the triggering issue - carried
+// directly on sdk.DispatchRequest.Chat.Title in this port (applied by the
+// host only if the chat has no title yet, per ChatRef.Title's own contract),
+// rather than this extension calling UpdateTitle against its own chat store.
+func TestDispatchGeneratesTitle(t *testing.T) {
+	srv := stubGitHub(t, make(chan string, 1))
+	defer srv.Close()
+	ext, fh := newTestExtension(t, srv.URL, nil)
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("issue_comment", mentionCommentBody("@quack review this", "Widgets leak memory")))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d; want 202", rec.Code)
+	}
+
+	req := fh.waitForDispatch(t, 2*time.Second)
+	if req.Chat.Title == "" || req.Chat.Title == "New chat" {
+		t.Errorf("Title = %q; want a real title derived from the issue", req.Chat.Title)
+	}
+	if req.Chat.Title != "Widgets leak memory" {
+		t.Errorf("Title = %q; want the issue title", req.Chat.Title)
+	}
+}
+
+// TestDispatchTitleFromLabelDrivenIssue pins #380 for the label-driven path
+// (quack:plan/quack:implement), which synthesizes its issueCommentPayload from
+// an issuesPayload rather than a real webhook comment.
+func TestDispatchTitleFromLabelDrivenIssue(t *testing.T) {
+	srv := stubGitHub(t, make(chan string, 1))
+	defer srv.Close()
+	ext, fh := newTestExtension(t, srv.URL, []string{"issue_plan"})
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("issues", issuesBody("labeled", "quack:plan", "alice", false)))
+	if rec.Code != http.StatusAccepted && rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+
+	req := fh.waitForDispatch(t, 2*time.Second)
+	if req.Chat.Title != "Add widget cache" {
+		t.Errorf("Title = %q; want the issue title from issuesBody", req.Chat.Title)
+	}
+}
+
+// The original's TestDispatchDoesNotOverwriteExistingTitle pinned that a
+// SECOND dispatch on an already-titled session preserves the title a prior
+// dispatch set - enforced back then by this extension's own chat-store
+// UpdateTitle guard. In this port, "applied only if the chat has no title
+// yet" is now sdk.ChatRef.Title's own documented contract (sdk/sdk.go),
+// enforced by the host quack-core dispatches to - this extension always
+// sends the freshly computed title on every dispatch and has no seam left to
+// verify a not-overwritten title from; genuinely inapplicable here.
+
+// The original's TestKilledRunPreservesWatermarkDelta pinned that a run
+// killed mid-flight via ext.hub.CancelRun (this extension's own Runner-driven
+// run registry) must not have persisted the snapshot it fetched. That hub -
+// and this extension owning run lifecycle/cancellation at all - is gone in
+// this port: Host.Dispatch is fire-and-forget, and RunEnded only ever fires
+// once, with a terminal outcome, for a run the host decided was done.
+// persistGithubSnapshot only ever runs inside finalize (run.go), reached via
+// RunEnded - so a run that is killed before RunEnded fires trivially never
+// advances the watermark, by construction; there is no "started but the
+// extension must specifically avoid treating it as complete" scenario left
+// to construct at this seam. Not ported.
