@@ -56,6 +56,21 @@ type Stopper interface {
 	Stop(ctx context.Context) error
 }
 
+// UIDescriptor names an extension's entry point in the host's navigation.
+// Href is a same-origin relative reference into the extension's own routes
+// (e.g. "/remarkable/review").
+type UIDescriptor struct {
+	Title string
+	Href  string
+}
+
+// UI is an optional interface: an extension implementing it appears in the
+// host's navigation (quack's GET /api/v1/extensions). Without it the
+// extension is listed by name only.
+type UI interface {
+	UI() UIDescriptor
+}
+
 // RunStatus is the terminal outcome of a dispatched run, reported to
 // RunObserver.
 type RunStatus string
