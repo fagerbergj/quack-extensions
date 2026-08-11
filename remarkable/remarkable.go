@@ -98,6 +98,7 @@ var (
 	_ sdk.Starter     = (*extension)(nil)
 	_ sdk.Stopper     = (*extension)(nil)
 	_ sdk.RunObserver = (*extension)(nil)
+	_ sdk.UI          = (*extension)(nil)
 )
 
 func (e *extension) Tools() []tool.Tool { return nil }
@@ -111,4 +112,8 @@ func (e *extension) Stop(ctx context.Context) error  { return e.poller.Stop(ctx)
 
 func (e *extension) RunEnded(chatID string, outcome sdk.RunOutcome) {
 	e.poller.runEnded(chatID, outcome)
+}
+
+func (e *extension) UI() sdk.UIDescriptor {
+	return sdk.UIDescriptor{Title: "reMarkable", Href: "/remarkable/status"}
 }

@@ -107,6 +107,10 @@ func TestExtensionImplementsInterfaces(t *testing.T) {
 		t.Errorf("Tools() = %v, want nil (inbound-only extension)", ext.Tools())
 	}
 
+	if ui := ext.UI(); ui.Title == "" || ui.Href == "" {
+		t.Errorf("UI() = %+v, want populated Title and Href", ui)
+	}
+
 	// RunEnded must reach the poller's own bookkeeping, not be a no-op stub.
 	// st is normally populated by Start(); seed it directly here.
 	st, err := loadState(ext.poller.statePath)
