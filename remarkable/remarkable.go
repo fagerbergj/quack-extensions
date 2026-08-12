@@ -126,6 +126,7 @@ func (e *extension) Tools() []tool.Tool { return nil }
 
 func (e *extension) RegisterRoutes(authed chi.Router, public chi.Router) {
 	authed.Get("/status", e.handleStatus)
+	authed.Get("/status.json", e.handleStatusJSON)
 }
 
 func (e *extension) Start(ctx context.Context) error { return e.poller.Start(ctx) }

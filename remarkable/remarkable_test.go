@@ -179,7 +179,7 @@ func TestStatusRouteReportsDocuments(t *testing.T) {
 	ext.RegisterRoutes(r, chi.NewRouter())
 
 	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/status", nil))
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/status.json", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status code = %d, want 200, body=%s", rec.Code, rec.Body.String())
 	}
@@ -220,7 +220,7 @@ func TestStatusRouteReportsGaveUp(t *testing.T) {
 	ext.RegisterRoutes(r, chi.NewRouter())
 
 	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/status", nil))
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/status.json", nil))
 
 	var got statusResponse
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
@@ -234,6 +234,8 @@ func TestStatusRouteReportsGaveUp(t *testing.T) {
 	}
 }
 
+// TestStatusRouteBeforeAnyPollDoesNotPanic exercises /status itself (HTML,
+// zero documents) - status_test.go covers its rendered content in detail.
 func TestStatusRouteBeforeAnyPollDoesNotPanic(t *testing.T) {
 	fh := &fakeDispatchHost{}
 	extVal, err := factory(testHost(t, fh), []byte("base_url: http://example.com\nemail: a@b.com\npassword: pw\n"))
