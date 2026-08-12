@@ -37,7 +37,7 @@ func newFakePrometheus(t *testing.T, body string) *fakePrometheus {
 }
 
 func newTestProxyRouter(baseURL string) http.Handler {
-	p := newPrometheusProxy(baseURL)
+	p := newPrometheusProxy(baseURL, nil)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/query_range", p.handleQueryRange)
 	mux.HandleFunc("/api/query", p.handleQuery)
@@ -162,6 +162,9 @@ func TestProxyReportsUpstreamUnreachable(t *testing.T) {
 	if got["status"] != "error" {
 		t.Errorf("status field = %q, want %q", got["status"], "error")
 	}
+	if strings.Contains(got["error"], fp.URL) || strings.Contains(got["error"], "127.0.0.1") {
+		t.Errorf("error message leaked the upstream address to the client: %q", got["error"])
+	}
 }
 
 // TestProxyNeverExposesArbitraryUpstreamPaths pins the "narrow proxy"
@@ -170,7 +173,7 @@ func TestProxyReportsUpstreamUnreachable(t *testing.T) {
 // a path via a query param, never reaches Prometheus.
 func TestProxyNeverExposesArbitraryUpstreamPaths(t *testing.T) {
 	fp := newFakePrometheus(t, fixtureVectorJSON)
-	e := &extension{proxy: newPrometheusProxy(fp.URL)}
+	e := &extension{proxy: newPrometheusProxy(fp.URL, nil)}
 
 	authed := newChiRouterForTest(e)
 
