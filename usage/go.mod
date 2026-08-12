@@ -3,7 +3,7 @@ module github.com/fagerbergj/quack-extensions/usage
 go 1.26.5
 
 require (
-	github.com/fagerbergj/quack-extensions/sdk v0.4.0
+	github.com/fagerbergj/quack-extensions/sdk v0.4.2
 	github.com/go-chi/chi/v5 v5.3.1
 	google.golang.org/adk/v2 v2.1.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -42,3 +42,7 @@ require (
 	rsc.io/omap v1.2.0 // indirect
 	rsc.io/ordered v1.1.1 // indirect
 )
+
+// Development-only: sdk v0.4.2 isn't tagged yet. Removed before this branch
+// merges (see quack-extensions PR description / report) once the tag exists.
+replace github.com/fagerbergj/quack-extensions/sdk => ../sdk
