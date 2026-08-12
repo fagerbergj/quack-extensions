@@ -299,7 +299,7 @@ func hasLabel(labels []string, label string) bool {
 func fixTask(intro, checksText string) string {
 	var b strings.Builder
 	b.WriteString(intro)
-	b.WriteString(" Diagnose the failures below and fix them IN PLACE: make the smallest change that gets the checks green, run the repo's own checks locally to verify, and commit your work on the PR's existing head branch (already checked out for you). Do not start a new branch and do not open a new pull request - your commit updates THIS pull request.\n\nFailing checks:\n")
+	b.WriteString(" Diagnose the failures below and fix them IN PLACE: make the smallest change that gets the checks green, run the repo's own checks locally to verify, and commit your work on the PR's existing head branch (already checked out for you). Do not start a new branch and do not open a new pull request - your commit updates THIS pull request.\n\nCI builds the MERGE of this branch with its base, not the branch alone (see the <ci_ref> instruction you were given) - merge the base in first and diagnose against that merged state, or you will miss a merge-only failure and risk delivering a no-op.\n\nFailing checks:\n")
 	b.WriteString(checksText)
 	return b.String()
 }
