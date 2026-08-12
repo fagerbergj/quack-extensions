@@ -7,7 +7,6 @@
 package httpx
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -20,36 +19,15 @@ import (
 )
 
 // Bounded, conservative defaults: a dead upstream gives up in ~1s of total
-// backoff, not minutes. Override per client with WithMaxAttempts/WithBaseDelay.
+// backoff, not minutes. Override per client with WithBaseDelay/WithMaxDelay.
 const (
 	DefaultMaxAttempts = uint(4)
 	DefaultBaseDelay   = 200 * time.Millisecond
 	DefaultMaxDelay    = 5 * time.Second
 )
 
-// idempotencyKey marks a request's context as safe to retry under the
-// GET/HEAD policy despite an unsafe HTTP method - for a call whose repeat
-// has no unwanted side effect (e.g. regenerating an LLM completion).
-type idempotencyKey struct{}
-
-// WithIdempotent marks ctx so a request built from it is retried as freely
-// as GET/HEAD even if its method is POST/PATCH/PUT/DELETE. Use only when a
-// duplicate send is known to be harmless - never for a call that creates or
-// mutates state visible to someone else (a comment, a review, a merge).
-func WithIdempotent(ctx context.Context) context.Context {
-	return context.WithValue(ctx, idempotencyKey{}, true)
-}
-
-func isIdempotent(ctx context.Context) bool {
-	v, _ := ctx.Value(idempotencyKey{}).(bool)
-	return v
-}
-
 // Option configures a resilient Transport.
 type Option func(*transport)
-
-// WithMaxAttempts bounds the total number of attempts (including the first).
-func WithMaxAttempts(n uint) Option { return func(t *transport) { t.maxAttempts = n } }
 
 // WithBaseDelay sets the initial exponential-backoff interval.
 func WithBaseDelay(d time.Duration) Option { return func(t *transport) { t.baseDelay = d } }
@@ -67,8 +45,7 @@ type transport struct {
 // NewTransport wraps next (http.DefaultTransport if nil) with a method-aware
 // retry policy:
 //
-//   - GET/HEAD (or any request marked via WithIdempotent) retry on connection
-//     errors, timeouts, 429, and 5xx.
+//   - GET/HEAD retry on connection errors, timeouts, 429, and 5xx.
 //   - Every other method retries only on errors that prove the request never
 //     reached the server (connection refused, DNS failure) - never on a
 //     mid-flight timeout or a 5xx response, since either could mean the
@@ -92,7 +69,7 @@ func NewTransport(next http.RoundTripper, opts ...Option) http.RoundTripper {
 }
 
 func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
-	freely := req.Method == http.MethodGet || req.Method == http.MethodHead || isIdempotent(req.Context())
+	freely := req.Method == http.MethodGet || req.Method == http.MethodHead
 
 	// A body we can't reconstruct can't be safely resent - one attempt only.
 	if req.Body != nil && req.Body != http.NoBody && req.GetBody == nil {

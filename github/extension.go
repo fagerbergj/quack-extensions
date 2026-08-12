@@ -284,13 +284,3 @@ func (e *Extension) RegisterRoutes(authed chi.Router, public chi.Router) {
 func globalChatID(sessionID string) string {
 	return "ext:" + extensionName + ":" + sessionID
 }
-
-// sessionIDFromChatID reverses globalChatID; ok is false for a chat id this
-// extension didn't namespace (defensive - RunObserver should never see one).
-func sessionIDFromChatID(chatID string) (string, bool) {
-	prefix := "ext:" + extensionName + ":"
-	if !strings.HasPrefix(chatID, prefix) {
-		return "", false
-	}
-	return strings.TrimPrefix(chatID, prefix), true
-}
