@@ -4,59 +4,192 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Usage</title>
+<script>
+  // Mirrors frontend/src/App.tsx's theme init exactly (same localStorage key
+  // "theme", same dark/system-preference logic) so this page matches the
+  // host SPA's theme instead of always rendering light. Runs before any
+  // stylesheet so there's no flash. quack's kit.css does not yet read
+  // data-theme (v1 kit predates this convention) - this page's own fallback
+  // styles below honor it regardless, so it degrades gracefully.
+  (function () {
+    var stored = localStorage.getItem("theme");
+    var dark = stored === "dark" || (!stored && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+  })();
+</script>
 <style>
   /* Fallback styles only - kept deliberately minimal and low-specificity so
      /assets/ext/v1/kit.css (linked below, loaded after) wins the cascade
-     when it's present. If it 404s the page still reads fine on these alone. */
+     when it's present. If it 404s the page still reads fine on these alone.
+     Tokens + categorical palette are the quack dataviz reference palette
+     (docs: dataviz skill references/palette.md) - dark values are the same
+     eight hues re-stepped for the dark surface, not a separate palette. */
+  :root {
+    --surface-1: #fcfcfb;
+    --page-plane: #f9f9f7;
+    --text-primary: #1b1f24;
+    --text-secondary: #52514e;
+    --text-muted: #898781;
+    --gridline: #e1e0d9;
+    --baseline: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --accent: #1b1f24;
+    --accent-ink: #fff;
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --series-4: #eda100;
+    --series-5: #e87ba4;
+    --series-6: #008300;
+    --series-7: #4a3aa7;
+    --series-8: #e34948;
+    --series-other: #898781;
+  }
+  :root[data-theme="dark"] {
+    --surface-1: #1a1a19;
+    --page-plane: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --gridline: #2c2c2a;
+    --baseline: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --accent: #eee;
+    --accent-ink: #111;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+    --series-8: #e66767;
+    --series-other: #898781;
+  }
   body {
     margin: 0;
-    padding: 1.5rem;
+    padding: 0 1.5rem 1.5rem;
     font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    color: #1b1f24;
-    background: #f6f7f9;
+    color: var(--text-primary);
+    background: var(--page-plane);
   }
-  h1 { font-size: 1.4rem; margin: 0 0 1rem; }
-  h2 { font-size: 0.95rem; margin: 0 0 0.75rem; color: #444; }
-  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.25rem; flex-wrap: wrap; gap: 0.75rem; }
-  .range-select button {
+  h1 { font-size: 1.4rem; margin: 0 0 0.75rem; }
+  h2 { font-size: 0.95rem; margin: 0 0 0.75rem; color: var(--text-secondary); }
+  .sticky-bar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--page-plane);
+    padding-top: 1.5rem;
+    margin-bottom: 1rem;
+  }
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem; }
+  .timeframe { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.9rem; }
+  .range-select { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+  .range-select button, .custom-range button {
     font: inherit;
     padding: 0.35rem 0.75rem;
-    border: 1px solid #ccc;
-    background: #fff;
+    border: 1px solid var(--baseline);
+    background: var(--surface-1);
+    color: var(--text-primary);
     cursor: pointer;
     border-radius: 4px;
-    margin-left: 0.25rem;
   }
-  .range-select button[aria-pressed="true"] { background: #1b1f24; color: #fff; border-color: #1b1f24; }
+  .range-select button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .custom-range { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+  .custom-range label { font-size: 0.8rem; color: var(--text-secondary); display: flex; align-items: center; gap: 0.3rem; }
+  .custom-range input[type="datetime-local"] {
+    font: inherit;
+    padding: 0.3rem 0.4rem;
+    border: 1px solid var(--baseline);
+    border-radius: 4px;
+    background: var(--surface-1);
+    color: var(--text-primary);
+  }
+  .range-error { color: #e34948; font-size: 0.8rem; min-height: 1.1em; }
+  .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; }
+  .kpi-tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem 0.9rem; }
+  .kpi-value { font-size: 1.5rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .kpi-label { color: var(--text-secondary); font-size: 0.78rem; margin-top: 0.15rem; }
   .panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1rem; }
-  .panel { background: #fff; border: 1px solid #e3e5e8; border-radius: 6px; padding: 1rem; }
+  .panel { background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 1rem; }
   .panel-wide { grid-column: 1 / -1; }
-  .chart-empty { color: #777; font-style: italic; padding: 1rem 0; }
-  .chart-error { color: #a12a2a; padding: 1rem 0; }
-  .bar-row { display: flex; align-items: center; gap: 0.5rem; margin: 0.3rem 0; font-size: 0.85rem; }
-  .bar-label { width: 9rem; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .bar-track { flex: 1; background: #eef0f2; border-radius: 3px; height: 0.9rem; overflow: hidden; }
-  .bar-fill { background: #3b6ea5; height: 100%; }
-  .bar-value { flex: none; width: 5rem; text-align: right; font-variant-numeric: tabular-nums; }
-  .stat-tile { font-size: 1.8rem; font-weight: 600; margin-bottom: 0.5rem; }
-  .stat-sub { color: #666; font-size: 0.8rem; }
-  svg.chart-svg { width: 100%; height: 140px; overflow: visible; }
+  .panel-row { display: flex; gap: 1rem; flex-wrap: wrap; }
+  .panel-row > div { flex: 1 1 260px; min-width: 0; }
+  .chart-empty { color: var(--text-muted); font-style: italic; padding: 1rem 0; }
+  .chart-error { color: #e34948; padding: 1rem 0; }
+  .chart-sub { color: var(--text-secondary); font-size: 0.78rem; margin-top: 0.4rem; }
+  .stat-tile { font-size: 1.8rem; font-weight: 600; margin-bottom: 0.35rem; font-variant-numeric: tabular-nums; }
+  .stat-sub { color: var(--text-secondary); font-size: 0.8rem; }
+  svg.chart-svg { width: 100%; height: 150px; overflow: visible; display: block; }
+  .chart-legend { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.5rem; font-size: 0.78rem; }
+  .legend-item { display: flex; align-items: center; gap: 0.35rem; cursor: pointer; user-select: none; background: none; border: none; padding: 0; font: inherit; color: var(--text-secondary); }
+  .legend-item[aria-pressed="false"] { opacity: 0.4; text-decoration: line-through; }
+  .legend-swatch { width: 0.65rem; height: 0.65rem; border-radius: 2px; flex: none; }
+  .chart-tooltip {
+    position: absolute;
+    pointer-events: none;
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.35rem 0.5rem;
+    font-size: 0.75rem;
+    color: var(--text-primary);
+    box-shadow: 0 2px 8px var(--border);
+    white-space: nowrap;
+    z-index: 5;
+  }
+  .chart-wrap { position: relative; }
+  .axis-labels { display: flex; justify-content: space-between; color: var(--text-muted); font-size: 0.7rem; margin-top: 0.15rem; }
 </style>
 <link rel="stylesheet" href="/assets/ext/v1/kit.css">
 </head>
 <body>
 <div class="usage-app">
-  <header>
-    <h1>Usage</h1>
-    <div class="range-select" role="group" aria-label="Time range" id="range-select">
-      <button type="button" data-range="1h">1h</button>
-      <button type="button" data-range="24h">24h</button>
-      <button type="button" data-range="7d">7d</button>
-      <button type="button" data-range="30d">30d</button>
+  <div class="sticky-bar">
+    <header>
+      <h1>Usage</h1>
+    </header>
+    <div class="timeframe">
+      <div class="range-select" role="group" aria-label="Preset time range" id="range-select">
+        <button type="button" data-range="1h">1h</button>
+        <button type="button" data-range="24h">24h</button>
+        <button type="button" data-range="7d">7d</button>
+        <button type="button" data-range="30d">30d</button>
+      </div>
+      <div class="custom-range" id="custom-range">
+        <label>From <input type="datetime-local" id="range-from"></label>
+        <label>To <input type="datetime-local" id="range-to"></label>
+        <button type="button" id="range-apply">Apply</button>
+        <span class="range-error" id="range-error" role="alert"></span>
+      </div>
     </div>
-  </header>
+    <div class="kpi-row" id="kpi-row">
+      <div class="kpi-tile" data-kpi="calls">
+        <div class="kpi-value">–</div>
+        <div class="kpi-label">Model calls</div>
+      </div>
+      <div class="kpi-tile" data-kpi="latency-p95">
+        <div class="kpi-value">–</div>
+        <div class="kpi-label">p95 latency</div>
+      </div>
+      <div class="kpi-tile" data-kpi="tokens">
+        <div class="kpi-value">–</div>
+        <div class="kpi-label">Tokens</div>
+      </div>
+      <div class="kpi-tile" data-kpi="cost">
+        <div class="kpi-value">–</div>
+        <div class="kpi-label">Cost</div>
+      </div>
+    </div>
+  </div>
 
   <section class="panels">
+    <div class="panel panel-wide" id="panel-tokens-headline">
+      <h2>Tokens over time (by type)</h2>
+      <div class="chart" data-panel="tokens-headline"></div>
+    </div>
+
     <div class="panel" id="panel-tokens-model">
       <h2>Tokens by model</h2>
       <div class="chart" data-panel="tokens-model"></div>
@@ -73,19 +206,37 @@
       <h2>Tokens by user</h2>
       <div class="chart" data-panel="tokens-user"></div>
     </div>
+
     <div class="panel" id="panel-cache">
       <h2>Cache rate</h2>
       <div class="chart" data-panel="cache-rate"></div>
+      <div class="chart" data-panel="cache-savings"></div>
     </div>
+
     <div class="panel panel-wide" id="panel-cost">
       <h2>Cost</h2>
-      <div class="chart" data-panel="cost"></div>
+      <div class="panel-row">
+        <div>
+          <div class="chart-sub">Per step</div>
+          <div class="chart" data-panel="cost"></div>
+        </div>
+        <div>
+          <div class="chart-sub">Cumulative spend</div>
+          <div class="chart" data-panel="cost-cumulative"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel panel-wide" id="panel-latency">
+      <h2>Model call latency (p50 / p95 / p99)</h2>
+      <div class="chart" data-panel="latency"></div>
     </div>
   </section>
 </div>
 <script>
   window.__USAGE_CONFIG__ = {
     defaultRangeSeconds: {{.DefaultRangeSeconds}},
+    defaultStepSeconds: {{.DefaultStepSeconds}},
     tempoUrl: {{.TempoURL}}
   };
 </script>

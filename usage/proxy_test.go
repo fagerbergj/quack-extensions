@@ -2,6 +2,7 @@ package usage
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -66,6 +67,42 @@ func TestProxyQueryRangeForwardsAllowedParamsOnly(t *testing.T) {
 		t.Fatalf("body = %s, want verbatim upstream body", rec.Body.String())
 	}
 }
+
+// TestProxyQueryRangeForwardsCustomRangeParamShapes pins the timeframe
+// picker's custom-range request shape: real epoch seconds a browser derives
+// from two datetime-local inputs, and a step from stepForSpan rather than
+// one of the preset durations - still just query/start/end/step, verbatim,
+// nothing extra smuggled through (e.g. a stray "timeout" or "match[]").
+func TestProxyQueryRangeForwardsCustomRangeParamShapes(t *testing.T) {
+	fp := newFakePrometheus(t, fixtureMatrixJSON)
+	r := newTestProxyRouter(fp.URL)
+
+	start := int64(1732000000)
+	end := int64(1732000000 + 11*24*60*60 + 3*60*60 + 17*60) // an arbitrary ~11.1 day custom span
+	step := stepForSpan(end - start)
+	query := "sum by (model) (increase(gen_ai_client_token_usage_total[" + fmtInt(step) + "s]))"
+
+	target := fmt.Sprintf("/api/query_range?query=%s&start=%d&end=%d&step=%d&timeout=30s",
+		url.QueryEscape(query), start, end, step)
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	want := url.Values{
+		"query": {query},
+		"start": {fmtInt(start)},
+		"end":   {fmtInt(end)},
+		"step":  {fmtInt(step)},
+	}
+	if fp.lastQuery.Encode() != want.Encode() {
+		t.Fatalf("upstream query = %v, want %v (custom-range shape, timeout dropped)", fp.lastQuery, want)
+	}
+}
+
+func fmtInt(n int64) string { return fmt.Sprintf("%d", n) }
 
 func TestProxyQueryForwardsAllowedParamsOnly(t *testing.T) {
 	fp := newFakePrometheus(t, fixtureVectorJSON)
