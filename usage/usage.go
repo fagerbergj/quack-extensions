@@ -129,5 +129,5 @@ func (e *extension) RegisterRoutes(authed chi.Router, public chi.Router) {
 }
 
 func (e *extension) UI() sdk.UIDescriptor {
-	return sdk.UIDescriptor{Title: "Usage", Href: "/usage/"}
+	return sdk.UIDescriptor{Title: "Usage", Href: "/usage/", Icon: "📊"}
 }
