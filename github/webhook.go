@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -96,7 +97,7 @@ type issuesPayload struct {
 	} `json:"sender"`
 }
 
-// pullRequestPayload is the PR webhook subset for opened/labeled actions.
+// pullRequestPayload is the PR webhook subset for opened/labeled/closed/reopened actions.
 type pullRequestPayload struct {
 	Action      string `json:"action"`
 	Number      int    `json:"number"`
@@ -105,7 +106,8 @@ type pullRequestPayload struct {
 		Head  struct {
 			SHA string `json:"sha"`
 		} `json:"head"`
-		State string `json:"state"`
+		State  string `json:"state"`
+		Merged bool   `json:"merged"` // set on "closed" - distinguishes a merge from a plain close
 	} `json:"pull_request"`
 	Label struct {
 		Name string `json:"name"` // present on the "labeled" action
@@ -195,13 +197,28 @@ func (e *Extension) handleIssueComment(w http.ResponseWriter, body []byte) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// handlePullRequest fires an auto-review on "opened" or "labeled" with the configured auto_review_label.
+// handlePullRequest fires an auto-review on "opened" or "labeled" with the configured auto_review_label,
+// and refreshes the sidebar badge on close/merge/reopen.
 func (e *Extension) handlePullRequest(w http.ResponseWriter, body []byte) {
 	var p pullRequestPayload
 	if err := json.Unmarshal(body, &p); err != nil {
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
+
+	if p.Action == "closed" || p.Action == "reopened" {
+		badge := "open"
+		switch {
+		case p.Action == "closed" && p.PullRequest.Merged:
+			badge = "merged"
+		case p.Action == "closed":
+			badge = "closed"
+		}
+		e.refreshChatOrigin(p.Repository.Owner.Login, p.Repository.Name, true, p.Number, badge)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	// The merge label is a human authorization — checks quack's verdict and merges (or explains why not).
 	if p.Action == "labeled" && e.triggers["merge"] && p.Label.Name == e.labels.Merge &&
 		!strings.HasSuffix(p.Sender.Login, "[bot]") {
@@ -367,13 +384,26 @@ func (e *Extension) engageOwnPRReview(p pullRequestReviewPayload, rawBody []byte
 		p.Review.User.Login))
 }
 
-// handleIssues drives the label-driven issue workflow (plan/implement labels).
+// handleIssues drives the label-driven issue workflow (plan/implement labels)
+// and refreshes the sidebar badge on close/reopen.
 func (e *Extension) handleIssues(w http.ResponseWriter, body []byte) {
 	var p issuesPayload
 	if err := json.Unmarshal(body, &p); err != nil {
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
+
+	// A real issue's own state change - not the label-driven work triggers below.
+	if p.Issue.PullRequest == nil && (p.Action == "closed" || p.Action == "reopened") {
+		badge := "open"
+		if p.Action == "closed" {
+			badge = "closed"
+		}
+		e.refreshChatOrigin(p.Repository.Owner.Login, p.Repository.Name, false, p.Issue.Number, badge)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	// Only human-applied labels on real issues.
 	if p.Action != "labeled" || p.Issue.PullRequest != nil ||
 		strings.HasSuffix(p.Sender.Login, "[bot]") {
@@ -874,24 +904,14 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 		setup.ExistingHeadRef = gh.snap.HeadRef
 	}
 
-	kind := "issues"
-	if isPR {
-		kind = "pull"
-	}
 	state := gh.snap.State
 	if isPR && gh.snap.Merged {
 		state = "merged"
 	} else if isPR && gh.snap.Draft {
 		state = "draft"
 	}
-	origin := &sdk.ChatOrigin{
-		Extension: extensionName,
-		Label:     fmt.Sprintf("%s/%s#%d", owner, repo, number),
-		Kind:      kind,
-		Href:      fmt.Sprintf("https://github.com/%s/%s/%s/%d", owner, repo, kind, number),
-		Badge:     state,
-		Labels:    map[string][]sdk.LabelValue{"repo": {{Value: owner + "/" + repo, Href: fmt.Sprintf("https://github.com/%s/%s", owner, repo)}}},
-	}
+	o := chatOrigin(owner, repo, isPR, number, state)
+	origin := &o
 
 	req := sdk.DispatchRequest{
 		Chat: sdk.ChatRef{
@@ -940,6 +960,45 @@ func sdkDeliveryKinds(kinds []string) []sdk.DeliveryKind {
 		out[i] = sdk.DeliveryKind(k)
 	}
 	return out
+}
+
+// chatOrigin builds the sidebar provenance chip for an issue/PR chat -
+// shared by dispatch (initial stamp) and refreshChatOrigin (badge-only
+// updates on later state-change webhooks).
+func chatOrigin(owner, repo string, isPR bool, number int, badge string) sdk.ChatOrigin {
+	kind := "issues"
+	if isPR {
+		kind = "pull"
+	}
+	return sdk.ChatOrigin{
+		Extension: extensionName,
+		Label:     fmt.Sprintf("%s/%s#%d", owner, repo, number),
+		Kind:      kind,
+		Href:      fmt.Sprintf("https://github.com/%s/%s/%s/%d", owner, repo, kind, number),
+		Badge:     badge,
+		Labels:    map[string][]sdk.LabelValue{"repo": {{Value: owner + "/" + repo, Href: fmt.Sprintf("https://github.com/%s/%s", owner, repo)}}},
+	}
+}
+
+// refreshChatOrigin advances the sidebar badge after a state-change webhook -
+// Label/Kind/Href/Labels stay exactly what dispatch stamped, only Badge
+// moves. Most issues/PRs never had a chat dispatched (no mention, no label),
+// so ErrUnknownChat is the expected, common outcome here - swallowed at
+// Debug rather than Warn.
+func (e *Extension) refreshChatOrigin(owner, repo string, isPR bool, number int, badge string) {
+	if e.host.UpdateChatOrigin == nil {
+		return
+	}
+	sessionID := fmt.Sprintf("github-%s-%s-%d", owner, repo, number)
+	err := e.host.UpdateChatOrigin(sessionID, chatOrigin(owner, repo, isPR, number, badge))
+	switch {
+	case err == nil:
+	case errors.Is(err, sdk.ErrUnknownChat):
+		e.host.Log.Debug("github: origin refresh skipped; no chat dispatched for this issue/PR",
+			"repo", owner+"/"+repo, "number", number)
+	default:
+		e.host.Log.Warn("github: origin refresh failed", "repo", owner+"/"+repo, "number", number, "err", err)
+	}
 }
 
 // setupBaseRef returns the PR's base branch, or the repo's default branch for an issue run (#661).
