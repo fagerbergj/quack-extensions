@@ -79,6 +79,13 @@ type UI interface {
 	UI() UIDescriptor
 }
 
+// UIKitCSS is the same-origin path to quack's extension design-language
+// kit: link it from any HTML an extension serves to pick up the host's
+// tokens and primitives (.qk-page, .qk-card, .qk-badge, ...) with no shared
+// toolchain. The v1 contract is frozen-additive - a breaking restyle ships
+// at /v2/, and this path keeps serving unchanged.
+const UIKitCSS = "/assets/ext/v1/kit.css"
+
 // RunStatus is the terminal outcome of a dispatched run, reported to
 // RunObserver.
 type RunStatus string
