@@ -2,13 +2,9 @@ module github.com/fagerbergj/quack-extensions/github
 
 go 1.26.5
 
-// TODO(remove before merge): local replace for the unreleased sdk vNext
-// (Host.UpdateChatOrigin) - swap for the real tag after review.
-replace github.com/fagerbergj/quack-extensions/sdk => ../sdk
-
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3
-	github.com/fagerbergj/quack-extensions/sdk v0.3.0
+	github.com/fagerbergj/quack-extensions/sdk v0.4.0
 	github.com/glebarez/go-sqlite v1.21.2
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
