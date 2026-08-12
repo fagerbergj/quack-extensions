@@ -924,31 +924,6 @@ func (a *App) botLogin(ctx context.Context) (string, error) {
 	return out.Slug + "[bot]", nil
 }
 
-func (a *App) lastReviewedSHA(ctx context.Context, owner, repo string, number int) (string, error) {
-	reviews, err := a.listReviews(ctx, owner, repo, number)
-	if err != nil {
-		return "", err
-	}
-	login, err := a.botLogin(ctx)
-	if err != nil {
-		login = ""
-	}
-	var latestAny, latestOwn string
-	for _, r := range reviews {
-		if r.CommitID == "" {
-			continue
-		}
-		latestAny = r.CommitID
-		if login != "" && r.User.Login == login {
-			latestOwn = r.CommitID
-		}
-	}
-	if latestOwn != "" {
-		return latestOwn, nil
-	}
-	return latestAny, nil
-}
-
 func (a *App) replyToReviewComment(ctx context.Context, owner, repo string, number int, commentID int64, bodyText string) (int64, string, error) {
 	tok, err := a.tokenForRepo(ctx, owner, repo)
 	if err != nil {
