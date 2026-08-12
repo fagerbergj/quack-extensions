@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/fagerbergj/quack-extensions/sdk"
 )
 
 // stubFixGitHub is stubFixGitHubFull with a default PR author ("someone-else"
@@ -439,4 +441,83 @@ func TestWorkflowRunAttachesWorkerAskAndCIChecks(t *testing.T) {
 	if !strings.Contains(checks[0].Detail, "TestFoo failed") {
 		t.Errorf("ContextItems[0].Detail missing the check's own annotation:\n%s", checks[0].Detail)
 	}
+}
+
+// TestCIFixNamesTheMergeRef pins #843: CI builds the MERGE of the head branch
+// with the PR's base, not the head branch alone, so a fix worker whose clone
+// starts on the head branch must be told to merge the named base in and
+// diagnose against that merged state - both the orchestrator's Ask.Message
+// and the worker node's Ask.NodeContext must carry the instruction (#664
+// splits worker-scoped from orchestrator-scoped text; the merge instruction
+// is actionable for the worker, so it must survive that split), and the
+// PR's real base ref ("main", from stubFixGitHubFull's /pulls stub) must be
+// named, not left generic.
+func TestCIFixNamesTheMergeRef(t *testing.T) {
+	assertMergeRef := func(t *testing.T, req sdk.DispatchRequest) {
+		t.Helper()
+		for _, field := range []struct {
+			name string
+			text string
+		}{{"Ask.Message", req.Ask.Message}, {"Ask.NodeContext", req.Ask.NodeContext}} {
+			for _, want := range []string{
+				"GitHub Actions builds the MERGE", `base "main"`, "git merge origin/main",
+				"never report the checks as passing or deliver a no-op commit",
+			} {
+				if !strings.Contains(field.text, want) {
+					t.Errorf("%s missing %q:\n%s", field.name, want, field.text)
+				}
+			}
+		}
+	}
+
+	t.Run("workflow_run auto-heal", func(t *testing.T) {
+		srv := stubFixGitHubFull(t, make(chan string, 4), []string{"quack:fix"}, true, "", "someone-else")
+		defer srv.Close()
+		ext, fh := newTestExtension(t, srv.URL, []string{"ci_fix"})
+
+		rec := httptest.NewRecorder()
+		ext.handleWebhook(rec, signedRequest("workflow_run", workflowRunBody("completed", "failure", "sha1", 7)))
+		if rec.Code != http.StatusAccepted && rec.Code != http.StatusOK {
+			t.Fatalf("status = %d", rec.Code)
+		}
+		assertMergeRef(t, fh.waitForDispatch(t, 2*time.Second))
+	})
+
+	t.Run("quack:fix label applied", func(t *testing.T) {
+		fixLabelBody := []byte(`{
+			"action":"labeled",
+			"number":7,
+			"pull_request":{"title":"Test PR","head":{"sha":"headsha1"}},
+			"label":{"name":"quack:fix"},
+			"repository":{"name":"widgets","owner":{"login":"acme"},"clone_url":"https://github.com/acme/widgets.git","default_branch":"main"},
+			"installation":{"id":5},
+			"sender":{"login":"alice"}
+		}`)
+		srv := stubFixGitHub(t, make(chan string, 4), nil, true)
+		defer srv.Close()
+		ext, fh := newTestExtension(t, srv.URL, []string{"ci_fix"})
+
+		rec := httptest.NewRecorder()
+		ext.handleWebhook(rec, signedRequest("pull_request", fixLabelBody))
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("status = %d; want 202", rec.Code)
+		}
+		assertMergeRef(t, fh.waitForDispatch(t, 2*time.Second))
+	})
+
+	t.Run("non-ci_fix dispatch carries no merge-ref instruction", func(t *testing.T) {
+		srv := stubGitHub(t, make(chan string, 4))
+		defer srv.Close()
+		ext, fh := newTestExtension(t, srv.URL, []string{"mention"})
+
+		rec := httptest.NewRecorder()
+		ext.handleWebhook(rec, signedRequest("issue_comment", issueCommentBody("@quack add a feature")))
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("status = %d; want 202", rec.Code)
+		}
+		req := fh.waitForDispatch(t, 2*time.Second)
+		if strings.Contains(req.Ask.Message, "<ci_ref>") {
+			t.Errorf("a run with no checkSHA must not carry the CI merge-ref instruction:\n%s", req.Ask.Message)
+		}
+	})
 }

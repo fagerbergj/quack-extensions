@@ -282,6 +282,9 @@ func (e *Extension) buildEnvelope(ctx context.Context, p issueCommentPayload, ta
 	var b strings.Builder
 	fmt.Fprintf(&b, "<permissions>%s</permissions>\n", permissionsText(allowedKinds))
 	fmt.Fprintf(&b, "<deliverable>%s</deliverable>\n", deliverable)
+	if p.checkSHA != "" {
+		b.WriteString(ciMergeRefBlock(p.checkSHA, setupBaseRef(p, gh)))
+	}
 	b.WriteString(askBlock(p, gh, isPR))
 	b.WriteString(commentsBlock(gh, p.Comment.ID))
 	if isPR {
@@ -302,6 +305,9 @@ func (e *Extension) buildWorkerAsk(ctx context.Context, p issueCommentPayload, t
 	var b strings.Builder
 	fmt.Fprintf(&b, "<permissions>%s</permissions>\n", permissionsText(allowedKinds))
 	fmt.Fprintf(&b, "<deliverable>%s</deliverable>\n", deliverable)
+	if p.checkSHA != "" {
+		b.WriteString(ciMergeRefBlock(p.checkSHA, setupBaseRef(p, gh)))
+	}
 	b.WriteString(askBlock(p, gh, isPR))
 	b.WriteString(commentsBlock(gh, p.Comment.ID))
 	if ctxDir != "" {
@@ -309,6 +315,17 @@ func (e *Extension) buildWorkerAsk(ctx context.Context, p issueCommentPayload, t
 			filepath.ToSlash(ctxDir))
 	}
 	return b.String()
+}
+
+// ciMergeRefBlock states #843's gap: GitHub Actions builds the MERGE of a
+// PR's head with its base, not the head branch alone, so a failure that
+// exists only in that merge (a semantic conflict with base) is invisible to
+// a worker that only inspects the checked-out branch. checkSHA is the head
+// commit the failing checks are reported against - never the merge commit
+// itself. Gated on checkSHA, which only the ci_fix dispatch sets.
+func ciMergeRefBlock(checkSHA, baseRef string) string {
+	return fmt.Sprintf("<ci_ref>GitHub Actions builds the MERGE of this branch with base %q, not the checked-out head branch by itself - the failing checks are reported against head commit %s, but that merge is the actual CI build target. A failure can exist ONLY in the merge (e.g. two independently-fine changes that conflict once combined) and stay invisible if you diagnose the head branch alone. Before diagnosing: run `git merge origin/%s` in the checked-out clone, then diagnose and fix against that MERGED state, including any merge conflicts or merge-only compile errors. If the merge introduces no changes and you cannot reproduce the reported failure, say so explicitly in your answer - never report the checks as passing or deliver a no-op commit.</ci_ref>\n",
+		baseRef, shortSHA(checkSHA), baseRef)
 }
 
 // reviewDeliverableText scopes a review to commits not seen before (#459 §5).
