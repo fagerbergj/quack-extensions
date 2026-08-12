@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        module: [sdk, noop, remarkable]
+        module: [sdk, noop, remarkable, usage]
     defaults:
       run:
         working-directory: ${{ matrix.module }}
