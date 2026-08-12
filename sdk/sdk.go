@@ -21,12 +21,19 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"google.golang.org/adk/v2/tool"
 )
+
+// ErrUnknownChat is returned by Host.UpdateChatOrigin when localID never
+// reached Dispatch, or its chat is gone. Extensions should treat it as an
+// expected, common case (a state-change webhook for an issue/PR that never
+// had a chat) - log at Debug, not Warn/Error.
+var ErrUnknownChat = errors.New("sdk: unknown chat")
 
 // Extension is what a module provides to quack.
 type Extension interface {
@@ -148,6 +155,16 @@ type Host struct {
 	// ArchiveChat archives a chat, e.g. on the extension's own "this is
 	// resolved" signal.
 	ArchiveChat func(chatID string) error
+
+	// UpdateChatOrigin refreshes a chat's provenance after dispatch time -
+	// e.g. an issue closing or a PR merging - so a badge stamped once at
+	// Dispatch doesn't go stale forever. Same non-run, nil-tolerant class as
+	// EnsureContextDir/ArchiveChat: callers must degrade gracefully when this
+	// is nil. localID mirrors ChatRef.LocalID exactly - the extension passes
+	// its own local id, and the host namespaces it into the chat id
+	// ("ext:<extension>:<localID>"), same as Dispatch. Returns
+	// ErrUnknownChat when localID never reached Dispatch.
+	UpdateChatOrigin func(localID string, origin ChatOrigin) error
 
 	// Classify is a single free-text model round trip - a classification or
 	// short judgment call an extension needs INLINE, before it decides how

@@ -74,6 +74,37 @@ func TestHostClassifyDegradesGracefullyWhenNil(t *testing.T) {
 	}
 }
 
+// TestHostUpdateChatOriginDegradesGracefullyWhenNilAndSignalsUnknownChat pins
+// the shape of the badge-refresh addition: nil is a valid, expected state
+// (matching every other best-effort Host call), and ErrUnknownChat is the
+// documented sentinel for a localID that never reached Dispatch.
+func TestHostUpdateChatOriginDegradesGracefullyWhenNilAndSignalsUnknownChat(t *testing.T) {
+	var h sdk.Host
+	if h.UpdateChatOrigin != nil {
+		t.Fatalf("zero-value Host.UpdateChatOrigin = non-nil, want nil")
+	}
+
+	var updated []string
+	h.UpdateChatOrigin = func(localID string, origin sdk.ChatOrigin) error {
+		if localID == "missing" {
+			return sdk.ErrUnknownChat
+		}
+		updated = append(updated, localID+":"+origin.Badge)
+		return nil
+	}
+
+	if err := h.UpdateChatOrigin("issue-9", sdk.ChatOrigin{Extension: "github", Badge: "closed"}); err != nil {
+		t.Fatalf("UpdateChatOrigin: %v", err)
+	}
+	if len(updated) != 1 || updated[0] != "issue-9:closed" {
+		t.Errorf("updated = %v, want [issue-9:closed]", updated)
+	}
+
+	if err := h.UpdateChatOrigin("missing", sdk.ChatOrigin{}); !errors.Is(err, sdk.ErrUnknownChat) {
+		t.Errorf("UpdateChatOrigin(missing) = %v, want ErrUnknownChat", err)
+	}
+}
+
 // TestRunConfigTimeoutZeroMeansUnbounded pins the field's zero-value
 // meaning at the type level.
 func TestRunConfigTimeoutZeroMeansUnbounded(t *testing.T) {

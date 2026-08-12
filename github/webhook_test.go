@@ -52,6 +52,31 @@ type fakeDispatchHost struct {
 	// slow Host.Dispatch to prove handleWebhook's `go e.dispatch(...)` returns
 	// without waiting on it.
 	block chan struct{}
+
+	// originUpdates records every Host.UpdateChatOrigin call. originErr, keyed
+	// by localID, lets a test simulate sdk.ErrUnknownChat or any other failure.
+	originUpdates []originUpdate
+	originErr     map[string]error
+}
+
+type originUpdate struct {
+	localID string
+	origin  sdk.ChatOrigin
+}
+
+func (f *fakeDispatchHost) updateChatOrigin(localID string, origin sdk.ChatOrigin) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.originUpdates = append(f.originUpdates, originUpdate{localID, origin})
+	return f.originErr[localID]
+}
+
+func (f *fakeDispatchHost) originCalls() []originUpdate {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]originUpdate, len(f.originUpdates))
+	copy(out, f.originUpdates)
+	return out
 }
 
 func (f *fakeDispatchHost) dispatch(ctx context.Context, req sdk.DispatchRequest) error {
@@ -178,6 +203,18 @@ func pullRequestBody(action, labelName string) []byte {
 	}`, action, labelName))
 }
 
+// pullRequestStateBody is the raw pull_request webhook JSON for closed/reopened actions.
+func pullRequestStateBody(action string, merged bool) []byte {
+	return []byte(fmt.Sprintf(`{
+		"action":%q,
+		"number":7,
+		"pull_request":{"merged":%t},
+		"repository":{"name":"widgets","owner":{"login":"acme"},"clone_url":"https://github.com/acme/widgets.git","default_branch":"main"},
+		"installation":{"id":5},
+		"sender":{"login":"alice"}
+	}`, action, merged))
+}
+
 // issuesBody is the raw issues webhook JSON for the label-driven issue workflow.
 func issuesBody(action, labelName, sender string, isPR bool) []byte {
 	pr := ""
@@ -225,9 +262,10 @@ func newTestExtension(t *testing.T, apiBase string, triggers []string) (*Extensi
 
 	fh := &fakeDispatchHost{notify: make(chan sdk.DispatchRequest, 8)}
 	host := sdk.Host{
-		Dispatch: fh.dispatch,
-		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-		DataDir:  t.TempDir(),
+		Dispatch:         fh.dispatch,
+		UpdateChatOrigin: fh.updateChatOrigin,
+		Log:              slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DataDir:          t.TempDir(),
 	}
 
 	if len(triggers) == 0 {
@@ -498,6 +536,135 @@ func TestHandleWebhookPROpenedTrigger(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestHandleWebhookIssueStateChangeRefreshesOrigin pins the event→badge
+// mapping for a plain issue's own close/reopen - #844.
+func TestHandleWebhookIssueStateChangeRefreshesOrigin(t *testing.T) {
+	tests := []struct {
+		action    string
+		wantBadge string
+	}{
+		{"closed", "closed"},
+		{"reopened", "open"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.action, func(t *testing.T) {
+			srv := stubGitHub(t, make(chan string, 1))
+			defer srv.Close()
+			ext, fh := newTestExtension(t, srv.URL, nil)
+
+			rec := httptest.NewRecorder()
+			ext.handleWebhook(rec, signedRequest("issues", issuesBody(tt.action, "", "alice", false)))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+			}
+
+			calls := fh.originCalls()
+			if len(calls) != 1 {
+				t.Fatalf("UpdateChatOrigin calls = %d, want 1", len(calls))
+			}
+			if calls[0].localID != "github-acme-widgets-7" {
+				t.Errorf("localID = %q, want github-acme-widgets-7 (mirrors dispatch's sessionID)", calls[0].localID)
+			}
+			if calls[0].origin.Badge != tt.wantBadge {
+				t.Errorf("badge = %q, want %q", calls[0].origin.Badge, tt.wantBadge)
+			}
+			if calls[0].origin.Kind != "issues" {
+				t.Errorf("kind = %q, want issues", calls[0].origin.Kind)
+			}
+
+			// A pure state change never triggers work.
+			select {
+			case <-fh.notify:
+				t.Error("issue close/reopen should never dispatch a run")
+			case <-time.After(100 * time.Millisecond):
+			}
+		})
+	}
+}
+
+// TestHandleWebhookPullRequestStateChangeRefreshesOrigin pins the
+// merged-vs-plain-closed distinction (#844): a PR's "closed" action carries
+// merged=true/false in the same payload, badge must reflect it.
+func TestHandleWebhookPullRequestStateChangeRefreshesOrigin(t *testing.T) {
+	tests := []struct {
+		name      string
+		action    string
+		merged    bool
+		wantBadge string
+	}{
+		{"merged", "closed", true, "merged"},
+		{"closed without merging", "closed", false, "closed"},
+		{"reopened", "reopened", false, "open"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := stubGitHub(t, make(chan string, 1))
+			defer srv.Close()
+			ext, fh := newTestExtension(t, srv.URL, nil)
+
+			rec := httptest.NewRecorder()
+			ext.handleWebhook(rec, signedRequest("pull_request", pullRequestStateBody(tt.action, tt.merged)))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+			}
+
+			calls := fh.originCalls()
+			if len(calls) != 1 {
+				t.Fatalf("UpdateChatOrigin calls = %d, want 1", len(calls))
+			}
+			if calls[0].localID != "github-acme-widgets-7" {
+				t.Errorf("localID = %q, want github-acme-widgets-7", calls[0].localID)
+			}
+			if calls[0].origin.Badge != tt.wantBadge {
+				t.Errorf("badge = %q, want %q", calls[0].origin.Badge, tt.wantBadge)
+			}
+			if calls[0].origin.Kind != "pull" {
+				t.Errorf("kind = %q, want pull", calls[0].origin.Kind)
+			}
+
+			select {
+			case <-fh.notify:
+				t.Error("pull_request close/merge/reopen should never dispatch a run")
+			case <-time.After(100 * time.Millisecond):
+			}
+		})
+	}
+}
+
+// TestRefreshChatOriginUnknownChatSwallowedCleanly pins the no-op contract:
+// sdk.ErrUnknownChat (the common case - most issues/PRs never had a chat
+// dispatched) must not surface as a handler error or block the webhook ack.
+func TestRefreshChatOriginUnknownChatSwallowedCleanly(t *testing.T) {
+	srv := stubGitHub(t, make(chan string, 1))
+	defer srv.Close()
+	ext, fh := newTestExtension(t, srv.URL, nil)
+	fh.originErr = map[string]error{"github-acme-widgets-7": sdk.ErrUnknownChat}
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("issues", issuesBody("closed", "", "alice", false)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if len(fh.originCalls()) != 1 {
+		t.Fatalf("UpdateChatOrigin calls = %d, want 1 (still attempted)", len(fh.originCalls()))
+	}
+}
+
+// TestRefreshChatOriginNilHostIsNoop pins that a Host with no UpdateChatOrigin
+// wired (the nil-tolerant SDK contract) never panics the webhook handler.
+func TestRefreshChatOriginNilHostIsNoop(t *testing.T) {
+	srv := stubGitHub(t, make(chan string, 1))
+	defer srv.Close()
+	ext, _ := newTestExtension(t, srv.URL, nil)
+	ext.host.UpdateChatOrigin = nil
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("issues", issuesBody("closed", "", "alice", false)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
 }
 
