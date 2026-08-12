@@ -106,7 +106,9 @@ func (e *extension) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 func (e *extension) handleStatusJSON(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(e.statusSnapshot())
+	if err := json.NewEncoder(w).Encode(e.statusSnapshot()); err != nil {
+		e.host.Log.Error("remarkable: encode status JSON failed", "err", err)
+	}
 }
 
 // statusKitCSS: this module still pins an sdk release older than

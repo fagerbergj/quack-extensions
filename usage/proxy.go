@@ -3,6 +3,7 @@ package usage
 import (
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -28,12 +29,17 @@ var (
 type prometheusProxy struct {
 	baseURL string
 	client  *http.Client
+	log     *slog.Logger
 }
 
-func newPrometheusProxy(baseURL string) *prometheusProxy {
+func newPrometheusProxy(baseURL string, log *slog.Logger) *prometheusProxy {
+	if log == nil {
+		log = slog.Default()
+	}
 	return &prometheusProxy{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		client:  &http.Client{Timeout: promAPITimeout},
+		log:     log,
 	}
 }
 
@@ -75,7 +81,10 @@ func (p *prometheusProxy) forward(w http.ResponseWriter, r *http.Request, path s
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		writePromError(w, http.StatusBadGateway, "prometheus unreachable: "+err.Error())
+		// The raw error (dial errors, DNS) can name internal hosts/ports -
+		// log it, but never put it in the response to an authenticated user.
+		p.log.Error("usage: prometheus upstream unreachable", "err", err)
+		writePromError(w, http.StatusBadGateway, "prometheus unreachable")
 		return
 	}
 	defer resp.Body.Close()
@@ -94,7 +103,8 @@ func writePromError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{
-		"status": "error",
-		"error":  msg,
+		"status":    "error",
+		"errorType": "unknown",
+		"error":     msg,
 	})
 }

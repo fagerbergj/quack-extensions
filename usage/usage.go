@@ -84,7 +84,7 @@ func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
 		host:        host,
 		tempoURL:    tempoURL,
 		rangeWindow: rangeWindow,
-		proxy:       newPrometheusProxy(promURL.String()),
+		proxy:       newPrometheusProxy(promURL.String(), host.Log),
 	}, nil
 }
 

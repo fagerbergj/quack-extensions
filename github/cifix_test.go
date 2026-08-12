@@ -460,7 +460,7 @@ func TestCIFixNamesTheMergeRef(t *testing.T) {
 			text string
 		}{{"Ask.Message", req.Ask.Message}, {"Ask.NodeContext", req.Ask.NodeContext}} {
 			for _, want := range []string{
-				"GitHub Actions builds the MERGE", `base "main"`, "git merge origin/main",
+				"GitHub Actions builds the MERGE", `base "main"`, `git merge "origin/main"`,
 				"never report the checks as passing or deliver a no-op commit",
 			} {
 				if !strings.Contains(field.text, want) {
