@@ -389,6 +389,30 @@ func TestChecksBlockRendersStatusAndSummary(t *testing.T) {
 	}
 }
 
+// TestChecksBlockRendersWhyLinesForFailures pins that a failing check's
+// enriched detail (annotations or output title) reaches the envelope as
+// indented why-lines, so the agent sees what broke, not just that it did.
+func TestChecksBlockRendersWhyLinesForFailures(t *testing.T) {
+	checks := []checkRunView{
+		{Name: "go-test", Status: "completed", Conclusion: "failure",
+			Why: []string{"internal/dag/executor.go:42 TestFoo: got 2, want 1", "build failed"}},
+		{Name: "lint", Status: "completed", Conclusion: "success"},
+	}
+	got := checksBlock(checks)
+	for _, want := range []string{
+		"go-test: completed failure",
+		"  why: internal/dag/executor.go:42 TestFoo: got 2, want 1",
+		"  why: build failed",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("checksBlock missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "lint: completed success\n  why:") {
+		t.Error("a passing check must not carry why-lines")
+	}
+}
+
 // TestChecksBlockEmptyWhenNoChecks pins the degrade path: a PR with no check
 // runs yet (or a fetch that failed upstream) gets no <checks> block at all.
 func TestChecksBlockEmptyWhenNoChecks(t *testing.T) {

@@ -193,6 +193,9 @@ func checksBlock(checks []checkRunView) string {
 		} else {
 			fmt.Fprintf(&b, "%s: %s\n", c.Name, c.Status)
 		}
+		for _, w := range c.Why {
+			fmt.Fprintf(&b, "  why: %s\n", w)
+		}
 	}
 	b.WriteString("</checks>\n")
 	return b.String()
