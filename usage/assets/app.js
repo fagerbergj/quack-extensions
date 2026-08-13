@@ -278,6 +278,24 @@ function showError(el, msg) {
   el.appendChild(p);
 }
 
+// tooltipRow builds one "<swatch> text" tooltip line out of DOM nodes.
+// NEVER assemble one by interpolating into an HTML sink: `text` carries
+// Prometheus label values (model/agent/user names), which reach this page
+// straight out of the metrics store and would otherwise be parsed as
+// markup. `color` is ours (a --series-* token), not data. The test pins
+// that this file has no such sink at all.
+function tooltipRow(color, text) {
+  const row = document.createElement("div");
+  const mark = document.createElement("span");
+  mark.style.color = color;
+  mark.textContent = "■";
+  const label = document.createElement("span");
+  label.textContent = " " + text;
+  row.appendChild(mark);
+  row.appendChild(label);
+  return row;
+}
+
 function renderStat(el, label, value, title) {
   const tile = document.createElement("div");
   tile.className = "stat-tile";
@@ -510,14 +528,14 @@ function renderSeriesChart(el, spec) {
         guide.setAttribute("x2", x(nearest).toFixed(1));
         guide.style.display = "";
 
-        const lines = [`<strong>${formatClock(nearest)}</strong>`];
+        clear(tooltip);
+        const head = document.createElement("strong");
+        head.textContent = formatClock(nearest);
+        tooltip.appendChild(head);
         for (const s of visible) {
           const v = pointMaps.get(s.key).get(nearest);
-          lines.push(
-            `<span style="color:${s.color}">&#9632;</span> ${s.label}: ${v === undefined ? "–" : valueFormat(v)}`
-          );
+          tooltip.appendChild(tooltipRow(s.color, `${s.label}: ${v === undefined ? "–" : valueFormat(v)}`));
         }
-        tooltip.innerHTML = lines.join("<br>");
         tooltip.style.display = "";
         tooltip.style.left = Math.min(evt.clientX - rect.left + 10, rect.width - 160) + "px";
         tooltip.style.top = "0px";
@@ -649,9 +667,11 @@ function renderDonut(el, spec) {
     arc.addEventListener("mousemove", (evt) => {
       paint(s.key);
       const rect = wrap.getBoundingClientRect();
-      tooltip.innerHTML =
-        `<span style="color:${s.color}">&#9632;</span> ${s.label}<br>` +
-        `${formatNumber(s.value)} (${formatPercent((s.value / total) * 100)})`;
+      clear(tooltip);
+      tooltip.appendChild(tooltipRow(s.color, s.label));
+      const sub = document.createElement("div");
+      sub.textContent = `${formatNumber(s.value)} (${formatPercent((s.value / total) * 100)})`;
+      tooltip.appendChild(sub);
       tooltip.style.display = "";
       tooltip.style.left = Math.max(0, Math.min(evt.clientX - rect.left + 10, rect.width - 140)) + "px";
       tooltip.style.top = "0px";

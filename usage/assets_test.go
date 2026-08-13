@@ -306,7 +306,7 @@ func TestAppJSDonutSharesTheSeriesRanking(t *testing.T) {
 // would be a lie - and the 1-2 point dot-marker fallback (qx#15) stays.
 func TestAppJSSwitchesSparseSeriesToBars(t *testing.T) {
 	for _, want := range []string{
-		"const SPARSE_MAX_NONZERO = 8",
+		fmt.Sprintf("const SPARSE_MAX_NONZERO = %d", sparseMaxNonZero),
 		"function countNonZeroPoints(points)",
 		"function shouldRenderBars(series, additive)",
 		"if (!additive) return false;",
@@ -319,6 +319,22 @@ func TestAppJSSwitchesSparseSeriesToBars(t *testing.T) {
 	}
 	if !strings.Contains(appJS, "if (s.points.length <= 2) for (const p of s.points) svg.appendChild(dotMarker(") {
 		t.Error("app.js dropped the 1-2 point dot-marker fallback the line path still needs (qx#15)")
+	}
+}
+
+// TestAppJSBuildsTooltipsWithoutInnerHTML pins the injection fix (qx#18):
+// tooltips render Prometheus label values - a model/agent/user name comes
+// out of the metrics store, not out of this repo - so nothing on this page
+// may build markup by string interpolation. There is no HTML sink here at
+// all, which is the only version of this rule that a string pin can check.
+func TestAppJSBuildsTooltipsWithoutInnerHTML(t *testing.T) {
+	for _, sink := range []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"} {
+		if strings.Contains(appJS, sink) {
+			t.Errorf("app.js uses %s: label values are attacker-influenced data, build nodes with textContent instead", sink)
+		}
+	}
+	if !strings.Contains(appJS, "function tooltipRow(color, text)") {
+		t.Error("app.js missing the shared DOM-node tooltip row builder")
 	}
 }
 
