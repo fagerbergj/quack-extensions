@@ -245,3 +245,15 @@ func TestAppJSLatencyHasHonestPresenceProbe(t *testing.T) {
 		t.Error("app.js missing the named latency empty-state message")
 	}
 }
+
+// Pins the live-verified label translation (2026-08-12): the semconv attr
+// gen_ai.token.type lands in Prometheus as gen_ai_token_type. The dashboard
+// showed a false "no data" empty state while querying the unqualified name.
+func TestAppJSUsesTranslatedTokenTypeLabel(t *testing.T) {
+	if !strings.Contains(appJS, `tokenType: "gen_ai_token_type"`) {
+		t.Error("app.js token-type label must be the translated gen_ai_token_type")
+	}
+	if !strings.Contains(appJS, `tokenTypeFallback: "token_type"`) {
+		t.Error("app.js must keep the unqualified token_type fallback for other exporter configs")
+	}
+}

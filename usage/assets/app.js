@@ -21,7 +21,11 @@ const METRICS = {
     source: "source",
     agent: "agent",
     user: "user",
-    tokenType: "token_type",
+    // Same translation hazard as model: the semconv attr gen_ai.token.type
+    // lands as gen_ai_token_type (verified live 2026-08-12); keep the
+    // unqualified name as fallback for other exporter configs.
+    tokenType: "gen_ai_token_type",
+    tokenTypeFallback: "token_type",
   },
   tokenTypeCached: "cached",
   tokenTypeInput: "input",
@@ -34,12 +38,9 @@ const METRICS = {
 const TOKEN_TYPES = ["input", "output", "reasoning", "cached"];
 
 // LATENCY mirrors quack.model.call.duration (internal/otelobs/metrics.go):
-// a Float64Histogram, unit "s", attrs: model. This name is this page's best
-// guess at the collector's OTel->Prometheus translation (dotted name with
-// underscores, "_seconds" unit suffix, then the standard histogram
-// "_bucket"/"_sum"/"_count" family members) - untested against a live
-// collector. The presence probe below never fakes data if it's wrong: it
-// checks for the "_bucket" series before claiming a p50/p95/p99 chart.
+// a Float64Histogram, unit "s", attrs: model. Name verified against the live
+// collector 2026-08-12. The presence probe below still never fakes data:
+// it checks for the "_bucket" series before claiming a p50/p95/p99 chart.
 const LATENCY = {
   metric: "quack_model_call_duration_seconds",
 };
@@ -48,8 +49,8 @@ const RANGES = { "1h": 3600, "24h": 86400, "7d": 604800, "30d": 2592000 };
 const DEFAULT_RANGE_KEY = "24h";
 const STORAGE_KEY = "quack.usage.timeframe";
 
-const EMPTY_TOKENS_MSG = "no data — quack's token metrics require v0.30+.";
-const EMPTY_COST_MSG = "no data — quack's token metrics require v0.30+ and a configured price table for cost.";
+const EMPTY_TOKENS_MSG = "no token data in this range (token metrics need quack v0.30+ to be emitting).";
+const EMPTY_COST_MSG = "no cost data — cost needs a price table (providers.<p>.models.<model>) in quack's config, v0.30+.";
 const EMPTY_LATENCY_MSG = `no data — the ${LATENCY.metric}_bucket histogram isn't present (check the OTel collector's Prometheus naming translation, or quack hasn't made a model call yet).`;
 
 // --- Step heuristic. MIRRORS usage/step.go's stepForSpan exactly (same
@@ -161,6 +162,15 @@ function promResultOrStatus(resp) {
   return { ok: true, series };
 }
 
+function dotMarker(cx, cy, color) {
+  const dot = document.createElementNS(SVG_NS, "circle");
+  dot.setAttribute("cx", cx.toFixed(1));
+  dot.setAttribute("cy", cy.toFixed(1));
+  dot.setAttribute("r", "3");
+  dot.setAttribute("fill", color);
+  return dot;
+}
+
 function firstLabel(metric, ...names) {
   for (const name of names) {
     if (metric[name]) return metric[name];
@@ -201,7 +211,9 @@ function formatPercent(n) {
 function formatDuration(sec) {
   if (!Number.isFinite(sec)) return "–";
   if (sec < 1) return Math.round(sec * 1000) + "ms";
-  return sec.toFixed(2) + "s";
+  if (sec < 120) return sec.toFixed(2) + "s";
+  if (sec < 7200) return (sec / 60).toFixed(1) + "m";
+  return (sec / 3600).toFixed(1) + "h";
 }
 
 function formatClock(t) {
@@ -371,6 +383,8 @@ function renderSeriesChart(el, spec) {
         line.setAttribute("stroke", s.color);
         line.setAttribute("stroke-width", "2");
         svg.appendChild(line);
+        // A 1-2 tick series draws no visible band/segment - mark the points.
+        if (ticks.length <= 2) for (let i = 0; i < ticks.length; i++) svg.appendChild(dotMarker(x(ticks[i]), y(top[i]), s.color));
 
         cumBottom = top;
       }
@@ -383,6 +397,9 @@ function renderSeriesChart(el, spec) {
         line.setAttribute("stroke", s.color);
         line.setAttribute("stroke-width", "2");
         svg.appendChild(line);
+        // A 1-2 point series has no visible segment (bit the 30d view when
+        // the metric was a day old) - mark the points instead.
+        if (s.points.length <= 2) for (const p of s.points) svg.appendChild(dotMarker(x(p.t), y(p.v), s.color));
       }
     }
 
@@ -480,11 +497,11 @@ function renderSeriesChart(el, spec) {
 // ============================================================
 
 function tokenTypeTotalsQuery(rangeSeconds) {
-  return `sum by (${METRICS.labels.tokenType}) (increase(${METRICS.tokenUsage}[${rangeSeconds}s]))`;
+  return `sum by (${METRICS.labels.tokenType}, ${METRICS.labels.tokenTypeFallback}) (increase(${METRICS.tokenUsage}[${rangeSeconds}s]))`;
 }
 
 function tokenTypeSeriesQuery(stepSeconds) {
-  return `sum by (${METRICS.labels.tokenType}) (increase(${METRICS.tokenUsage}[${stepSeconds}s]))`;
+  return `sum by (${METRICS.labels.tokenType}, ${METRICS.labels.tokenTypeFallback}) (increase(${METRICS.tokenUsage}[${stepSeconds}s]))`;
 }
 
 function dimSeriesQuery(dimLabel, stepSeconds) {
@@ -587,7 +604,7 @@ async function loadHeadlineTokens(start, end, step) {
   }
   const byType = new Map();
   for (const s of status.series) {
-    const t = s.metric[METRICS.labels.tokenType];
+    const t = s.metric[METRICS.labels.tokenType] || s.metric[METRICS.labels.tokenTypeFallback];
     if (t) byType.set(t, matrixSeriesPoints(s));
   }
   const series = TOKEN_TYPES.filter((t) => byType.has(t)).map((t) => ({
@@ -614,7 +631,7 @@ async function loadCachePanel(start, end, step, instantTotals) {
   let cachedSeries = null;
   if (status.ok) {
     for (const s of status.series) {
-      const t = s.metric[METRICS.labels.tokenType];
+      const t = s.metric[METRICS.labels.tokenType] || s.metric[METRICS.labels.tokenTypeFallback];
       if (t === METRICS.tokenTypeInput) inputSeries = matrixSeriesPoints(s);
       if (t === METRICS.tokenTypeCached) cachedSeries = matrixSeriesPoints(s);
     }
@@ -777,7 +794,8 @@ async function loadKPIRow(rangeSeconds, now, latencyAvailable, tokenTotals, cost
   ]);
   const callsStatus = promResultOrStatus(callsResp);
   const p95Status = promResultOrStatus(p95Resp);
-  setKPI("calls", callsStatus.ok ? formatNumber(Number(callsStatus.series[0].value[1])) : "–");
+  // A call count is an integer; increase() extrapolates fractions.
+  setKPI("calls", callsStatus.ok ? formatNumber(Math.round(Number(callsStatus.series[0].value[1]))) : "–");
   setKPI("latency-p95", p95Status.ok ? formatDuration(Number(p95Status.series[0].value[1])) : "–");
 }
 
@@ -792,7 +810,7 @@ async function fetchInstantTotals(rangeSeconds, now) {
   const tokens = {};
   if (tokenStatus.ok) {
     for (const s of tokenStatus.series) {
-      const t = s.metric[METRICS.labels.tokenType];
+      const t = s.metric[METRICS.labels.tokenType] || s.metric[METRICS.labels.tokenTypeFallback];
       if (t) tokens[t] = Number(s.value[1]);
     }
   }
