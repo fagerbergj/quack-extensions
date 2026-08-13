@@ -224,6 +224,7 @@ func (e *Extension) loadGithubContext(ctx context.Context, chatID, owner, repo s
 			if checks, cerr := e.app.listCheckRuns(ctx, owner, repo, snap.HeadSHA); cerr != nil {
 				e.host.Log.Warn("github: check-runs fetch failed; envelope carries no CI status", "repo", owner+"/"+repo, "pr", number, "err", cerr)
 			} else {
+				e.app.enrichFailingChecks(ctx, owner, repo, checks)
 				gh.checks = checks
 			}
 		}

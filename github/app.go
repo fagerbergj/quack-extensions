@@ -517,6 +517,49 @@ type checkRunView struct {
 		Title   string `json:"title"`
 		Summary string `json:"summary"`
 	} `json:"output"`
+	// Why: bounded failure detail (annotations or output title) filled by
+	// enrichFailingChecks - only for failure/timed_out runs, never fetched otherwise.
+	Why []string `json:"-"`
+}
+
+// enrichFailingChecks fills Why on up to 3 failing runs (2 annotation lines
+// each, output title as fallback) so the envelope can say what broke, not
+// just that something did.
+func (a *App) enrichFailingChecks(ctx context.Context, owner, repo string, runs []checkRunView) {
+	enriched := 0
+	for i := range runs {
+		r := &runs[i]
+		if r.Conclusion != "failure" && r.Conclusion != "timed_out" {
+			continue
+		}
+		if enriched >= 3 {
+			return
+		}
+		enriched++
+		anns, err := a.listCheckAnnotations(ctx, owner, repo, r.ID)
+		if err == nil {
+			for _, an := range anns {
+				if an.Level != "failure" && an.Level != "warning" {
+					continue
+				}
+				line := fmt.Sprintf("%s:%d %s", an.Path, an.StartLine, an.Message)
+				if len(line) > 200 {
+					line = line[:200]
+				}
+				r.Why = append(r.Why, line)
+				if len(r.Why) >= 2 {
+					break
+				}
+			}
+		}
+		if len(r.Why) == 0 && strings.TrimSpace(r.Output.Title) != "" {
+			t := strings.TrimSpace(r.Output.Title)
+			if len(t) > 200 {
+				t = t[:200]
+			}
+			r.Why = []string{t}
+		}
+	}
 }
 
 func (a *App) listCheckRuns(ctx context.Context, owner, repo, sha string) ([]checkRunView, error) {
