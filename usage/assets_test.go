@@ -198,7 +198,9 @@ func TestDashboardIncludesTimeSeriesPanels(t *testing.T) {
 		`data-panel="tokens-source"`,
 		`data-panel="tokens-agent"`,
 		`data-panel="tokens-user"`,
-		`data-panel="cache-rate"`,
+		`data-panel="cache-overall"`,
+		`data-panel="cache-by-model"`,
+		`data-panel="cache-by-agent"`,
 		`data-panel="cache-savings"`,
 		`data-panel="cost"`,
 		`data-panel="cost-cumulative"`,
@@ -224,12 +226,68 @@ func TestAppJSMirrorsGoStepHeuristic(t *testing.T) {
 	}
 }
 
-// TestAppJSCacheRateGatesOnInputSeriesOnly pins the empty-state fix: a
-// missing "cached" series must not blank the whole cache-rate panel - only
-// an absent "input" series should.
-func TestAppJSCacheRateGatesOnInputSeriesOnly(t *testing.T) {
-	if !strings.Contains(appJS, "!inputSeries || inputSeries.length === 0") {
-		t.Error("app.js cache-rate empty-state must gate on the input series alone, not the cached series")
+// TestAppJSCacheRateTimeseriesRemoved pins the redesign's deletion: the
+// cache section is raw percentages over the window, not a ratio-over-time
+// line (that was noise at this call volume). No mount, no query, no chart
+// call for it should remain.
+func TestAppJSCacheRateTimeseriesRemoved(t *testing.T) {
+	if strings.Contains(appJS, `panelEl("cache-rate")`) {
+		t.Error("app.js still mounts the removed cache-rate timeseries panel")
+	}
+	if strings.Contains(appJS, "ratePoints") {
+		t.Error("app.js still builds the removed cache-rate timeseries's per-point series")
+	}
+	if strings.Contains(indexHTMLSrc, `data-panel="cache-rate"`) {
+		t.Error("dashboard HTML still mounts the removed cache-rate timeseries panel")
+	}
+}
+
+// TestAppJSCacheRateFor pins the rate + zero-traffic-exclusion computation
+// this Go file mirrors (cache.go's cacheRateFor): the JS copy must return
+// null - not 0 - for a pair with no prompt traffic, so a genuinely idle
+// model/agent is excluded rather than rendered as a fake "0%" row.
+func TestAppJSCacheRateFor(t *testing.T) {
+	for _, want := range []string{
+		"function cacheRateFor(cached, input)",
+		"if (volume <= 0) return null;",
+		"function cacheRowsFromTotals(totals)",
+		"if (rate === null) continue;",
+	} {
+		if !strings.Contains(appJS, want) {
+			t.Errorf("app.js cache-rate computation missing %q", want)
+		}
+	}
+}
+
+// TestAppJSCacheSectionSharesOneEmptyDecision pins requirement #4: no prompt
+// traffic anywhere in the window is ONE decision for the whole cache
+// section (overall + both breakdowns), never a fake 0% in some of them.
+func TestAppJSCacheSectionSharesOneEmptyDecision(t *testing.T) {
+	if !strings.Contains(appJS, "cacheRateFor(cachedTotal, inputTotal) === null") {
+		t.Error("app.js cache section must gate its shared empty state on the overall cached+input totals")
+	}
+	for _, want := range []string{
+		"showEmpty(overallEl, EMPTY_TOKENS_MSG);",
+		"showEmpty(modelEl, EMPTY_TOKENS_MSG);",
+		"showEmpty(agentEl, EMPTY_TOKENS_MSG);",
+	} {
+		if !strings.Contains(appJS, want) {
+			t.Errorf("app.js cache section empty state missing %q", want)
+		}
+	}
+}
+
+// TestAppJSCacheBreakdownRankedByVolume pins requirement #2's sort order and
+// the by-model/by-agent instant queries they're built from.
+func TestAppJSCacheBreakdownRankedByVolume(t *testing.T) {
+	if !strings.Contains(appJS, "rows.sort((a, b) => b.volume - a.volume);") {
+		t.Error("app.js cache breakdown rows must sort by volume, busiest first")
+	}
+	if !strings.Contains(appJS, "function cacheByModelQuery(rangeSeconds)") {
+		t.Error("app.js missing the by-model cache instant query builder")
+	}
+	if !strings.Contains(appJS, "function cacheByAgentQuery(rangeSeconds)") {
+		t.Error("app.js missing the by-agent cache instant query builder")
 	}
 }
 
@@ -369,6 +427,36 @@ func TestDashboardTimeframeIsOneSegmentedControl(t *testing.T) {
 	}
 	if !strings.Contains(appJS, `document.querySelectorAll("#range-select button[data-range]")`) {
 		t.Error("app.js must select presets by data-range so the Custom segment isn't picked up as one")
+	}
+}
+
+// TestDashboardCacheSectionLayout pins the redesigned cache section's
+// markup: one overall stat, by-model/by-agent breakdown tables with a
+// header row each, the savings tile, and the ACP-usage-granularity
+// footnote (kept a single removable line - qx cache-stats redesign).
+func TestDashboardCacheSectionLayout(t *testing.T) {
+	e := newTestExtension(t)
+	r := newChiRouterForTest(e)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		`id="panel-cache"`,
+		`class="cache-overall" data-panel="cache-overall"`,
+		`class="cache-breakdown-row"`,
+		`data-panel="cache-by-model"`,
+		`data-panel="cache-by-agent"`,
+		`class="cache-row cache-row-head"`,
+		`class="cache-footnote"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard HTML missing cache-section markup %q", want)
+		}
+	}
+	if !strings.Contains(body, "per-round aggregates") {
+		t.Error("dashboard HTML missing the ACP per-round-usage caveat footnote")
 	}
 }
 

@@ -772,6 +772,17 @@ function modelSeriesQuery(stepSeconds) {
   return `sum by (${METRICS.labels.model}, ${METRICS.labels.modelFallback}) (increase(${METRICS.tokenUsage}[${stepSeconds}s]))`;
 }
 
+// cacheByModelQuery/cacheByAgentQuery cross a dimension with token_type in
+// ONE instant query over the whole window, so a model/agent's cached and
+// input volumes come from the same query and can't drift against each other.
+function cacheByModelQuery(rangeSeconds) {
+  return `sum by (${METRICS.labels.model}, ${METRICS.labels.modelFallback}, ${METRICS.labels.tokenType}, ${METRICS.labels.tokenTypeFallback}) (increase(${METRICS.tokenUsage}[${rangeSeconds}s]))`;
+}
+
+function cacheByAgentQuery(rangeSeconds) {
+  return `sum by (${METRICS.labels.agent}, ${METRICS.labels.tokenType}, ${METRICS.labels.tokenTypeFallback}) (increase(${METRICS.tokenUsage}[${rangeSeconds}s]))`;
+}
+
 function costTotalQuery(rangeSeconds) {
   return `sum(increase({__name__=~"${METRICS.costNameRegex}"}[${rangeSeconds}s]))`;
 }
@@ -953,54 +964,135 @@ async function loadHeadlineTokens(start, end, step) {
   return byType;
 }
 
-// loadCachePanel renders both the cache-rate time series and the cache
-// savings tile. Empty-state fix: emptiness is decided ONLY by whether the
-// "input" series is present across the range - a zero/absent "cached"
-// series with real input traffic is a legitimate 0% rate, not "no data".
-async function loadCachePanel(start, end, step, instantTotals) {
-  const rateEl = panelEl("cache-rate");
+// --- Cache rate computation. A raw percentage over the window reads better
+// at this call volume than a ratio-over-time line (that was noise) - see
+// cacheRateFor's Go mirror (cache.go) for the same rate + exclusion math. ---
+
+// cacheRateFor mirrors usage/cache.go's cacheRateFor. Returns null - not 0 -
+// for zero prompt traffic, so an idle model/agent is excluded rather than
+// rendered as a fake "0%" row.
+function cacheRateFor(cached, input) {
+  const volume = cached + input;
+  if (volume <= 0) return null;
+  return (cached / volume) * 100;
+}
+
+// aggregateCacheByDim folds an instant query's series (one per
+// dimension-value x token-type) into one {cached, input} pair per
+// dimension-value label.
+function aggregateCacheByDim(series, dimLabel) {
+  const totals = new Map();
+  for (const s of series) {
+    const t = s.metric[METRICS.labels.tokenType] || s.metric[METRICS.labels.tokenTypeFallback];
+    if (t !== METRICS.tokenTypeCached && t !== METRICS.tokenTypeInput) continue;
+    const label = dimValue(s.metric, dimLabel);
+    const entry = totals.get(label) || { cached: 0, input: 0 };
+    entry[t] += Number(s.value[1]);
+    totals.set(label, entry);
+  }
+  return totals;
+}
+
+// cacheRowsFromTotals drops zero-traffic rows (cacheRateFor returning null)
+// and ranks what's left by volume, busiest first - a 100% rate on 3 tokens
+// isn't worth leading the table.
+function cacheRowsFromTotals(totals) {
+  const rows = [];
+  for (const [label, { cached, input }] of totals) {
+    const rate = cacheRateFor(cached, input);
+    if (rate === null) continue;
+    rows.push({ label, cached, input, volume: cached + input, rate });
+  }
+  rows.sort((a, b) => b.volume - a.volume);
+  return rows;
+}
+
+function renderCacheOverall(el, cached, input) {
+  clear(el);
+  const rate = cacheRateFor(cached, input);
+  if (rate === null) {
+    showEmpty(el, EMPTY_TOKENS_MSG);
+    return;
+  }
+  const tile = document.createElement("div");
+  tile.className = "stat-tile";
+  tile.textContent = formatPercent(rate);
+  const sub = document.createElement("div");
+  sub.className = "stat-sub";
+  sub.textContent = "cache rate, overall";
+  const detail = document.createElement("div");
+  detail.className = "cache-detail";
+  detail.textContent = `${formatNumber(cached)} cached of ${formatNumber(cached + input)} prompt`;
+  el.append(tile, sub, detail);
+}
+
+function renderCacheRows(el, rows) {
+  clear(el);
+  if (rows.length === 0) {
+    showEmpty(el, EMPTY_TOKENS_MSG);
+    return;
+  }
+  for (const row of rows) {
+    const r = document.createElement("div");
+    r.className = "cache-row";
+    const label = document.createElement("span");
+    label.className = "cache-row-label";
+    label.textContent = row.label;
+    label.title = row.label;
+    const rate = document.createElement("span");
+    rate.className = "cache-row-rate";
+    rate.textContent = formatPercent(row.rate);
+    const vol = document.createElement("span");
+    vol.className = "cache-row-volume";
+    vol.textContent = formatNumber(row.volume) + " prompt";
+    r.append(label, rate, vol);
+    el.appendChild(r);
+  }
+}
+
+// loadCachePanel renders the raw-percentage cache section plus the savings
+// tile. Empty state is ONE decision for the whole section - no prompt
+// traffic anywhere means the honest empty message everywhere, never a 0%.
+async function loadCachePanel(win, instantTotals) {
+  const overallEl = panelEl("cache-overall");
+  const modelEl = panelEl("cache-by-model");
+  const agentEl = panelEl("cache-by-agent");
   const savingsEl = panelEl("cache-savings");
 
-  const resp = await promQueryRange(tokenTypeSeriesQuery(step), start, end, step);
-  const status = promResultOrStatus(resp);
-  let inputSeries = null;
-  let cachedSeries = null;
-  if (status.ok) {
-    for (const s of status.series) {
-      const t = s.metric[METRICS.labels.tokenType] || s.metric[METRICS.labels.tokenTypeFallback];
-      if (t === METRICS.tokenTypeInput) inputSeries = matrixSeriesPoints(s);
-      if (t === METRICS.tokenTypeCached) cachedSeries = matrixSeriesPoints(s);
-    }
-  } else if (!status.empty) {
-    showError(rateEl, status.message);
-  }
+  const cachedTotal = instantTotals.tokens.cached || 0;
+  const inputTotal = instantTotals.tokens.input || 0;
 
-  if (!inputSeries || inputSeries.length === 0) {
-    showEmpty(rateEl, EMPTY_TOKENS_MSG);
+  if (cacheRateFor(cachedTotal, inputTotal) === null) {
+    showEmpty(overallEl, EMPTY_TOKENS_MSG);
+    showEmpty(modelEl, EMPTY_TOKENS_MSG);
+    showEmpty(agentEl, EMPTY_TOKENS_MSG);
   } else {
-    const cachedMap = new Map((cachedSeries || []).map((p) => [p.t, p.v]));
-    const ratePoints = inputSeries.map((p) => {
-      const cached = cachedMap.get(p.t) || 0;
-      const denom = cached + p.v;
-      return { t: p.t, v: denom > 0 ? (cached / denom) * 100 : 0 };
-    });
-    renderSeriesChart(rateEl, {
-      series: [{ key: "cache-rate", label: "cache rate", color: cssVar("--series-1"), points: ratePoints }],
-      start,
-      end,
-      step,
-      mode: "lines",
-      yMax: 100,
-      valueFormat: formatPercent,
-      showLegend: false,
-    });
+    renderCacheOverall(overallEl, cachedTotal, inputTotal);
+
+    const [modelResp, agentResp] = await Promise.all([
+      promQuery(cacheByModelQuery(win.rangeSeconds), win.now),
+      promQuery(cacheByAgentQuery(win.rangeSeconds), win.now),
+    ]);
+    for (const [el, resp, dimLabel] of [
+      [modelEl, modelResp, "__model__"],
+      [agentEl, agentResp, METRICS.labels.agent],
+    ]) {
+      const status = promResultOrStatus(resp);
+      if (status.ok) {
+        renderCacheRows(el, cacheRowsFromTotals(aggregateCacheByDim(status.series, dimLabel)));
+      } else if (status.empty) {
+        showEmpty(el, EMPTY_TOKENS_MSG);
+      } else {
+        showError(el, status.message);
+      }
+    }
   }
 
   // Cache savings (est.): cached_tokens * (cost / input_tokens) over the
   // same instant totals used for the KPI row - true per-token price isn't
   // queryable, so this approximates it from the range's own average cost
   // per input token. Empty only when the cost series itself is absent (no
-  // price table configured), independent of the rate panel's own state.
+  // price table configured), independent of the rate panels' own state.
   const formula = "est. = cached_tokens × (cost ÷ input_tokens)";
   if (!instantTotals.cost.ok) {
     if (instantTotals.cost.empty) {
@@ -1010,13 +1102,11 @@ async function loadCachePanel(start, end, step, instantTotals) {
     }
     return;
   }
-  const input = instantTotals.tokens.input || 0;
-  const cached = instantTotals.tokens.cached || 0;
-  if (input <= 0) {
+  if (inputTotal <= 0) {
     showEmpty(savingsEl, EMPTY_TOKENS_MSG);
     return;
   }
-  const savings = cached * (instantTotals.cost.value / input);
+  const savings = cachedTotal * (instantTotals.cost.value / inputTotal);
   clear(savingsEl);
   renderStat(savingsEl, "cache savings (est.)", formatMoney(savings), formula);
 }
@@ -1224,7 +1314,7 @@ async function refreshAll(tf) {
     loadDimPanel("tokens-source", METRICS.labels.source, win),
     loadDimPanel("tokens-agent", METRICS.labels.agent, win),
     loadDimPanel("tokens-user", METRICS.labels.user, win),
-    loadCachePanel(start, end, step, instantTotals),
+    loadCachePanel(win, instantTotals),
     loadCostPanel(start, end, step, instantTotals.cost),
     loadLatencyPanel(start, end, step, latencyAvailable),
     loadKPIRow(rangeSeconds, now, latencyAvailable, instantTotals.tokens, instantTotals.cost),
