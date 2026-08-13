@@ -241,6 +241,35 @@
   .donut-legend-value { color: var(--text-primary); font-variant-numeric: tabular-nums; }
   .donut-legend-pct { width: 3.1rem; text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; }
   .axis-labels { display: flex; justify-content: space-between; color: var(--text-muted); font-size: 0.7rem; margin-top: 0.15rem; }
+  /* Cache section: one prominent raw-% stat, then by-model/by-agent tables -
+     no colored rates, a low cache rate isn't an error. */
+  .cache-overall { margin-bottom: 1rem; }
+  .cache-overall .stat-tile { font-size: 2.4rem; }
+  .cache-detail { color: var(--text-secondary); font-size: 0.82rem; margin-top: 0.1rem; font-variant-numeric: tabular-nums; }
+  .cache-breakdown-row { display: flex; flex-wrap: wrap; gap: 1rem 1.5rem; margin-bottom: 0.75rem; }
+  .cache-breakdown { flex: 1 1 260px; min-width: 220px; }
+  .cache-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 0.75rem;
+    align-items: baseline;
+    padding: 0.2rem 0;
+    font-size: 0.82rem;
+    border-bottom: 1px solid var(--gridline);
+  }
+  .cache-row:last-child { border-bottom: none; }
+  .cache-row-head {
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--border);
+  }
+  .cache-row-head span:not(:first-child), .cache-row-rate, .cache-row-volume { text-align: right; }
+  .cache-row-label { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cache-row-rate { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 3.4rem; }
+  .cache-row-volume { font-variant-numeric: tabular-nums; color: var(--text-muted); min-width: 5rem; }
+  .cache-footnote { color: var(--text-muted); font-size: 0.72rem; font-style: italic; margin: 0.5rem 0 0; }
 </style>
 <link rel="stylesheet" href="/assets/ext/v1/kit.css">
 </head>
@@ -346,10 +375,27 @@
       </div>
     </div>
 
-    <div class="panel" id="panel-cache">
+    <div class="panel panel-wide" id="panel-cache">
       <h2>Cache rate</h2>
-      <div class="chart" data-panel="cache-rate"></div>
+      <div class="cache-overall" data-panel="cache-overall"></div>
+      <div class="cache-breakdown-row">
+        <div class="cache-breakdown">
+          <div class="chart-sub">By model</div>
+          <div class="cache-row cache-row-head" aria-hidden="true">
+            <span>Model</span><span>Rate</span><span>Volume</span>
+          </div>
+          <div class="cache-rows" data-panel="cache-by-model"></div>
+        </div>
+        <div class="cache-breakdown">
+          <div class="chart-sub">By agent</div>
+          <div class="cache-row cache-row-head" aria-hidden="true">
+            <span>Agent</span><span>Rate</span><span>Volume</span>
+          </div>
+          <div class="cache-rows" data-panel="cache-by-agent"></div>
+        </div>
+      </div>
       <div class="chart" data-panel="cache-savings"></div>
+      <p class="cache-footnote">Code-agent rates are per-round aggregates until quack emits per-call usage.</p>
     </div>
 
     <div class="panel panel-wide" id="panel-cost">
