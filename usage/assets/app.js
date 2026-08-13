@@ -10,7 +10,10 @@
 // Prometheus as "<dotted_name_with_underscores>[_unit]_total|_bucket|_sum|_count".
 const METRICS = {
   tokenUsage: "gen_ai_client_token_usage_total",
-  cost: "gen_ai_client_cost_total",
+  // The collector appends the metric's unit to the name (verified live
+  // 2026-08-13: gen_ai.client.cost, unit USD -> gen_ai_client_cost_USD_total).
+  // Match both spellings so a unit-stripping exporter config still works.
+  costNameRegex: 'gen_ai_client_cost(_USD)?_total',
   labels: {
     // the contract names this gen_ai_request_model, but semconv-derived
     // OTel->Prometheus exporters sometimes surface it unqualified as
@@ -770,11 +773,11 @@ function modelSeriesQuery(stepSeconds) {
 }
 
 function costTotalQuery(rangeSeconds) {
-  return `sum(increase(${METRICS.cost}[${rangeSeconds}s]))`;
+  return `sum(increase({__name__=~"${METRICS.costNameRegex}"}[${rangeSeconds}s]))`;
 }
 
 function costSeriesQuery(stepSeconds) {
-  return `sum(increase(${METRICS.cost}[${stepSeconds}s]))`;
+  return `sum(increase({__name__=~"${METRICS.costNameRegex}"}[${stepSeconds}s]))`;
 }
 
 function callCountQuery(rangeSeconds) {

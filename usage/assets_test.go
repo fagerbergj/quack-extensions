@@ -79,8 +79,8 @@ func TestAppJSServesEmbeddedContent(t *testing.T) {
 	if !strings.Contains(body, "gen_ai_client_token_usage_total") {
 		t.Error("app.js missing the token usage metric constant")
 	}
-	if !strings.Contains(body, "gen_ai_client_cost_total") {
-		t.Error("app.js missing the cost metric constant")
+	if !strings.Contains(body, `costNameRegex: 'gen_ai_client_cost(_USD)?_total'`) {
+		t.Error("app.js missing the dual-name cost metric regex (the collector appends the USD unit)")
 	}
 }
 
