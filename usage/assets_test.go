@@ -246,6 +246,116 @@ func TestAppJSLatencyHasHonestPresenceProbe(t *testing.T) {
 	}
 }
 
+// TestDashboardIncludesDimensionDonuts pins the rolled-up-comparison half
+// of each dimension card: a donut mount BESIDE the existing series mount
+// (the series mounts themselves are pinned by
+// TestDashboardIncludesTimeSeriesPanels), in a two-column split that wraps.
+func TestDashboardIncludesDimensionDonuts(t *testing.T) {
+	e := newTestExtension(t)
+	r := newChiRouterForTest(e)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		`data-donut="tokens-model"`,
+		`data-donut="tokens-agent"`,
+		`data-donut="tokens-source"`,
+		`data-donut="tokens-user"`,
+		`class="panel-split"`,
+		`class="donut-col"`,
+		`class="series-col"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard HTML missing donut-card markup %q", want)
+		}
+	}
+}
+
+// TestAppJSDonutSharesTheSeriesRanking pins WHY the donut and the series
+// beside it agree: one ranking (topKWithOther over the instant totals), one
+// color assigner, the neutral color for the folded remainder. Two
+// independent rankings would give the same label two colors in one card.
+func TestAppJSDonutSharesTheSeriesRanking(t *testing.T) {
+	for _, want := range []string{
+		"function renderDonut(el, spec)",
+		"const DONUT_TOP_N = 6",
+		"topKWithOther(entries, DONUT_TOP_N)",
+		"const colorFor = makeColorAssigner();",
+		`s.isOther ? cssVar("--series-other") : colorFor(s.label)`,
+	} {
+		if !strings.Contains(appJS, want) {
+			t.Errorf("app.js donut missing %q", want)
+		}
+	}
+	// The donut is an instant sum over the window; the series is the range
+	// query. Both must go through the two allowlisted proxy endpoints.
+	if !strings.Contains(appJS, "promQuery(dimQuery(dimLabel, win.rangeSeconds), win.now)") {
+		t.Error("app.js dimension donut must read its window total from an instant proxy query")
+	}
+	if !strings.Contains(appJS, "promQueryRange(dimQuery(dimLabel, win.step), win.start, win.end, win.step)") {
+		t.Error("app.js dimension series must keep using the range proxy query")
+	}
+}
+
+// TestAppJSSwitchesSparseSeriesToBars pins the sparse-data rule: below
+// SPARSE_MAX_NONZERO non-zero points an ADDITIVE chart draws columns, so a
+// polyline never implies traffic between two distant bursts. Non-additive
+// charts (latency percentiles, cache rate) are excluded - stacking those
+// would be a lie - and the 1-2 point dot-marker fallback (qx#15) stays.
+func TestAppJSSwitchesSparseSeriesToBars(t *testing.T) {
+	for _, want := range []string{
+		"const SPARSE_MAX_NONZERO = 8",
+		"function countNonZeroPoints(points)",
+		"function shouldRenderBars(series, additive)",
+		"if (!additive) return false;",
+		"return most > 0 && most < SPARSE_MAX_NONZERO;",
+		"const useBars = shouldRenderBars(visible, additive);",
+	} {
+		if !strings.Contains(appJS, want) {
+			t.Errorf("app.js sparse-series handling missing %q", want)
+		}
+	}
+	if !strings.Contains(appJS, "if (s.points.length <= 2) for (const p of s.points) svg.appendChild(dotMarker(") {
+		t.Error("app.js dropped the 1-2 point dot-marker fallback the line path still needs (qx#15)")
+	}
+}
+
+// TestDashboardTimeframeIsOneSegmentedControl pins the picker redesign: the
+// presets and "Custom…" are segments of ONE control, and the date row is
+// collapsed until Custom is chosen. Element ids are load-bearing - other
+// tests here and the page's own wiring select on them - so this pins the
+// restyle without renaming anything.
+func TestDashboardTimeframeIsOneSegmentedControl(t *testing.T) {
+	e := newTestExtension(t)
+	r := newChiRouterForTest(e)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		`class="segmented"`,
+		`class="segment" data-range="1h"`,
+		`class="segment segment--custom" id="range-custom"`,
+		`aria-controls="custom-range"`,
+		`class="custom-range" id="custom-range" hidden`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard HTML missing segmented-picker markup %q", want)
+		}
+	}
+	// Custom must NOT carry data-range: the page's preset handler selects on
+	// that attribute, and RANGES has no entry for a custom window.
+	if strings.Contains(body, `id="range-custom" data-range`) || strings.Contains(body, `data-range="custom"`) {
+		t.Error("the Custom segment must not carry a data-range attribute - the preset handler would treat it as a preset")
+	}
+	if !strings.Contains(appJS, `document.querySelectorAll("#range-select button[data-range]")`) {
+		t.Error("app.js must select presets by data-range so the Custom segment isn't picked up as one")
+	}
+}
+
 // Pins the live-verified label translation (2026-08-12): the semconv attr
 // gen_ai.token.type lands in Prometheus as gen_ai_token_type. The dashboard
 // showed a false "no data" empty state while querying the unqualified name.
