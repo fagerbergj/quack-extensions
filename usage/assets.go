@@ -18,16 +18,13 @@ var indexTmpl = template.Must(template.New("index.html").Parse(indexHTMLSrc))
 // selection, chart data) the page fetches itself from the proxy endpoints.
 type dashboardData struct {
 	DefaultRangeSeconds int64
-	DefaultStepSeconds  int64
 	TempoURL            string
 }
 
 func (e *extension) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	rangeSeconds := int64(e.rangeWindow.Seconds())
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = indexTmpl.Execute(w, dashboardData{
-		DefaultRangeSeconds: rangeSeconds,
-		DefaultStepSeconds:  stepForSpan(rangeSeconds),
+		DefaultRangeSeconds: int64(e.rangeWindow.Seconds()),
 		TempoURL:            e.tempoURL,
 	})
 }

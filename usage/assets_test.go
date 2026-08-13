@@ -93,20 +93,17 @@ func TestDefaultRangeWindowConstant(t *testing.T) {
 	}
 }
 
-// TestDashboardInjectsDefaultStepSeconds pins that the initial step handed
-// to the page is computed via stepForSpan, not hardcoded - config default_range
-// 1h (3600s) must produce stepForSpan(3600) = 30.
-func TestDashboardInjectsDefaultStepSeconds(t *testing.T) {
+// The page computes its own step (app.js's stepForSpan mirror), so the config
+// handoff must not carry one - the injected value was dead on arrival (qx#14).
+func TestDashboardOmitsStepFromConfig(t *testing.T) {
 	e := newTestExtension(t)
 	r := newChiRouterForTest(e)
 
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
-	body := rec.Body.String()
-	want := fmt.Sprintf("defaultStepSeconds:  %d", stepForSpan(3600))
-	if !strings.Contains(body, want) {
-		t.Errorf("dashboard HTML did not inject defaultStepSeconds as %d: %s", stepForSpan(3600), body)
+	if body := rec.Body.String(); strings.Contains(body, "defaultStepSeconds") {
+		t.Errorf("dashboard HTML still injects defaultStepSeconds: %s", body)
 	}
 }
 
