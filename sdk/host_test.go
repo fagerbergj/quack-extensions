@@ -147,6 +147,23 @@ func TestSubjectStateConstValues(t *testing.T) {
 	}
 }
 
+// TestRunStatusConstValues pins the wire values a RunObserver matches on -
+// including RunCancelled, added so a user-cancelled run has its own status
+// instead of collapsing into RunDone with a mid-thought partial answer.
+func TestRunStatusConstValues(t *testing.T) {
+	cases := map[sdk.RunStatus]string{
+		sdk.RunDone:       "done",
+		sdk.RunFailed:     "failed",
+		sdk.RunNeedsInput: "needs_input",
+		sdk.RunCancelled:  "cancelled",
+	}
+	for got, want := range cases {
+		if string(got) != want {
+			t.Errorf("RunStatus const = %q, want %q", got, want)
+		}
+	}
+}
+
 // TestChatOriginCarriesStateIndependentOfBadge pins that State is a
 // distinct field from Badge - a host can read the typed state without
 // parsing the display string.

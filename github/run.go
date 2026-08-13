@@ -51,7 +51,7 @@ func (e *Extension) RunEnded(chatID string, outcome sdk.RunOutcome) {
 	}
 	pr := v.(*pendingRun)
 
-	if !pr.nudged && !outcome.PlanRan && pr.isLabelTrigger {
+	if !pr.nudged && !outcome.PlanRan && pr.isLabelTrigger && outcome.Status != sdk.RunCancelled {
 		pr.nudged = true
 		nudgeReq := sdk.DispatchRequest{
 			Chat: sdk.ChatRef{LocalID: pr.sessionID, User: pr.login},
@@ -109,6 +109,15 @@ func (e *Extension) finalize(chatID string, pr *pendingRun, outcome sdk.RunOutco
 		}
 		e.host.Log.Info("github: push left the PR head unchanged and no review was posted; posting the run's answer instead of a silent no-op",
 			"repo", owner+"/"+repo, "issue", number, "pushed_sha", d.pushedSHA)
+	}
+
+	// User cancelled: Answer is mid-thought, not a finished product - post
+	// nothing (no comment, no nudge re-dispatch above), just settle records
+	// like a normal completion.
+	if outcome.Status == sdk.RunCancelled {
+		e.persistGithubSnapshot(chatID, pr.gh)
+		e.host.Log.Info("github: run cancelled by user; no comment posted", "repo", owner+"/"+repo, "issue", number)
+		return
 	}
 
 	// HITL pause: post the question as a comment; the reply resumes the paused node.
