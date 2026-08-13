@@ -562,6 +562,72 @@ func TestFinalizeSkipsSummaryWhenPushActuallyMovedHead(t *testing.T) {
 	}
 }
 
+// TestRunEndedCancelledPostsNoCommentAndDoesNotNudge pins the fix for the
+// live incident (quack#879): a user-cancelled run's Answer is mid-thought,
+// not a finished product, so finalize must post nothing - and a
+// label-triggered cancelled run must not get the no-plan nudge re-dispatch
+// either, since a human cancellation is not a silent no-op to retry.
+func TestRunEndedCancelledPostsNoCommentAndDoesNotNudge(t *testing.T) {
+	posted := make(chan string, 1)
+	srv := stubGitHub(t, posted)
+	defer srv.Close()
+	e, fh := newTestExtension(t, srv.URL, []string{"issue_plan"})
+
+	sessionID := "github-acme-widgets-7"
+	chatID := globalChatID(sessionID)
+	e.pending.Store(chatID, &pendingRun{
+		sessionID: sessionID, owner: "acme", repo: "widgets", number: 7,
+		login: "alice", isLabelTrigger: true,
+	})
+	e.inflight.Store(sessionID, struct{}{})
+
+	e.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunCancelled, PlanRan: false, Answer: "halfway through drafting a reply, the user hit stop"})
+
+	if calls := fh.calls(); len(calls) != 0 {
+		t.Fatalf("Dispatch calls = %d, want 0 (a cancelled run must not be nudged)", len(calls))
+	}
+	select {
+	case body := <-posted:
+		t.Fatalf("unexpected comment posted for a cancelled run: %q", body)
+	case <-time.After(300 * time.Millisecond):
+		// expected: no comment
+	}
+	if _, ok := e.pending.Load(chatID); ok {
+		t.Errorf("pending entry still present after finalize")
+	}
+	if _, ok := e.inflight.Load(sessionID); ok {
+		t.Errorf("inflight entry still present after finalize")
+	}
+}
+
+// TestRunEndedDoneStillPostsComment is the RunCancelled test's contrast case:
+// an ordinary RunDone outcome must keep posting its answer as a comment,
+// unchanged by the new cancelled handling.
+func TestRunEndedDoneStillPostsComment(t *testing.T) {
+	posted := make(chan string, 1)
+	srv := stubGitHub(t, posted)
+	defer srv.Close()
+	e, _ := newTestExtension(t, srv.URL, nil)
+
+	sessionID := "github-acme-widgets-7"
+	chatID := globalChatID(sessionID)
+	e.pending.Store(chatID, &pendingRun{
+		sessionID: sessionID, owner: "acme", repo: "widgets", number: 7, login: "alice",
+	})
+	e.inflight.Store(sessionID, struct{}{})
+
+	e.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "finished the task"})
+
+	select {
+	case body := <-posted:
+		if !strings.Contains(body, "finished the task") {
+			t.Errorf("posted comment = %q, want it to contain the answer", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no comment posted for a RunDone outcome")
+	}
+}
+
 // ---- Batch A: trigger/label-routing/dispatch-shape (ported from quack's internal/github/webhook_test.go) ----
 
 // TestHandleWebhookPROpenedTrigger pins the pr_opened trigger gate: it fires

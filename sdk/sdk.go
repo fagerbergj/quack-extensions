@@ -98,6 +98,11 @@ const (
 	RunDone       RunStatus = "done"
 	RunFailed     RunStatus = "failed"
 	RunNeedsInput RunStatus = "needs_input"
+
+	// RunCancelled means the user stopped the run. Answer may carry
+	// partial text, but it is mid-thought, not a finished product - an
+	// observer must not treat it as an answer to deliver.
+	RunCancelled RunStatus = "cancelled"
 )
 
 // RunObserver is an optional, observation-only interface: quack calls
