@@ -93,20 +93,17 @@ func TestDefaultRangeWindowConstant(t *testing.T) {
 	}
 }
 
-// TestDashboardInjectsDefaultStepSeconds pins that the initial step handed
-// to the page is computed via stepForSpan, not hardcoded - config default_range
-// 1h (3600s) must produce stepForSpan(3600) = 30.
-func TestDashboardInjectsDefaultStepSeconds(t *testing.T) {
+// The page computes its own step (app.js's stepForSpan mirror), so the config
+// handoff must not carry one - the injected value was dead on arrival (qx#14).
+func TestDashboardOmitsStepFromConfig(t *testing.T) {
 	e := newTestExtension(t)
 	r := newChiRouterForTest(e)
 
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
-	body := rec.Body.String()
-	want := fmt.Sprintf("defaultStepSeconds:  %d", stepForSpan(3600))
-	if !strings.Contains(body, want) {
-		t.Errorf("dashboard HTML did not inject defaultStepSeconds as %d: %s", stepForSpan(3600), body)
+	if body := rec.Body.String(); strings.Contains(body, "defaultStepSeconds") {
+		t.Errorf("dashboard HTML still injects defaultStepSeconds: %s", body)
 	}
 }
 
@@ -246,5 +243,17 @@ func TestAppJSLatencyHasHonestPresenceProbe(t *testing.T) {
 	}
 	if !strings.Contains(appJS, "EMPTY_LATENCY_MSG") {
 		t.Error("app.js missing the named latency empty-state message")
+	}
+}
+
+// Pins the live-verified label translation (2026-08-12): the semconv attr
+// gen_ai.token.type lands in Prometheus as gen_ai_token_type. The dashboard
+// showed a false "no data" empty state while querying the unqualified name.
+func TestAppJSUsesTranslatedTokenTypeLabel(t *testing.T) {
+	if !strings.Contains(appJS, `tokenType: "gen_ai_token_type"`) {
+		t.Error("app.js token-type label must be the translated gen_ai_token_type")
+	}
+	if !strings.Contains(appJS, `tokenTypeFallback: "token_type"`) {
+		t.Error("app.js must keep the unqualified token_type fallback for other exporter configs")
 	}
 }
