@@ -16,6 +16,7 @@ type githubContext struct {
 	firstLoad          bool
 	contextUnavailable bool             // fetchSnapshot's meta call failed — label-triggered work aborts (#467)
 	newCommits         []snapshotCommit // PR commits for incremental review scope; nil = review everything
+	checks             []checkRunView   // current head-commit check runs (PR only); nil = not a PR or the fetch failed
 }
 
 // pendingRun is what dispatch stores so RunEnded (arriving later, out of
@@ -77,7 +78,11 @@ func (e *Extension) finalize(chatID string, pr *pendingRun, outcome sdk.RunOutco
 	defer e.pending.Delete(chatID)
 	owner, repo, number := pr.owner, pr.repo, pr.number
 
-	// Only post a summary when nothing was delivered — commitDelivery already posted the review/PR.
+	// Only post a summary when nothing was delivered — commitDelivery already
+	// posted the review/PR. A push that landed but left the head at the SHA it
+	// already was (a fix run that correctly found nothing to fix, #876/#880/
+	// #882) is NOT delivered work: GitHub shows no trace of the run, so the
+	// answer is the only place its analysis survives - fall through and post it.
 	if d, ok := takeDeliveryDetail(chatID); ok {
 		if d.err != nil {
 			// A worker's own report can't be trusted here (#714) — it may claim success it never had.
@@ -87,18 +92,23 @@ func (e *Extension) finalize(chatID string, pr *pendingRun, outcome sdk.RunOutco
 		}
 		e.host.Log.Info("github: delivery verified against GitHub", "repo", owner+"/"+repo, "issue", number,
 			"pr_number", d.prNumber, "pr_url", d.prURL, "pushed_sha", d.pushedSHA)
-		if d.reviewDelivered {
-			baselineCtx, baselineCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			e.advanceReviewBaseline(baselineCtx, chatID, pr.gh.snap.Commits)
-			baselineCancel()
+		headUnchanged := d.pushedSHA != "" && d.pushedSHA == pr.gh.snap.HeadSHA
+		if d.reviewDelivered || !headUnchanged {
+			if d.reviewDelivered {
+				baselineCtx, baselineCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				e.advanceReviewBaseline(baselineCtx, chatID, pr.gh.snap.Commits)
+				baselineCancel()
 
-			mergeCtx, mergeCancel := context.WithTimeout(context.Background(), mergeTimeout)
-			e.tryMergeStandingIntent(mergeCtx, owner, repo, number, chatID, pr.gh.snap.HeadSHA)
-			mergeCancel()
+				mergeCtx, mergeCancel := context.WithTimeout(context.Background(), mergeTimeout)
+				e.tryMergeStandingIntent(mergeCtx, owner, repo, number, chatID, pr.gh.snap.HeadSHA)
+				mergeCancel()
+			}
+			e.persistGithubSnapshot(chatID, pr.gh)
+			e.host.Log.Info("github: work delivered on the PR; skipping the duplicate summary comment", "repo", owner+"/"+repo, "issue", number)
+			return
 		}
-		e.persistGithubSnapshot(chatID, pr.gh)
-		e.host.Log.Info("github: work delivered on the PR; skipping the duplicate summary comment", "repo", owner+"/"+repo, "issue", number)
-		return
+		e.host.Log.Info("github: push left the PR head unchanged and no review was posted; posting the run's answer instead of a silent no-op",
+			"repo", owner+"/"+repo, "issue", number, "pushed_sha", d.pushedSHA)
 	}
 
 	// HITL pause: post the question as a comment; the reply resumes the paused node.
@@ -198,6 +208,16 @@ func (e *Extension) loadGithubContext(ctx context.Context, chatID, owner, repo s
 	// baseline that only a delivered review advances (see advanceReviewBaseline).
 	if isPR {
 		gh.newCommits = e.reviewScope(ctx, chatID, snap)
+		// #876/#880/#882: a review that never sees CI status can approve a PR
+		// with a failing required check. Best-effort - a fetch failure leaves
+		// the envelope silent on CI rather than aborting the run.
+		if snap.HeadSHA != "" {
+			if checks, cerr := e.app.listCheckRuns(ctx, owner, repo, snap.HeadSHA); cerr != nil {
+				e.host.Log.Warn("github: check-runs fetch failed; envelope carries no CI status", "repo", owner+"/"+repo, "pr", number, "err", cerr)
+			} else {
+				gh.checks = checks
+			}
+		}
 	}
 	return gh
 }
