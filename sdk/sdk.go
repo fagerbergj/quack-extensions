@@ -231,6 +231,18 @@ type ChatRef struct {
 	ResetHistory bool
 }
 
+// SubjectState is the typed lifecycle state of a ChatOrigin's subject (an
+// issue, PR, or extension-defined equivalent), for hosts that need to
+// interpret transitions without parsing Badge's display text. "" means
+// unknown or not applicable.
+type SubjectState string
+
+const (
+	SubjectOpen   SubjectState = "open"
+	SubjectMerged SubjectState = "merged"
+	SubjectClosed SubjectState = "closed"
+)
+
 // ChatOrigin is generic provenance the SPA renders without knowing the
 // extension that produced it: a label chip, an optional badge and external
 // link, and grouping by extension/kind/whatever dimensions Labels carries.
@@ -243,6 +255,10 @@ type ChatOrigin struct {
 	// would say what it IS, not what it's FOR.
 	Href  string
 	Badge string // optional short status chip, e.g. "draft"
+
+	// State is the machine-readable subject state. Badge remains
+	// display-only and hosts must never branch on Badge.
+	State SubjectState
 
 	// Labels carries extra grouping dimensions beyond Kind - repo, state,
 	// folder, tags, whatever the extension's domain needs - keyed for

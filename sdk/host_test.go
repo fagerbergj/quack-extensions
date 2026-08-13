@@ -130,3 +130,37 @@ func TestSetupExistingHeadRefOverridesWorkBranch(t *testing.T) {
 		t.Errorf("WorkBranch = %q, want quack/issue-9 (ExistingHeadRef overrides at consumption time, not storage time)", s.WorkBranch)
 	}
 }
+
+// TestSubjectStateConstValues pins the wire values hosts match on - these
+// are a domain fact (open/merged/closed), not display text, so they must
+// never shift under a cosmetic Badge rename.
+func TestSubjectStateConstValues(t *testing.T) {
+	cases := map[sdk.SubjectState]string{
+		sdk.SubjectOpen:   "open",
+		sdk.SubjectMerged: "merged",
+		sdk.SubjectClosed: "closed",
+	}
+	for got, want := range cases {
+		if string(got) != want {
+			t.Errorf("SubjectState const = %q, want %q", got, want)
+		}
+	}
+}
+
+// TestChatOriginCarriesStateIndependentOfBadge pins that State is a
+// distinct field from Badge - a host can read the typed state without
+// parsing the display string.
+func TestChatOriginCarriesStateIndependentOfBadge(t *testing.T) {
+	o := sdk.ChatOrigin{Badge: "merged", State: sdk.SubjectMerged}
+	if o.State != sdk.SubjectMerged {
+		t.Errorf("State = %q, want %q", o.State, sdk.SubjectMerged)
+	}
+	if o.Badge != "merged" {
+		t.Errorf("Badge = %q, want merged", o.Badge)
+	}
+
+	var zero sdk.ChatOrigin
+	if zero.State != "" {
+		t.Errorf("zero-value ChatOrigin.State = %q, want \"\" (unknown/not-applicable)", zero.State)
+	}
+}
