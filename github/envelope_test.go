@@ -366,6 +366,113 @@ func TestBuildEnvelopeFortyFilePRHasChurnAndFullListNoContentButFullDescription(
 	}
 }
 
+// TestChecksBlockRendersStatusAndSummary pins #876/#880/#882: a reviewer must
+// see CI status as compact lines (name: status[, conclusion]) plus a
+// failing/pending/passing summary line.
+func TestChecksBlockRendersStatusAndSummary(t *testing.T) {
+	checks := []checkRunView{
+		{Name: "go-test", Status: "completed", Conclusion: "failure"},
+		{Name: "docker-build", Status: "in_progress"},
+		{Name: "lint", Status: "completed", Conclusion: "success"},
+	}
+	got := checksBlock(checks)
+	for _, want := range []string{
+		`<checks count="3" summary="1 failing, 1 pending, 1 passing">`,
+		"go-test: completed failure",
+		"docker-build: in_progress",
+		"lint: completed success",
+		"</checks>",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("checksBlock missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestChecksBlockEmptyWhenNoChecks pins the degrade path: a PR with no check
+// runs yet (or a fetch that failed upstream) gets no <checks> block at all.
+func TestChecksBlockEmptyWhenNoChecks(t *testing.T) {
+	if got := checksBlock(nil); got != "" {
+		t.Errorf("checksBlock(nil) = %q, want empty", got)
+	}
+}
+
+// TestChecksBlockTruncatesAtCap pins the ~20-check ceiling: a PR with a huge
+// matrix build still gets a bounded envelope, marked truncated, while the
+// summary line still counts every check, not just the shown ones.
+func TestChecksBlockTruncatesAtCap(t *testing.T) {
+	checks := make([]checkRunView, 35)
+	for i := range checks {
+		checks[i] = checkRunView{Name: fmt.Sprintf("job-%d", i), Status: "completed", Conclusion: "success"}
+	}
+	checks[30] = checkRunView{Name: "go-test", Status: "completed", Conclusion: "failure"}
+
+	got := checksBlock(checks)
+	if !strings.Contains(got, `count="35"`) {
+		t.Errorf("checksBlock should still report the true total count:\n%s", got)
+	}
+	if !strings.Contains(got, "1 failing, 0 pending, 34 passing") {
+		t.Errorf("checksBlock summary should count every check, not just the shown ones:\n%s", got)
+	}
+	if !strings.Contains(got, `truncated="showing 20 of 35"`) {
+		t.Errorf("checksBlock missing a truncation marker for 35 checks:\n%s", got)
+	}
+	if strings.Contains(got, "job-25") {
+		t.Errorf("checksBlock should not render a check past the cap:\n%s", got)
+	}
+	if !strings.Contains(got, "job-19") {
+		t.Errorf("checksBlock should render every check up to the cap:\n%s", got)
+	}
+}
+
+// TestBuildEnvelopeIncludesChecksSection pins the orchestrator-envelope half
+// of #876/#880/#882's fix: a PR's check runs reach <checks>, positioned right
+// after <changed_files>. A non-PR envelope never carries the section.
+func TestBuildEnvelopeIncludesChecksSection(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	checks := []checkRunView{{Name: "go-test", Status: "completed", Conclusion: "failure"}}
+	var pr issueCommentPayload
+	if err := json.Unmarshal(pullCommentBody("review this"), &pr); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	gh := githubContext{snap: Snapshot{IsPR: true}, firstLoad: true, checks: checks}
+	env := ext.buildEnvelope(context.Background(), pr, "review this", gh, nil, "", nil)
+	if !strings.Contains(env, "go-test: completed failure") {
+		t.Errorf("PR envelope missing the <checks> section:\n%s", truncateForLog(env))
+	}
+	if idx := strings.Index(env, "<changed_files"); idx == -1 || !strings.Contains(env[idx:], "<checks") {
+		t.Errorf("<checks> should follow <changed_files>:\n%s", truncateForLog(env))
+	}
+
+	var issue issueCommentPayload
+	issue.Issue.Number = 7
+	issueEnv := ext.buildEnvelope(context.Background(), issue, "task", seedGC(Snapshot{}, 0), nil, "", nil)
+	if strings.Contains(issueEnv, "<checks") {
+		t.Errorf("an issue (non-PR) envelope must never carry a <checks> section:\n%s", truncateForLog(issueEnv))
+	}
+}
+
+// TestBuildWorkerAskIncludesChecksSection pins the node-ask half: unlike
+// changed_files (deliberately withheld, see TestBuildWorkerAskOmitsEvidenceKeepsAsk),
+// CI status is compact enough that a review node needs it directly rather
+// than crowding out its own task.
+func TestBuildWorkerAskIncludesChecksSection(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	checks := []checkRunView{{Name: "go-test", Status: "completed", Conclusion: "failure"}}
+	var pr issueCommentPayload
+	if err := json.Unmarshal(pullCommentBody("review this"), &pr); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	allowedKinds := []string{"review", "comment"}
+
+	gh := githubContext{snap: Snapshot{IsPR: true}, firstLoad: true, checks: checks}
+	ask := ext.buildWorkerAsk(context.Background(), pr, "review this", gh, allowedKinds, "")
+	if !strings.Contains(ask, "go-test: completed failure") {
+		t.Errorf("worker ask missing the <checks> section a reviewer needs to avoid approving red CI:\n%s", truncateForLog(ask))
+	}
+}
+
 // TestBuildWorkerAskOmitsEvidenceKeepsAsk pins #664's other half: a node's
 // background (buildWorkerAsk) carries permissions, deliverable and the ask in
 // full, but never the orchestrator's changed_files evidence.

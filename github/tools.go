@@ -807,6 +807,33 @@ func gateCaveat(dc sdk.DeliveryContext, body string) string {
 	return banner + body
 }
 
+// failingChecksBlockingApprove returns the comma-joined names of any check
+// run on the PR's current head that concluded failure/timed_out, or "" when
+// none block. ponytail: any failing check blocks approve, not just
+// branch-protection-required ones - read branch protection if optional-check
+// noise ever appears. Queued/in_progress checks never block: reviews
+// routinely land before CI finishes.
+func (a *App) failingChecksBlockingApprove(ctx context.Context, owner, repo string, number int) (string, error) {
+	meta, err := a.pullMeta(ctx, owner, repo, number)
+	if err != nil {
+		return "", err
+	}
+	if meta.HeadSHA == "" {
+		return "", nil
+	}
+	runs, err := a.listCheckRuns(ctx, owner, repo, meta.HeadSHA)
+	if err != nil {
+		return "", err
+	}
+	var failing []string
+	for _, r := range runs {
+		if r.Conclusion == "failure" || r.Conclusion == "timed_out" {
+			failing = append(failing, r.Name)
+		}
+	}
+	return strings.Join(failing, ", "), nil
+}
+
 func (a *App) deliverOne(ctx context.Context, owner, repo string, dc sdk.DeliveryContext, item sdk.StagedDelivery) (deliveryItemResult, error) {
 	switch item.Kind {
 	case sdk.KindPR:
@@ -829,6 +856,19 @@ func (a *App) deliverOne(ctx context.Context, owner, repo string, dc sdk.Deliver
 	case sdk.KindReview:
 		if dc.IssueNumber == 0 {
 			return deliveryItemResult{}, fmt.Errorf("github: delivery: staged review has no pull request number to submit against")
+		}
+		// Re-check CI right before an approve posts - the staged verdict can be
+		// minutes stale, and a required check can still be red even after a
+		// passing gate run (#876/#880/#882). Never downgrade the verdict, refuse
+		// the delivery outright so the gate reports it as a failed delivery_result.
+		if strings.EqualFold(item.Event, "approve") {
+			failing, cerr := a.failingChecksBlockingApprove(ctx, owner, repo, dc.IssueNumber)
+			if cerr != nil {
+				return deliveryItemResult{}, fmt.Errorf("github: delivery: refused: could not verify CI status before approve: %w", cerr)
+			}
+			if failing != "" {
+				return deliveryItemResult{}, fmt.Errorf("github: delivery: refused: approve while checks are failing (%s)", failing)
+			}
 		}
 		// GitHub rejects approve/request_changes on own PR (422) — fall back to COMMENT-event review with inline comments.
 		if bot, berr := a.botLogin(ctx); berr == nil {

@@ -510,6 +510,7 @@ func (a *App) mergePR(ctx context.Context, owner, repo string, number int, requi
 type checkRunView struct {
 	ID         int64  `json:"id"`
 	Name       string `json:"name"`
+	Status     string `json:"status"` // "queued" | "in_progress" | "completed"
 	Conclusion string `json:"conclusion"`
 	HTMLURL    string `json:"html_url"`
 	Output     struct {

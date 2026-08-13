@@ -911,6 +911,126 @@ func TestDeliverReviewNeverPushesBranch(t *testing.T) {
 	}
 }
 
+// TestDeliverRefusesApproveOnFailingCheck pins #876/#880/#882: an approve
+// verdict staged minutes ago must not post once CI has gone red on the PR's
+// current head - Deliver refuses the item outright (a failed delivery_result,
+// per the grant-refusal pattern) rather than silently downgrading the verdict
+// or posting the stale approve.
+func TestDeliverRefusesApproveOnFailingCheck(t *testing.T) {
+	var reviewPosted bool
+	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/app"):
+			io.WriteString(w, `{"slug":"quack"}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls/7"):
+			io.WriteString(w, `{"user":{"login":"alice"},"head":{"sha":"deadbeef"}}`)
+		case strings.Contains(r.URL.Path, "/commits/deadbeef/check-runs"):
+			io.WriteString(w, `{"check_runs":[
+				{"name":"go-test","status":"completed","conclusion":"failure"},
+				{"name":"lint","status":"completed","conclusion":"success"}
+			]}`)
+		case strings.HasSuffix(r.URL.Path, "/pulls/7/reviews"):
+			reviewPosted = true
+			io.WriteString(w, `{"id":9,"html_url":"https://github.com/acme/widgets/pull/7#pullrequestreview-9"}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	})
+
+	dc := sdk.DeliveryContext{
+		GatePassed: true,
+		ChatID:     "github-acme-widgets-7",
+		CloneURL:   "https://github.com/acme/widgets.git",
+		Items:      []sdk.StagedDelivery{{Kind: "review", Event: "approve", Body: "looks good"}},
+	}
+	outcomes, err := app.Deliver(context.Background(), dc)
+	if err == nil {
+		t.Fatal("Deliver should have refused the approve while go-test is failing")
+	}
+	if reviewPosted {
+		t.Error("approve must never reach GitHub while a required check is failing")
+	}
+	if len(outcomes) != 1 || !strings.Contains(outcomes[0].Error, "refused") || !strings.Contains(outcomes[0].Error, "go-test") {
+		t.Errorf("outcome should record a refusal naming the failing check, got %+v", outcomes)
+	}
+}
+
+// TestDeliverAllowsApproveWhenChecksPassOrPending pins the non-blocking half:
+// a passing check never blocks, and neither does one still queued/in_progress
+// - reviews routinely land before CI finishes.
+func TestDeliverAllowsApproveWhenChecksPassOrPending(t *testing.T) {
+	var posted bool
+	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/app"):
+			io.WriteString(w, `{"slug":"quack"}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls/7"):
+			io.WriteString(w, `{"user":{"login":"alice"},"head":{"sha":"deadbeef"}}`)
+		case strings.Contains(r.URL.Path, "/commits/deadbeef/check-runs"):
+			io.WriteString(w, `{"check_runs":[
+				{"name":"go-test","status":"completed","conclusion":"success"},
+				{"name":"docker-build","status":"in_progress"}
+			]}`)
+		case strings.HasSuffix(r.URL.Path, "/pulls/7/files"):
+			io.WriteString(w, `[]`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/reviews"):
+			io.WriteString(w, `[]`)
+		case strings.HasSuffix(r.URL.Path, "/pulls/7/reviews"):
+			posted = true
+			io.WriteString(w, `{"id":9,"html_url":"https://github.com/acme/widgets/pull/7#pullrequestreview-9"}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	})
+
+	dc := sdk.DeliveryContext{
+		GatePassed: true,
+		ChatID:     "github-acme-widgets-7",
+		CloneURL:   "https://github.com/acme/widgets.git",
+		Items:      []sdk.StagedDelivery{{Kind: "review", Event: "approve", Body: "looks good"}},
+	}
+	if _, err := app.Deliver(context.Background(), dc); err != nil {
+		t.Fatalf("Deliver should approve when nothing has actually failed: %v", err)
+	}
+	if !posted {
+		t.Error("approve should have reached GitHub - no check concluded failure/timed_out")
+	}
+}
+
+// TestDeliverRequestChangesNeverBlockedByFailingChecks pins that the CI guard
+// is scoped to approve only - request_changes/comment verdicts are never
+// re-checked against CI, so the check-runs endpoint must not even be hit.
+func TestDeliverRequestChangesNeverBlockedByFailingChecks(t *testing.T) {
+	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/app"):
+			io.WriteString(w, `{"slug":"quack"}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls/7"):
+			io.WriteString(w, `{"user":{"login":"alice"},"head":{"sha":"deadbeef"}}`)
+		case strings.HasSuffix(r.URL.Path, "/pulls/7/files"):
+			io.WriteString(w, `[]`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/reviews"):
+			io.WriteString(w, `[]`)
+		case strings.HasSuffix(r.URL.Path, "/pulls/7/reviews"):
+			io.WriteString(w, `{"id":9,"html_url":"https://github.com/acme/widgets/pull/7#pullrequestreview-9"}`)
+		case strings.Contains(r.URL.Path, "/check-runs"):
+			t.Error("request_changes must never trigger a CI re-check")
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	})
+
+	dc := sdk.DeliveryContext{
+		GatePassed: true,
+		ChatID:     "github-acme-widgets-7",
+		CloneURL:   "https://github.com/acme/widgets.git",
+		Items:      []sdk.StagedDelivery{{Kind: "review", Event: "request_changes", Body: "two blockers"}},
+	}
+	if _, err := app.Deliver(context.Background(), dc); err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+}
+
 // A gate FAIL still delivers the PR (a human decides) but opens it as a DRAFT
 // so it cannot be merged accidentally.
 func TestDeliverFailedGateOpensDraftPR(t *testing.T) {

@@ -513,6 +513,41 @@ func planTask(p issuesPayload) string {
 // mergeTimeout bounds the deterministic merge-label handler (a few API calls).
 const mergeTimeout = 2 * time.Minute
 
+// requiredCheckFailingRe matches GitHub's merge-block message for one named
+// required status check, e.g. `Required status check "go-test" is failing.`
+var requiredCheckFailingRe = regexp.MustCompile(`(?i)required status check "([^"]+)" is failing`)
+
+// mergeAPIErrorMessage extracts the "message" field from a wrapped merge API
+// error's trailing JSON body (mergePR's error is
+// `github: PUT .../merge: status 405: {"message":"...","documentation_url":"..."}`)
+// so a comment never has to carry the raw JSON - full detail stays in the
+// slog entry that logged err.
+func mergeAPIErrorMessage(err error) string {
+	msg := err.Error()
+	if i := strings.IndexByte(msg, '{'); i >= 0 {
+		var body struct {
+			Message string `json:"message"`
+		}
+		if jerr := json.Unmarshal([]byte(msg[i:]), &body); jerr == nil && body.Message != "" {
+			return body.Message
+		}
+	}
+	return msg
+}
+
+// mergeFailureComment turns a merge API error into a comment-safe line. The
+// common case - GitHub blocking on one named required check - becomes an
+// actionable sentence naming the check and the self-heal label (the merge
+// flow itself never applies quack:fix; a human or the CI-failure auto-heal
+// does). Anything else collapses to "Merge failed: <message>".
+func mergeFailureComment(err error, fixLabel string) string {
+	msg := mergeAPIErrorMessage(err)
+	if m := requiredCheckFailingRe.FindStringSubmatch(msg); m != nil {
+		return fmt.Sprintf("Merge blocked: required check **%s** is failing on this PR. Apply the `%s` label to trigger a self-heal, or push a fix yourself - re-review will follow once it pushes.", m[1], fixLabel)
+	}
+	return fmt.Sprintf("Merge failed: %s", msg)
+}
+
 // mergeIfApproved merges only at the intersection of a human's merge label and quack's own approving verdict.
 // A non-approving verdict records a standing intent — merge fires when a later review approves.
 func (e *Extension) mergeIfApproved(p pullRequestPayload, rawBody []byte) {
@@ -541,7 +576,7 @@ func (e *Extension) mergeIfApproved(p pullRequestPayload, rawBody []byte) {
 	if verdict == "approve" {
 		if err := e.app.mergePR(ctx, owner, repo, number, ""); err != nil {
 			slog.Error("github merge failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", err)
-			comment(fmt.Sprintf("Merge failed: %v", err))
+			comment(mergeFailureComment(err, e.labels.Fix))
 			return
 		}
 		slog.Info("github pr merged", "component", "github", "repo", owner+"/"+repo, "pr", number, "user", p.Sender.Login)
@@ -681,7 +716,8 @@ func (e *Extension) tryMergeStandingIntent(ctx context.Context, owner, repo stri
 	}
 	if err := e.app.mergePR(ctx, owner, repo, number, headSHA); err != nil {
 		slog.Error("github: standing-intent merge failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", err)
-		comment(fmt.Sprintf("Merge failed: %v. @%s's standing `%s` authorization still stands - I'll retry the next time a review from me approves.", err, intent.RequestedBy, e.labels.Merge))
+		comment(fmt.Sprintf("%s @%s's standing `%s` authorization still stands - I'll retry the next time a review from me approves.",
+			mergeFailureComment(err, e.labels.Fix), intent.RequestedBy, e.labels.Merge))
 		return
 	}
 	slog.Info("github pr merged", "component", "github", "repo", owner+"/"+repo, "pr", number, "user", intent.RequestedBy)

@@ -139,6 +139,8 @@ func stubGitHub(t *testing.T, postedComment chan<- string) *httptest.Server {
 			fmt.Fprint(w, `[]`)
 		case strings.HasSuffix(r.URL.Path, "/commits"):
 			fmt.Fprint(w, `[]`)
+		case strings.Contains(r.URL.Path, "/check-runs"):
+			fmt.Fprint(w, `{"check_runs":[]}`)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
 			body, _ := io.ReadAll(r.Body)
 			w.WriteHeader(http.StatusCreated)
@@ -495,6 +497,68 @@ func TestFinalizeSkipsSummaryWhenDeliveryVerified(t *testing.T) {
 	}
 	if _, ok := e.pending.Load(chatID); ok {
 		t.Errorf("pending entry still present after finalize")
+	}
+}
+
+// TestFinalizePostsAnswerWhenPushLeftHeadUnchanged pins #876/#880/#882: a
+// ci_fix run that correctly finds nothing to fix still pushes (a no-op) and
+// still records a delivery outcome - if that alone suppressed the summary,
+// the run's entire analysis would post nowhere. pushedSHA equal to the PR's
+// pre-run head must fall through to the answer comment.
+func TestFinalizePostsAnswerWhenPushLeftHeadUnchanged(t *testing.T) {
+	posted := make(chan string, 1)
+	srv := stubGitHub(t, posted)
+	defer srv.Close()
+	e, _ := newTestExtension(t, srv.URL, nil)
+
+	sessionID := "github-acme-widgets-7"
+	chatID := globalChatID(sessionID)
+	pr := &pendingRun{
+		sessionID: sessionID, owner: "acme", repo: "widgets", number: 7, login: "alice", isPR: true,
+		gh: githubContext{snap: Snapshot{IsPR: true, HeadSHA: "sha-before"}},
+	}
+	e.pending.Store(chatID, pr)
+	e.inflight.Store(sessionID, struct{}{})
+	recordDelivery(chatID, deliveryOutcome{prNumber: 42, prURL: "https://github.com/acme/widgets/pull/42", pushedSHA: "sha-before"})
+
+	e.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "nothing needed fixing - CI was flaky, re-run it"})
+
+	select {
+	case body := <-posted:
+		if !strings.Contains(body, "nothing needed fixing") {
+			t.Errorf("posted comment missing the run's answer: %q", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no summary comment posted for a no-op push - the run's analysis was silently dropped")
+	}
+}
+
+// TestFinalizeSkipsSummaryWhenPushActuallyMovedHead pins the complement: a
+// push whose SHA differs from the PR's pre-run head is real delivered work,
+// so the existing skip-the-duplicate-comment behavior must still hold.
+func TestFinalizeSkipsSummaryWhenPushActuallyMovedHead(t *testing.T) {
+	posted := make(chan string, 1)
+	srv := stubGitHub(t, posted)
+	defer srv.Close()
+	e, _ := newTestExtension(t, srv.URL, nil)
+
+	sessionID := "github-acme-widgets-7"
+	chatID := globalChatID(sessionID)
+	pr := &pendingRun{
+		sessionID: sessionID, owner: "acme", repo: "widgets", number: 7, login: "alice", isPR: true,
+		gh: githubContext{snap: Snapshot{IsPR: true, HeadSHA: "sha-before"}},
+	}
+	e.pending.Store(chatID, pr)
+	e.inflight.Store(sessionID, struct{}{})
+	recordDelivery(chatID, deliveryOutcome{prNumber: 42, prURL: "https://github.com/acme/widgets/pull/42", pushedSHA: "sha-after-fix"})
+
+	e.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "fixed the failing test"})
+
+	select {
+	case body := <-posted:
+		t.Fatalf("unexpected summary comment posted for a push that actually moved the head: %q", body)
+	case <-time.After(300 * time.Millisecond):
+		// expected: no comment - the push itself is the delivered record
 	}
 }
 
@@ -2968,6 +3032,8 @@ func mergeStub(t *testing.T, reviewsJSON, commentsJSON string, posted chan<- str
 			fmt.Fprint(w, `[]`)
 		case strings.HasSuffix(r.URL.Path, "/commits"):
 			fmt.Fprint(w, `[]`)
+		case strings.Contains(r.URL.Path, "/check-runs"):
+			fmt.Fprint(w, `{"check_runs":[]}`)
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
 			fmt.Fprint(w, commentsJSON)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
@@ -3014,6 +3080,8 @@ func mergeStubDynamic(t *testing.T, posted chan<- string, merged chan<- string) 
 			fmt.Fprint(w, `[]`)
 		case strings.HasSuffix(r.URL.Path, "/commits"):
 			fmt.Fprint(w, `[]`)
+		case strings.Contains(r.URL.Path, "/check-runs"):
+			fmt.Fprint(w, `{"check_runs":[]}`)
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
 			fmt.Fprint(w, `[]`)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
@@ -3030,6 +3098,59 @@ func mergeStubDynamic(t *testing.T, posted chan<- string, merged chan<- string) 
 		}
 	}))
 	return srv, func(j string) { reviews.Store(j) }
+}
+
+// TestMergeFailureCommentHumanizesRequiredCheckFailure pins the #876/#880/#882
+// incident: mergePR's error wraps GitHub's real 405 body verbatim
+// ("PUT /repos/.../merge: status 405: {...}") - the comment must name the
+// failing check and never leak the raw JSON, and must say what actually
+// happens next rather than claim an auto-apply the merge flow never does.
+func TestMergeFailureCommentHumanizesRequiredCheckFailure(t *testing.T) {
+	// The real 405 body GitHub returned on quack PR #880.
+	err := fmt.Errorf(`github: PUT /repos/acme/widgets/pulls/880/merge: status 405: {"message":"Required status check \"go-test\" is failing.","documentation_url":"https://docs.github.com/rest/pulls/pulls#merge-a-pull-request"}`)
+
+	got := mergeFailureComment(err, "quack:fix")
+	want := "Merge blocked: required check **go-test** is failing on this PR. Apply the `quack:fix` label to trigger a self-heal, or push a fix yourself - re-review will follow once it pushes."
+	if got != want {
+		t.Errorf("mergeFailureComment(...) = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "{") || strings.Contains(got, "documentation_url") {
+		t.Errorf("humanized comment leaked the raw JSON body: %q", got)
+	}
+}
+
+// TestMergeFailureCommentConciseForOtherErrors pins the fallback: any error
+// that isn't the named-required-check 405 collapses to a single concise line
+// with the raw JSON dropped, never the wrapped-error dump.
+func TestMergeFailureCommentConciseForOtherErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "other 405 message, JSON dropped",
+			err:  fmt.Errorf(`github: PUT /repos/acme/widgets/pulls/7/merge: status 405: {"message":"Base branch was modified. Review and try the merge again.","documentation_url":"https://docs.github.com/x"}`),
+			want: "Merge failed: Base branch was modified. Review and try the merge again.",
+		},
+		{
+			name: "409 conflict, JSON dropped",
+			err:  fmt.Errorf(`github: PUT /repos/acme/widgets/pulls/7/merge: status 409: {"message":"Head branch was modified. Review and try the merge again."}`),
+			want: "Merge failed: Head branch was modified. Review and try the merge again.",
+		},
+		{
+			name: "no JSON body at all - raw error text kept as-is",
+			err:  fmt.Errorf("github: PUT %s: context deadline exceeded", "/repos/acme/widgets/pulls/7/merge"),
+			want: "Merge failed: github: PUT /repos/acme/widgets/pulls/7/merge: context deadline exceeded",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := mergeFailureComment(tt.err, "quack:fix"); got != tt.want {
+				t.Errorf("mergeFailureComment(...) = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }
 
 func mergeLabelBody(sender string) []byte {

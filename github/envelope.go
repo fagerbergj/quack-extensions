@@ -152,6 +152,52 @@ func commentsBlock(gh githubContext, excludeCommentID int64) string {
 		len(d.CommentsAdded), len(d.CommentsEdited), len(d.CommentsDeleted), body)
 }
 
+// maxEnvelopeChecks caps the rendered <checks> lines - a PR with a huge
+// matrix build still gets a bounded envelope, with a note that it was cut.
+const maxEnvelopeChecks = 20
+
+// checksBlock renders the PR's current head-commit check runs as compact
+// status lines (name: status[, conclusion]) plus a one-line failing/pending/
+// passing summary - the compact companion to check-runs.json's full JSON
+// already in the context dir. Empty when there are no checks to report.
+func checksBlock(checks []checkRunView) string {
+	if len(checks) == 0 {
+		return ""
+	}
+	var failing, pending, passing int
+	for _, c := range checks {
+		switch {
+		case c.Status != "completed":
+			pending++
+		case c.Conclusion == "failure" || c.Conclusion == "timed_out":
+			failing++
+		default:
+			passing++
+		}
+	}
+	shown := checks
+	truncated := len(shown) > maxEnvelopeChecks
+	if truncated {
+		shown = shown[:maxEnvelopeChecks]
+	}
+	var b strings.Builder
+	summary := fmt.Sprintf("%d failing, %d pending, %d passing", failing, pending, passing)
+	fmt.Fprintf(&b, "<checks count=\"%d\" summary=%q", len(checks), summary)
+	if truncated {
+		fmt.Fprintf(&b, " truncated=\"showing %d of %d\"", len(shown), len(checks))
+	}
+	b.WriteString(">\n")
+	for _, c := range shown {
+		if c.Status == "completed" {
+			fmt.Fprintf(&b, "%s: completed %s\n", c.Name, c.Conclusion)
+		} else {
+			fmt.Fprintf(&b, "%s: %s\n", c.Name, c.Status)
+		}
+	}
+	b.WriteString("</checks>\n")
+	return b.String()
+}
+
 func changedFilesBlock(snap Snapshot) string {
 	var additions, deletions int
 	for _, f := range snap.Files {
@@ -289,6 +335,7 @@ func (e *Extension) buildEnvelope(ctx context.Context, p issueCommentPayload, ta
 	b.WriteString(commentsBlock(gh, p.Comment.ID))
 	if isPR {
 		b.WriteString(changedFilesBlock(gh.snap))
+		b.WriteString(checksBlock(gh.checks))
 	}
 	b.WriteString(eventBlock(p))
 	if ctxDir != "" {
@@ -297,7 +344,10 @@ func (e *Extension) buildEnvelope(ctx context.Context, p issueCommentPayload, ta
 	return b.String()
 }
 
-// buildWorkerAsk is the consumer split for nodes (#664): ask-only text, never orchestrator-level evidence.
+// buildWorkerAsk is the consumer split for nodes (#664): ask-only text, never
+// orchestrator-level evidence - checksBlock is the one exception (#876/#880/
+// #882): it's a few compact lines, not the churn-scale evidence the split
+// exists to keep out, and a review node with no CI status can approve red.
 func (e *Extension) buildWorkerAsk(ctx context.Context, p issueCommentPayload, task string, gh githubContext, allowedKinds []string, ctxDir string) string {
 	isPR := p.Issue.PullRequest != nil
 	deliverable := e.deliverableText(ctx, p, task, gh, allowedKinds, isPR)
@@ -310,6 +360,9 @@ func (e *Extension) buildWorkerAsk(ctx context.Context, p issueCommentPayload, t
 	}
 	b.WriteString(askBlock(p, gh, isPR))
 	b.WriteString(commentsBlock(gh, p.Comment.ID))
+	if isPR {
+		b.WriteString(checksBlock(gh.checks))
+	}
 	if ctxDir != "" {
 		fmt.Fprintf(&b, "<context dir=%q>Evidence for your task - diffs, CI annotations, review threads, linked issues - lives here as GitHub's own JSON, one file per endpoint. Read what your task needs.</context>\n",
 			filepath.ToSlash(ctxDir))
