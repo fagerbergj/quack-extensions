@@ -207,14 +207,14 @@ func (e *Extension) handlePullRequest(w http.ResponseWriter, body []byte) {
 	}
 
 	if p.Action == "closed" || p.Action == "reopened" {
-		badge := "open"
+		badge, state := "open", sdk.SubjectOpen
 		switch {
 		case p.Action == "closed" && p.PullRequest.Merged:
-			badge = "merged"
+			badge, state = "merged", sdk.SubjectMerged
 		case p.Action == "closed":
-			badge = "closed"
+			badge, state = "closed", sdk.SubjectClosed
 		}
-		e.refreshChatOrigin(p.Repository.Owner.Login, p.Repository.Name, true, p.Number, badge)
+		e.refreshChatOrigin(p.Repository.Owner.Login, p.Repository.Name, true, p.Number, badge, state)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -395,11 +395,11 @@ func (e *Extension) handleIssues(w http.ResponseWriter, body []byte) {
 
 	// A real issue's own state change - not the label-driven work triggers below.
 	if p.Issue.PullRequest == nil && (p.Action == "closed" || p.Action == "reopened") {
-		badge := "open"
+		badge, state := "open", sdk.SubjectOpen
 		if p.Action == "closed" {
-			badge = "closed"
+			badge, state = "closed", sdk.SubjectClosed
 		}
-		e.refreshChatOrigin(p.Repository.Owner.Login, p.Repository.Name, false, p.Issue.Number, badge)
+		e.refreshChatOrigin(p.Repository.Owner.Login, p.Repository.Name, false, p.Issue.Number, badge, state)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -904,13 +904,17 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 		setup.ExistingHeadRef = gh.snap.HeadRef
 	}
 
-	state := gh.snap.State
-	if isPR && gh.snap.Merged {
-		state = "merged"
-	} else if isPR && gh.snap.Draft {
-		state = "draft"
+	badge := gh.snap.State
+	subjectState := sdk.SubjectOpen
+	if gh.snap.State == "closed" {
+		subjectState = sdk.SubjectClosed
 	}
-	o := chatOrigin(owner, repo, isPR, number, state)
+	if isPR && gh.snap.Merged {
+		badge, subjectState = "merged", sdk.SubjectMerged
+	} else if isPR && gh.snap.Draft {
+		badge = "draft" // still open - draft is a badge-only distinction
+	}
+	o := chatOrigin(owner, repo, isPR, number, badge, subjectState)
 	origin := &o
 
 	req := sdk.DispatchRequest{
@@ -965,7 +969,7 @@ func sdkDeliveryKinds(kinds []string) []sdk.DeliveryKind {
 // chatOrigin builds the sidebar provenance chip for an issue/PR chat -
 // shared by dispatch (initial stamp) and refreshChatOrigin (badge-only
 // updates on later state-change webhooks).
-func chatOrigin(owner, repo string, isPR bool, number int, badge string) sdk.ChatOrigin {
+func chatOrigin(owner, repo string, isPR bool, number int, badge string, state sdk.SubjectState) sdk.ChatOrigin {
 	kind := "issues"
 	if isPR {
 		kind = "pull"
@@ -976,21 +980,22 @@ func chatOrigin(owner, repo string, isPR bool, number int, badge string) sdk.Cha
 		Kind:      kind,
 		Href:      fmt.Sprintf("https://github.com/%s/%s/%s/%d", owner, repo, kind, number),
 		Badge:     badge,
+		State:     state,
 		Labels:    map[string][]sdk.LabelValue{"repo": {{Value: owner + "/" + repo, Href: fmt.Sprintf("https://github.com/%s/%s", owner, repo)}}},
 	}
 }
 
-// refreshChatOrigin advances the sidebar badge after a state-change webhook -
-// Label/Kind/Href/Labels stay exactly what dispatch stamped, only Badge
-// moves. Most issues/PRs never had a chat dispatched (no mention, no label),
-// so ErrUnknownChat is the expected, common outcome here - swallowed at
-// Debug rather than Warn.
-func (e *Extension) refreshChatOrigin(owner, repo string, isPR bool, number int, badge string) {
+// refreshChatOrigin advances the sidebar badge and typed State after a
+// state-change webhook - Label/Kind/Href/Labels stay exactly what dispatch
+// stamped. Most issues/PRs never had a chat dispatched (no mention, no
+// label), so ErrUnknownChat is the expected, common outcome here - swallowed
+// at Debug rather than Warn.
+func (e *Extension) refreshChatOrigin(owner, repo string, isPR bool, number int, badge string, state sdk.SubjectState) {
 	if e.host.UpdateChatOrigin == nil {
 		return
 	}
 	sessionID := fmt.Sprintf("github-%s-%s-%d", owner, repo, number)
-	err := e.host.UpdateChatOrigin(sessionID, chatOrigin(owner, repo, isPR, number, badge))
+	err := e.host.UpdateChatOrigin(sessionID, chatOrigin(owner, repo, isPR, number, badge, state))
 	switch {
 	case err == nil:
 	case errors.Is(err, sdk.ErrUnknownChat):

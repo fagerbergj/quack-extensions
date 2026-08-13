@@ -545,9 +545,10 @@ func TestHandleWebhookIssueStateChangeRefreshesOrigin(t *testing.T) {
 	tests := []struct {
 		action    string
 		wantBadge string
+		wantState sdk.SubjectState
 	}{
-		{"closed", "closed"},
-		{"reopened", "open"},
+		{"closed", "closed", sdk.SubjectClosed},
+		{"reopened", "open", sdk.SubjectOpen},
 	}
 	for _, tt := range tests {
 		t.Run(tt.action, func(t *testing.T) {
@@ -570,6 +571,9 @@ func TestHandleWebhookIssueStateChangeRefreshesOrigin(t *testing.T) {
 			}
 			if calls[0].origin.Badge != tt.wantBadge {
 				t.Errorf("badge = %q, want %q", calls[0].origin.Badge, tt.wantBadge)
+			}
+			if calls[0].origin.State != tt.wantState {
+				t.Errorf("state = %q, want %q", calls[0].origin.State, tt.wantState)
 			}
 			if calls[0].origin.Kind != "issues" {
 				t.Errorf("kind = %q, want issues", calls[0].origin.Kind)
@@ -594,10 +598,11 @@ func TestHandleWebhookPullRequestStateChangeRefreshesOrigin(t *testing.T) {
 		action    string
 		merged    bool
 		wantBadge string
+		wantState sdk.SubjectState
 	}{
-		{"merged", "closed", true, "merged"},
-		{"closed without merging", "closed", false, "closed"},
-		{"reopened", "reopened", false, "open"},
+		{"merged", "closed", true, "merged", sdk.SubjectMerged},
+		{"closed without merging", "closed", false, "closed", sdk.SubjectClosed},
+		{"reopened", "reopened", false, "open", sdk.SubjectOpen},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -620,6 +625,9 @@ func TestHandleWebhookPullRequestStateChangeRefreshesOrigin(t *testing.T) {
 			}
 			if calls[0].origin.Badge != tt.wantBadge {
 				t.Errorf("badge = %q, want %q", calls[0].origin.Badge, tt.wantBadge)
+			}
+			if calls[0].origin.State != tt.wantState {
+				t.Errorf("state = %q, want %q", calls[0].origin.State, tt.wantState)
 			}
 			if calls[0].origin.Kind != "pull" {
 				t.Errorf("kind = %q, want pull", calls[0].origin.Kind)
