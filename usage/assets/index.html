@@ -25,7 +25,15 @@
      (docs: dataviz skill references/palette.md) - dark values are the same
      eight hues re-stepped for the dark surface, not a separate palette. */
   :root {
+    color-scheme: light;
+    /* One control geometry for every input/button in the picker, so the
+       segmented control, the date fields and Apply line up on one baseline.
+       Radius comes from the kit when it loads. */
+    --control-h: 2rem;
+    --control-radius: var(--qk-radius, 0.5rem);
+    --focus-ring: var(--qk-accent, #2a78d6);
     --surface-1: #fcfcfb;
+    --surface-2: #f0efea;
     --page-plane: #f9f9f7;
     --text-primary: #1b1f24;
     --text-secondary: #52514e;
@@ -46,7 +54,12 @@
     --series-other: #898781;
   }
   :root[data-theme="dark"] {
+    /* Native widgets (the datetime-local picker especially) follow
+       color-scheme, not our tokens - without this the date popup renders
+       white on the dark page. */
+    color-scheme: dark;
     --surface-1: #1a1a19;
+    --surface-2: #232322;
     --page-plane: #0d0d0d;
     --text-primary: #ffffff;
     --text-secondary: #c3c2b7;
@@ -84,29 +97,85 @@
     margin-bottom: 1rem;
   }
   header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem; }
-  .timeframe { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.9rem; }
-  .range-select { display: flex; flex-wrap: wrap; gap: 0.25rem; }
-  .range-select button, .custom-range button {
+  .timeframe { display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 0.9rem; }
+  /* Segmented control: one track, presets + "Custom…" as segments of it.
+     The custom row below is part of the same control - it only exists while
+     that segment is chosen. */
+  .segmented {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    padding: 2px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--control-radius);
+  }
+  .segment {
+    display: inline-flex;
+    align-items: center;
+    height: var(--control-h);
+    padding: 0 0.8rem;
     font: inherit;
-    padding: 0.35rem 0.75rem;
-    border: 1px solid var(--baseline);
-    background: var(--surface-1);
-    color: var(--text-primary);
+    font-size: 0.8125rem;
+    line-height: 1;
+    color: var(--text-secondary);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: calc(var(--control-radius) - 2px);
     cursor: pointer;
-    border-radius: 4px;
   }
-  .range-select button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-  .custom-range { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
-  .custom-range label { font-size: 0.8rem; color: var(--text-secondary); display: flex; align-items: center; gap: 0.3rem; }
-  .custom-range input[type="datetime-local"] {
-    font: inherit;
-    padding: 0.3rem 0.4rem;
-    border: 1px solid var(--baseline);
-    border-radius: 4px;
+  .segment:hover { background: var(--surface-1); color: var(--text-primary); }
+  .segment[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .segment--custom { margin-left: 4px; border-left: 1px solid var(--border); border-top-left-radius: 0; border-bottom-left-radius: 0; padding-left: 0.85rem; }
+  /* Open-but-not-applied: the row is showing, the range hasn't changed yet.
+     Reads as active without claiming to be the selected range. */
+  .segment--custom[aria-expanded="true"] { background: var(--surface-1); color: var(--text-primary); }
+  .segment--custom[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-left-color: var(--accent); border-radius: calc(var(--control-radius) - 2px); }
+  .custom-range {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.45rem 0.55rem;
     background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: var(--control-radius);
+  }
+  .custom-range[hidden] { display: none; }
+  .custom-range label {
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .custom-range input[type="datetime-local"] {
+    height: var(--control-h);
+    padding: 0 0.4rem;
+    font: inherit;
+    font-size: 0.8125rem;
+    border: 1px solid var(--border);
+    border-radius: calc(var(--control-radius) - 2px);
+    background: var(--page-plane);
     color: var(--text-primary);
   }
-  .range-error { color: #e34948; font-size: 0.8rem; min-height: 1.1em; }
+  #range-apply {
+    height: var(--control-h);
+    padding: 0 0.9rem;
+    font: inherit;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--accent-ink);
+    background: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: calc(var(--control-radius) - 2px);
+    cursor: pointer;
+  }
+  .segment:focus-visible, #range-apply:focus-visible, .custom-range input:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 1px;
+  }
+  .range-error { color: #e34948; font-size: 0.8rem; }
+  .range-error:empty { display: none; }
   .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; }
   .kpi-tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem 0.9rem; }
   .kpi-value { font-size: 1.5rem; font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -140,6 +209,37 @@
     z-index: 5;
   }
   .chart-wrap { position: relative; }
+  /* Dimension card: share (donut) beside when (series). Both columns are
+     flex items with a basis, so a narrow viewport wraps the series under
+     the donut instead of squeezing either into unreadability. */
+  .panel-split { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 1rem 1.5rem; }
+  .panel-split > .donut-col { flex: 0 1 210px; min-width: 190px; }
+  .panel-split > .series-col { flex: 4 1 300px; min-width: 0; }
+  .panel-split .chart-sub { margin: 0 0 0.4rem; }
+  .donut-svg { display: block; width: 100%; max-width: 190px; height: auto; margin: 0 auto; }
+  .donut-arc { transition: opacity 0.12s ease, stroke-width 0.12s ease; }
+  .donut-total { font-size: 19px; font-weight: 600; fill: var(--text-primary); font-variant-numeric: tabular-nums; }
+  .donut-caption { font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; fill: var(--text-muted); }
+  .donut-legend { display: flex; flex-direction: column; gap: 0.1rem; margin-top: 0.6rem; }
+  .donut-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    width: 100%;
+    padding: 0.1rem 0;
+    font: inherit;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-align: left;
+    background: none;
+    border: none;
+    cursor: pointer;
+  }
+  .donut-legend-item[aria-pressed="false"] { opacity: 0.4; text-decoration: line-through; }
+  .donut-legend-item:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+  .donut-legend-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .donut-legend-value { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+  .donut-legend-pct { width: 3.1rem; text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; }
   .axis-labels { display: flex; justify-content: space-between; color: var(--text-muted); font-size: 0.7rem; margin-top: 0.15rem; }
 </style>
 <link rel="stylesheet" href="/assets/ext/v1/kit.css">
@@ -151,15 +251,18 @@
       <h1>Usage</h1>
     </header>
     <div class="timeframe">
-      <div class="range-select" role="group" aria-label="Preset time range" id="range-select">
-        <button type="button" data-range="1h">1h</button>
-        <button type="button" data-range="24h">24h</button>
-        <button type="button" data-range="7d">7d</button>
-        <button type="button" data-range="30d">30d</button>
+      <div class="segmented" role="group" aria-label="Time range" id="range-select">
+        <button type="button" class="segment" data-range="1h">1h</button>
+        <button type="button" class="segment" data-range="24h">24h</button>
+        <button type="button" class="segment" data-range="7d">7d</button>
+        <button type="button" class="segment" data-range="30d">30d</button>
+        <button type="button" class="segment segment--custom" id="range-custom" aria-expanded="false" aria-controls="custom-range">Custom…</button>
       </div>
-      <div class="custom-range" id="custom-range">
-        <label>From <input type="datetime-local" id="range-from"></label>
-        <label>To <input type="datetime-local" id="range-to"></label>
+      <div class="custom-range" id="custom-range" hidden>
+        <label for="range-from">From</label>
+        <input type="datetime-local" id="range-from">
+        <label for="range-to">To</label>
+        <input type="datetime-local" id="range-to">
         <button type="button" id="range-apply">Apply</button>
         <span class="range-error" id="range-error" role="alert"></span>
       </div>
@@ -190,21 +293,57 @@
       <div class="chart" data-panel="tokens-headline"></div>
     </div>
 
-    <div class="panel" id="panel-tokens-model">
+    <div class="panel panel-wide" id="panel-tokens-model">
       <h2>Tokens by model</h2>
-      <div class="chart" data-panel="tokens-model"></div>
+      <div class="panel-split">
+        <div class="donut-col">
+          <div class="chart-sub">Share of window</div>
+          <div class="donut" data-donut="tokens-model"></div>
+        </div>
+        <div class="series-col">
+          <div class="chart-sub">Over time</div>
+          <div class="chart" data-panel="tokens-model"></div>
+        </div>
+      </div>
     </div>
-    <div class="panel" id="panel-tokens-source">
-      <h2>Tokens by source</h2>
-      <div class="chart" data-panel="tokens-source"></div>
-    </div>
-    <div class="panel" id="panel-tokens-agent">
+    <div class="panel panel-wide" id="panel-tokens-agent">
       <h2>Tokens by agent</h2>
-      <div class="chart" data-panel="tokens-agent"></div>
+      <div class="panel-split">
+        <div class="donut-col">
+          <div class="chart-sub">Share of window</div>
+          <div class="donut" data-donut="tokens-agent"></div>
+        </div>
+        <div class="series-col">
+          <div class="chart-sub">Over time</div>
+          <div class="chart" data-panel="tokens-agent"></div>
+        </div>
+      </div>
     </div>
-    <div class="panel" id="panel-tokens-user">
+    <div class="panel panel-wide" id="panel-tokens-source">
+      <h2>Tokens by source</h2>
+      <div class="panel-split">
+        <div class="donut-col">
+          <div class="chart-sub">Share of window</div>
+          <div class="donut" data-donut="tokens-source"></div>
+        </div>
+        <div class="series-col">
+          <div class="chart-sub">Over time</div>
+          <div class="chart" data-panel="tokens-source"></div>
+        </div>
+      </div>
+    </div>
+    <div class="panel panel-wide" id="panel-tokens-user">
       <h2>Tokens by user</h2>
-      <div class="chart" data-panel="tokens-user"></div>
+      <div class="panel-split">
+        <div class="donut-col">
+          <div class="chart-sub">Share of window</div>
+          <div class="donut" data-donut="tokens-user"></div>
+        </div>
+        <div class="series-col">
+          <div class="chart-sub">Over time</div>
+          <div class="chart" data-panel="tokens-user"></div>
+        </div>
+      </div>
     </div>
 
     <div class="panel" id="panel-cache">

@@ -1,7 +1,7 @@
 // quack usage dashboard - vanilla JS, no build step, no CDN. Charts are
-// hand-rolled inline SVG (stacked area / multi-line): the dataset here is a
-// handful of series over a handful of ranges, nowhere near where a ~40KB
-// charting library (uPlot et al.) earns its weight.
+// hand-rolled inline SVG (stacked area / multi-line / columns / donut): the
+// dataset here is a handful of series over a handful of ranges, nowhere
+// near where a ~40KB charting library (uPlot et al.) earns its weight.
 
 // Single source of truth for every metric/label string this page queries.
 // MIRRORS quack's internal/otelobs token/cost/latency instruments
@@ -45,6 +45,18 @@ const LATENCY = {
   metric: "quack_model_call_duration_seconds",
 };
 
+// Sparse-data presentation. At a few runs a day a per-step increase() line
+// is mostly a flat zero with occasional spikes, and the polyline's slopes
+// between them imply activity that never happened. Below this many NON-ZERO
+// points, an additive chart draws columns instead: one mark per step that
+// actually had traffic, nothing drawn between them.
+const SPARSE_MAX_NONZERO = 8;
+
+// Donut slice budget. Six named slices + "Other" is the readable ceiling for
+// a 180px ring; the series beside it uses the SAME ranking so a label keeps
+// one color across both halves of the card.
+const DONUT_TOP_N = 6;
+
 const RANGES = { "1h": 3600, "24h": 86400, "7d": 604800, "30d": 2592000 };
 const DEFAULT_RANGE_KEY = "24h";
 const STORAGE_KEY = "quack.usage.timeframe";
@@ -76,7 +88,9 @@ function stepForSpan(spanSeconds) {
 // "cached" is the same color everywhere, independent of fetch order.
 //
 // Every other dimension (model/source/agent/user) is scoped to exactly one
-// panel, so each panel gets its own fresh discovery-order assigner
+// card - the donut and the series in it share ONE assigner, fed the same
+// ranked list, so a label is one color across both - so each card gets its
+// own fresh discovery-order assigner
 // (makeColorAssigner) over the full 8-slot palette - there's no cross-panel
 // value overlap to protect, and sharing one global counter across
 // unrelated dimensions would just starve later panels of slots for no
@@ -187,6 +201,27 @@ function matrixSeriesPoints(item) {
     .filter((p) => !Number.isNaN(p.v));
 }
 
+function countNonZeroPoints(points) {
+  let n = 0;
+  for (const p of points) if (p.v > 0) n++;
+  return n;
+}
+
+// shouldRenderBars decides columns-vs-line for a whole chart (never a mix -
+// two mark types in one plot read as two different measurements). Only
+// additive charts qualify: stacking p50/p95/p99 or a percentage would be a
+// lie. The busiest series decides, so one dense series keeps the whole
+// chart on lines.
+function shouldRenderBars(series, additive) {
+  if (!additive) return false;
+  let most = 0;
+  for (const s of series) {
+    const n = countNonZeroPoints(s.points);
+    if (n > most) most = n;
+  }
+  return most > 0 && most < SPARSE_MAX_NONZERO;
+}
+
 // --- Formatting ---
 
 function formatNumber(n) {
@@ -243,6 +278,24 @@ function showError(el, msg) {
   el.appendChild(p);
 }
 
+// tooltipRow builds one "<swatch> text" tooltip line out of DOM nodes.
+// NEVER assemble one by interpolating into an HTML sink: `text` carries
+// Prometheus label values (model/agent/user names), which reach this page
+// straight out of the metrics store and would otherwise be parsed as
+// markup. `color` is ours (a --series-* token), not data. The test pins
+// that this file has no such sink at all.
+function tooltipRow(color, text) {
+  const row = document.createElement("div");
+  const mark = document.createElement("span");
+  mark.style.color = color;
+  mark.textContent = "■";
+  const label = document.createElement("span");
+  label.textContent = " " + text;
+  row.appendChild(mark);
+  row.appendChild(label);
+  return row;
+}
+
 function renderStat(el, label, value, title) {
   const tile = document.createElement("div");
   tile.className = "stat-tile";
@@ -259,6 +312,10 @@ function panelEl(name) {
   return document.querySelector(`[data-panel="${name}"]`);
 }
 
+function donutEl(name) {
+  return document.querySelector(`[data-donut="${name}"]`);
+}
+
 // ============================================================
 // Chart renderer: shared multi-series SVG chart with a fixed
 // [start, end] x-domain (every panel uses the SAME domain from the one
@@ -272,10 +329,15 @@ const CHART_W = 600;
 const CHART_H = 150;
 const CHART_PAD = 8;
 
-// renderSeriesChart(el, spec) where spec:
+// renderSeriesChart(el, spec) returns {redraw} so an external legend (the
+// donut's, on the dimension cards) can toggle a series and repaint. spec:
 //   series: [{key, label, color, points: [{t,v}]}]
 //   start, end: shared x-domain, unix seconds
+//   step: query step in seconds, sets the column width in bars mode
 //   mode: "stacked-area" | "lines"
+//   additive: true when the series sum to a meaningful total - the
+//     precondition for stacking, and for the sparse->columns switch
+//   hidden: optional externally-owned Set of hidden series keys
 //   emptyMsg: shown when every series has zero points
 //   valueFormat: fn(v) => string (tooltip + legend), defaults to formatNumber
 //   yMax: optional forced axis max (e.g. 100 for a percentage)
@@ -286,10 +348,10 @@ function renderSeriesChart(el, spec) {
   clear(el);
   if (nonEmpty.length === 0) {
     showEmpty(el, spec.emptyMsg || EMPTY_TOKENS_MSG);
-    return;
+    return { redraw() {} };
   }
 
-  const hidden = new Set();
+  const hidden = spec.hidden || new Set();
   const wrap = document.createElement("div");
   wrap.className = "chart-wrap";
   el.appendChild(wrap);
@@ -329,9 +391,13 @@ function renderSeriesChart(el, spec) {
     }
     const ticks = Array.from(tickSet).sort((a, b) => a - b);
 
+    const additive = spec.mode === "stacked-area" || spec.additive === true;
+    const useBars = shouldRenderBars(visible, additive);
+    const stackMarks = spec.mode === "stacked-area" || useBars;
+
     let yMax = spec.yMax;
     if (yMax === undefined) {
-      if (spec.mode === "stacked-area") {
+      if (stackMarks) {
         yMax = 0.0001;
         for (const t of ticks) {
           let sum = 0;
@@ -361,7 +427,31 @@ function renderSeriesChart(el, spec) {
     baseline.setAttribute("stroke-width", "1");
     svg.appendChild(baseline);
 
-    if (spec.mode === "stacked-area") {
+    if (useBars) {
+      // One column per step that actually had traffic, stacked in series
+      // order. Zero steps draw nothing at all - the gaps ARE the data.
+      const span = Math.max(1, spec.end - spec.start);
+      const stepSeconds = spec.step || (ticks.length > 1 ? ticks[1] - ticks[0] : span);
+      const barW = Math.max(5, Math.min(28, (stepSeconds / span) * (CHART_W - 2 * CHART_PAD)));
+      const bottoms = new Map();
+      for (const s of visible) {
+        const m = pointMaps.get(s.key);
+        for (const t of ticks) {
+          const v = m.get(t) || 0;
+          if (v <= 0) continue;
+          const base = bottoms.get(t) || 0;
+          const rect = document.createElementNS(SVG_NS, "rect");
+          const left = Math.max(0, Math.min(CHART_W - barW, x(t) - barW / 2));
+          rect.setAttribute("x", left.toFixed(1));
+          rect.setAttribute("y", y(base + v).toFixed(1));
+          rect.setAttribute("width", barW.toFixed(1));
+          rect.setAttribute("height", Math.max(1, y(base) - y(base + v)).toFixed(1));
+          rect.setAttribute("fill", s.color);
+          svg.appendChild(rect);
+          bottoms.set(t, base + v);
+        }
+      }
+    } else if (spec.mode === "stacked-area") {
       let cumBottom = ticks.map(() => 0);
       for (const s of visible) {
         const m = pointMaps.get(s.key);
@@ -438,14 +528,14 @@ function renderSeriesChart(el, spec) {
         guide.setAttribute("x2", x(nearest).toFixed(1));
         guide.style.display = "";
 
-        const lines = [`<strong>${formatClock(nearest)}</strong>`];
+        clear(tooltip);
+        const head = document.createElement("strong");
+        head.textContent = formatClock(nearest);
+        tooltip.appendChild(head);
         for (const s of visible) {
           const v = pointMaps.get(s.key).get(nearest);
-          lines.push(
-            `<span style="color:${s.color}">&#9632;</span> ${s.label}: ${v === undefined ? "–" : valueFormat(v)}`
-          );
+          tooltip.appendChild(tooltipRow(s.color, `${s.label}: ${v === undefined ? "–" : valueFormat(v)}`));
         }
-        tooltip.innerHTML = lines.join("<br>");
         tooltip.style.display = "";
         tooltip.style.left = Math.min(evt.clientX - rect.left + 10, rect.width - 160) + "px";
         tooltip.style.top = "0px";
@@ -468,7 +558,7 @@ function renderSeriesChart(el, spec) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "legend-item";
-      btn.setAttribute("aria-pressed", "true");
+      btn.setAttribute("aria-pressed", String(!hidden.has(s.key)));
       const swatch = document.createElement("span");
       swatch.className = "legend-swatch";
       swatch.style.background = s.color;
@@ -490,6 +580,173 @@ function renderSeriesChart(el, spec) {
     }
     el.appendChild(legendEl);
   }
+
+  return { redraw: draw };
+}
+
+// ============================================================
+// Donut: the "who used what share of this window" half of a dimension card.
+// One instant sum per label, so it answers a question the time series
+// can't - and at a handful of runs a day it's the half that carries the
+// information. Arcs are stroke-dasharray on concentric circles (not path A
+// commands): a single 100% slice is then just a full circle instead of the
+// degenerate zero-length arc a 360-degree A command draws.
+// ============================================================
+
+const DONUT_SIZE = 180;
+const DONUT_R = 66;
+const DONUT_STROKE = 26;
+const DONUT_GAP = 1.5; // units of circumference shaved off each arc's end
+
+// renderDonut(el, spec) where spec:
+//   slices: [{key, label, value, color}] - already ranked/colored by the
+//     caller so the series beside it can share the exact same assignment
+//   hidden: optional externally-owned Set of hidden keys (shared with the
+//     series chart); hidden slices dim but keep their share of the total,
+//     because re-basing percentages on a toggle reads as data changing
+//   onToggle: fn(key) called after `hidden` is mutated
+//   caption: small label under the center total
+//   emptyMsg: shown when nothing in the window has a positive value
+function renderDonut(el, spec) {
+  clear(el);
+  const hidden = spec.hidden || new Set();
+  const slices = spec.slices.filter((s) => Number.isFinite(s.value) && s.value > 0);
+  const total = slices.reduce((a, s) => a + s.value, 0);
+  if (slices.length === 0 || total <= 0) {
+    showEmpty(el, spec.emptyMsg || EMPTY_TOKENS_MSG);
+    return;
+  }
+
+  const wrap = document.createElement("div");
+  wrap.className = "chart-wrap donut-wrap";
+  el.appendChild(wrap);
+
+  const tooltip = document.createElement("div");
+  tooltip.className = "chart-tooltip";
+  tooltip.style.display = "none";
+  wrap.appendChild(tooltip);
+
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${DONUT_SIZE} ${DONUT_SIZE}`);
+  svg.setAttribute("class", "donut-svg");
+  const mid = DONUT_SIZE / 2;
+
+  const track = document.createElementNS(SVG_NS, "circle");
+  track.setAttribute("cx", String(mid));
+  track.setAttribute("cy", String(mid));
+  track.setAttribute("r", String(DONUT_R));
+  track.setAttribute("fill", "none");
+  track.setAttribute("stroke", "var(--gridline)");
+  track.setAttribute("stroke-width", String(DONUT_STROKE));
+  svg.appendChild(track);
+
+  const ring = document.createElementNS(SVG_NS, "g");
+  ring.setAttribute("transform", `rotate(-90 ${mid} ${mid})`);
+  svg.appendChild(ring);
+
+  const circumference = 2 * Math.PI * DONUT_R;
+  const arcs = new Map();
+  let acc = 0;
+  for (const s of slices) {
+    const frac = s.value / total;
+    const arc = document.createElementNS(SVG_NS, "circle");
+    arc.setAttribute("class", "donut-arc");
+    arc.setAttribute("cx", String(mid));
+    arc.setAttribute("cy", String(mid));
+    arc.setAttribute("r", String(DONUT_R));
+    arc.setAttribute("fill", "none");
+    arc.setAttribute("stroke", s.color);
+    arc.setAttribute("stroke-width", String(DONUT_STROKE));
+    const len = slices.length > 1 ? Math.max(1, frac * circumference - DONUT_GAP) : circumference;
+    arc.setAttribute("stroke-dasharray", `${len.toFixed(2)} ${(circumference - len).toFixed(2)}`);
+    arc.setAttribute("stroke-dashoffset", (-acc * circumference).toFixed(2));
+    ring.appendChild(arc);
+    arcs.set(s.key, arc);
+    acc += frac;
+
+    arc.addEventListener("mousemove", (evt) => {
+      paint(s.key);
+      const rect = wrap.getBoundingClientRect();
+      clear(tooltip);
+      tooltip.appendChild(tooltipRow(s.color, s.label));
+      const sub = document.createElement("div");
+      sub.textContent = `${formatNumber(s.value)} (${formatPercent((s.value / total) * 100)})`;
+      tooltip.appendChild(sub);
+      tooltip.style.display = "";
+      tooltip.style.left = Math.max(0, Math.min(evt.clientX - rect.left + 10, rect.width - 140)) + "px";
+      tooltip.style.top = "0px";
+    });
+    arc.addEventListener("mouseleave", () => {
+      paint(null);
+      tooltip.style.display = "none";
+    });
+  }
+
+  const totalText = document.createElementNS(SVG_NS, "text");
+  totalText.setAttribute("class", "donut-total");
+  totalText.setAttribute("x", String(mid));
+  totalText.setAttribute("y", String(mid + 2));
+  totalText.setAttribute("text-anchor", "middle");
+  totalText.textContent = formatNumber(total);
+  svg.appendChild(totalText);
+
+  const capText = document.createElementNS(SVG_NS, "text");
+  capText.setAttribute("class", "donut-caption");
+  capText.setAttribute("x", String(mid));
+  capText.setAttribute("y", String(mid + 20));
+  capText.setAttribute("text-anchor", "middle");
+  capText.textContent = spec.caption || "total";
+  svg.appendChild(capText);
+
+  wrap.insertBefore(svg, tooltip);
+
+  const legendEl = document.createElement("div");
+  legendEl.className = "donut-legend";
+  const rows = new Map();
+  for (const s of slices) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "donut-legend-item";
+    btn.title = `${s.label}: ${formatNumber(s.value)}`;
+    const swatch = document.createElement("span");
+    swatch.className = "legend-swatch";
+    swatch.style.background = s.color;
+    const label = document.createElement("span");
+    label.className = "donut-legend-label";
+    label.textContent = s.label;
+    const value = document.createElement("span");
+    value.className = "donut-legend-value";
+    value.textContent = formatNumber(s.value);
+    const pct = document.createElement("span");
+    pct.className = "donut-legend-pct";
+    pct.textContent = formatPercent((s.value / total) * 100);
+    btn.append(swatch, label, value, pct);
+    btn.addEventListener("mouseenter", () => paint(s.key));
+    btn.addEventListener("mouseleave", () => paint(null));
+    btn.addEventListener("click", () => {
+      if (hidden.has(s.key)) hidden.delete(s.key);
+      else hidden.add(s.key);
+      paint(null);
+      if (spec.onToggle) spec.onToggle(s.key);
+    });
+    rows.set(s.key, btn);
+    legendEl.appendChild(btn);
+  }
+  el.appendChild(legendEl);
+
+  function paint(focusKey) {
+    for (const s of slices) {
+      const isHidden = hidden.has(s.key);
+      const arc = arcs.get(s.key);
+      let opacity = 1;
+      if (isHidden) opacity = 0.15;
+      else if (focusKey && focusKey !== s.key) opacity = 0.3;
+      arc.setAttribute("opacity", String(opacity));
+      arc.setAttribute("stroke-width", String(!isHidden && focusKey === s.key ? DONUT_STROKE + 5 : DONUT_STROKE));
+      rows.get(s.key).setAttribute("aria-pressed", String(!isHidden));
+    }
+  }
+  paint(null);
 }
 
 // ============================================================
@@ -569,29 +826,105 @@ function topKWithOther(series, k) {
   return kept;
 }
 
-async function loadDimSeriesPanel(name, dimLabel, start, end, step, buildQuery) {
-  const el = panelEl(name);
-  const query = (buildQuery || dimSeriesQuery)(dimLabel, step);
-  const resp = await promQueryRange(query, start, end, step);
-  const status = promResultOrStatus(resp);
-  if (!status.ok) {
-    if (status.empty) return showEmpty(el, EMPTY_TOKENS_MSG);
-    return showError(el, status.message);
+// dimQuery builds one dimension's query for an arbitrary window: the SAME
+// builder feeds the range query (window = step, one point per step) and the
+// instant query (window = the whole range, one number per label) so the two
+// halves of a card can never drift into measuring different things.
+function dimQuery(dimLabel, windowSeconds) {
+  return dimLabel === "__model__" ? modelSeriesQuery(windowSeconds) : dimSeriesQuery(dimLabel, windowSeconds);
+}
+
+function dimValue(metric, dimLabel) {
+  if (dimLabel === "__model__") return firstLabel(metric, METRICS.labels.model, METRICS.labels.modelFallback);
+  return metric[dimLabel] || "(unknown)";
+}
+
+// loadDimPanel fills one dimension card: donut (share of the window) left,
+// series (when) right. Both are built from ONE ranking - the instant totals,
+// ranked and folded by topKWithOther, colored once - so a label carries the
+// same color in both halves and one legend can drive both.
+async function loadDimPanel(name, dimLabel, win) {
+  const seriesMount = panelEl(name);
+  const donutMount = donutEl(name);
+
+  const [rangeResp, totalResp] = await Promise.all([
+    promQueryRange(dimQuery(dimLabel, win.step), win.start, win.end, win.step),
+    promQuery(dimQuery(dimLabel, win.rangeSeconds), win.now),
+  ]);
+  const rangeStatus = promResultOrStatus(rangeResp);
+  const totalStatus = promResultOrStatus(totalResp);
+  const rangeFailed = !rangeStatus.ok && !rangeStatus.empty;
+  const totalFailed = !totalStatus.ok && !totalStatus.empty;
+  if (rangeFailed) showError(seriesMount, rangeStatus.message);
+  if (totalFailed) showError(donutMount, totalStatus.message);
+  if (rangeFailed && totalFailed) return;
+
+  // Two series can resolve to the same display label (the model dimension
+  // groups by both the translated and unqualified name) - fold them.
+  const pointsByLabel = new Map();
+  if (rangeStatus.ok) {
+    for (const s of rangeStatus.series) {
+      const label = dimValue(s.metric, dimLabel);
+      if (!pointsByLabel.has(label)) pointsByLabel.set(label, new Map());
+      const m = pointsByLabel.get(label);
+      for (const p of matrixSeriesPoints(s)) m.set(p.t, (m.get(p.t) || 0) + p.v);
+    }
   }
-  const raw = status.series.map((s) => {
-    const label = dimLabel === "__model__" ? firstLabel(s.metric, METRICS.labels.model, METRICS.labels.modelFallback) : s.metric[dimLabel] || "(unknown)";
-    const points = matrixSeriesPoints(s);
-    return { label, points, total: points.reduce((a, p) => a + p.v, 0) };
-  });
-  const topped = topKWithOther(raw, MAX_PALETTE_SLOTS);
+  const pointsOf = (label) =>
+    Array.from((pointsByLabel.get(label) || new Map()).entries())
+      .map(([t, v]) => ({ t, v }))
+      .sort((a, b) => a.t - b.t);
+
+  const totals = new Map();
+  if (totalStatus.ok) {
+    for (const s of totalStatus.series) {
+      const label = dimValue(s.metric, dimLabel);
+      totals.set(label, (totals.get(label) || 0) + Number(s.value[1]));
+    }
+  } else {
+    // Instant query empty/failed: rank off the range's own sums so the
+    // series still renders. The donut stays empty rather than showing a
+    // total it didn't measure.
+    for (const [label, m] of pointsByLabel) {
+      totals.set(label, Array.from(m.values()).reduce((a, v) => a + v, 0));
+    }
+  }
+
+  const entries = Array.from(totals, ([label, total]) => ({ label, total, points: pointsOf(label) }));
+  const ranked = topKWithOther(entries, DONUT_TOP_N);
   const colorFor = makeColorAssigner();
-  const series = topped.map((s) => ({
+  const colored = ranked.map((s) => ({
     key: s.label,
     label: s.label,
-    color: s.isOther ? cssVar("--series-other") : colorFor(s.label),
+    total: s.total,
     points: s.points,
+    color: s.isOther ? cssVar("--series-other") : colorFor(s.label),
   }));
-  renderSeriesChart(el, { series, start, end, mode: "lines", emptyMsg: EMPTY_TOKENS_MSG });
+
+  // One hidden-set for the card: the donut's legend is the only legend, so
+  // clicking a slice hides that series in the plot beside it too.
+  const hidden = new Set();
+  const chart = rangeFailed
+    ? { redraw() {} }
+    : renderSeriesChart(seriesMount, {
+        series: colored.map((s) => ({ key: s.key, label: s.label, color: s.color, points: s.points })),
+        start: win.start,
+        end: win.end,
+        step: win.step,
+        mode: "lines",
+        additive: true,
+        hidden,
+        showLegend: false,
+        emptyMsg: EMPTY_TOKENS_MSG,
+      });
+  if (totalFailed) return;
+  renderDonut(donutMount, {
+    slices: totalStatus.ok ? colored.map((s) => ({ key: s.key, label: s.label, value: s.total, color: s.color })) : [],
+    caption: "tokens",
+    hidden,
+    onToggle: () => chart.redraw(),
+    emptyMsg: EMPTY_TOKENS_MSG,
+  });
 }
 
 async function loadHeadlineTokens(start, end, step) {
@@ -613,7 +946,7 @@ async function loadHeadlineTokens(start, end, step) {
     color: tokenTypeColor(t),
     points: byType.get(t),
   }));
-  renderSeriesChart(el, { series, start, end, mode: "stacked-area", emptyMsg: EMPTY_TOKENS_MSG });
+  renderSeriesChart(el, { series, start, end, step, mode: "stacked-area", emptyMsg: EMPTY_TOKENS_MSG });
   return byType;
 }
 
@@ -652,6 +985,7 @@ async function loadCachePanel(start, end, step, instantTotals) {
       series: [{ key: "cache-rate", label: "cache rate", color: cssVar("--series-1"), points: ratePoints }],
       start,
       end,
+      step,
       mode: "lines",
       yMax: 100,
       valueFormat: formatPercent,
@@ -706,6 +1040,7 @@ async function loadCostPanel(start, end, step, instantCost) {
     series: [{ key: "cost", label: "cost", color: cssVar("--series-1"), points }],
     start,
     end,
+    step,
     mode: "stacked-area",
     valueFormat: formatMoney,
     showLegend: false,
@@ -721,6 +1056,7 @@ async function loadCostPanel(start, end, step, instantCost) {
     series: [{ key: "cost-cumulative", label: "cumulative cost", color: cssVar("--series-2"), points: cumPoints }],
     start,
     end,
+    step,
     mode: "lines",
     valueFormat: formatMoney,
     showLegend: false,
@@ -762,6 +1098,7 @@ async function loadLatencyPanel(start, end, step, latencyAvailable) {
     series,
     start,
     end,
+    step,
     mode: "lines",
     valueFormat: formatDuration,
     emptyMsg: EMPTY_LATENCY_MSG,
@@ -877,12 +1214,13 @@ async function refreshAll(tf) {
   const presenceStatus = promResultOrStatus(presenceResp);
   const latencyAvailable = presenceStatus.ok && Number(presenceStatus.series[0].value[1]) > 0;
 
+  const win = { start, end, step, rangeSeconds, now };
   await Promise.all([
     loadHeadlineTokens(start, end, step),
-    loadDimSeriesPanel("tokens-model", "__model__", start, end, step, () => modelSeriesQuery(step)),
-    loadDimSeriesPanel("tokens-source", METRICS.labels.source, start, end, step),
-    loadDimSeriesPanel("tokens-agent", METRICS.labels.agent, start, end, step),
-    loadDimSeriesPanel("tokens-user", METRICS.labels.user, start, end, step),
+    loadDimPanel("tokens-model", "__model__", win),
+    loadDimPanel("tokens-source", METRICS.labels.source, win),
+    loadDimPanel("tokens-agent", METRICS.labels.agent, win),
+    loadDimPanel("tokens-user", METRICS.labels.user, win),
     loadCachePanel(start, end, step, instantTotals),
     loadCostPanel(start, end, step, instantTotals.cost),
     loadLatencyPanel(start, end, step, latencyAvailable),
@@ -904,7 +1242,12 @@ function initTimeframeUI() {
 
   let tf = loadStoredTimeframe() || { mode: "preset", presetKey: defaultKey };
 
-  const presetButtons = document.querySelectorAll("#range-select button");
+  // Presets are the segments carrying data-range; "Custom…" is the one
+  // segment without it (RANGES has no entry for it) and only reveals the
+  // date row - the range itself doesn't change until Apply.
+  const presetButtons = document.querySelectorAll("#range-select button[data-range]");
+  const customBtn = document.getElementById("range-custom");
+  const customRow = document.getElementById("custom-range");
   const fromInput = document.getElementById("range-from");
   const toInput = document.getElementById("range-to");
   const applyBtn = document.getElementById("range-apply");
@@ -914,6 +1257,12 @@ function initTimeframeUI() {
     presetButtons.forEach((b) => {
       b.setAttribute("aria-pressed", String(tf.mode === "preset" && b.dataset.range === tf.presetKey));
     });
+    customBtn.setAttribute("aria-pressed", String(tf.mode === "custom"));
+  }
+
+  function showCustomRow(show) {
+    customRow.hidden = !show;
+    customBtn.setAttribute("aria-expanded", String(show));
   }
 
   function seedCustomInputs() {
@@ -928,8 +1277,16 @@ function initTimeframeUI() {
       errorEl.textContent = "";
       syncPressedState();
       seedCustomInputs();
+      showCustomRow(false);
       refreshAll(tf);
     });
+  });
+
+  customBtn.addEventListener("click", () => {
+    const opening = customRow.hidden;
+    if (opening && tf.mode !== "custom") seedCustomInputs();
+    showCustomRow(opening);
+    if (opening) fromInput.focus();
   });
 
   applyBtn.addEventListener("click", () => {
@@ -955,6 +1312,7 @@ function initTimeframeUI() {
 
   syncPressedState();
   seedCustomInputs();
+  showCustomRow(tf.mode === "custom");
   return tf;
 }
 
