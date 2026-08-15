@@ -1,13 +1,17 @@
-// Package remarkable polls a self-hosted rmfakecloud instance for reMarkable
-// tablet documents and dispatches each new or updated one into quack's
+// Package remarkable browses a self-hosted rmfakecloud instance's documents
+// and dispatches the ones a user explicitly selects into quack's
 // document-ingest workflow. See .quack/rmfakecloud-eval.md (agent-researcher
-// repo) for why polling rmfakecloud's UI API - not its webhook, which
-// carries no document identity - is the inbound path.
+// repo) for why rmfakecloud's UI API - not its webhook, which carries no
+// document identity - is the inbound path. Ingest is user-driven on purpose:
+// every autosave of a note in progress bumps lastModified, so anything
+// automatic runs the pipeline against half-written documents.
 package remarkable
 
 import (
 	"context"
 	"fmt"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/fagerbergj/quack-extensions/sdk"
@@ -17,13 +21,6 @@ import (
 )
 
 const extensionName = "remarkable"
-
-const defaultPollInterval = time.Minute
-
-// defaultMaxAttempts caps retries of a permanently-failing document so a
-// bad doc can't become a runaway per-poll-interval LLM-cost loop. 0 means
-// unlimited and must never be the default - it's opt-in only.
-const defaultMaxAttempts = 3
 
 func init() {
 	sdk.Register(extensionName, factory)
@@ -42,22 +39,6 @@ type config struct {
 	// exists; the extension re-logs in on 401).
 	Email    string `yaml:"email"`
 	Password string `yaml:"password"`
-
-	// PollInterval is a Go duration string, e.g. "1m", "90s". Defaults to
-	// one minute.
-	PollInterval string `yaml:"poll_interval"`
-
-	// FolderFilter, if set, restricts polling to this folder path and its
-	// subfolders (e.g. "Inbox" matches "Inbox" and "Inbox/Scans"). Empty
-	// means all folders.
-	FolderFilter string `yaml:"folder_filter"`
-
-	// MaxAttempts caps retries of a document that keeps failing at the same
-	// LastModified value. A pointer so an absent key defaults to
-	// defaultMaxAttempts while an explicit "max_attempts: 0" means
-	// unlimited - the same absent-vs-explicit-zero pattern as
-	// sdk.BaseConfig.Enabled.
-	MaxAttempts *int `yaml:"max_attempts"`
 }
 
 func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
@@ -77,47 +58,25 @@ func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
 		return nil, fmt.Errorf("remarkable: Host.DataDir is required")
 	}
 
-	interval := defaultPollInterval
-	if cfg.PollInterval != "" {
-		parsed, err := time.ParseDuration(cfg.PollInterval)
-		if err != nil {
-			return nil, fmt.Errorf("remarkable: invalid poll_interval %q: %w", cfg.PollInterval, err)
-		}
-		if parsed <= 0 {
-			return nil, fmt.Errorf("remarkable: poll_interval must be positive, got %q", cfg.PollInterval)
-		}
-		interval = parsed
-	}
-
-	maxAttempts := defaultMaxAttempts
-	if cfg.MaxAttempts != nil {
-		if *cfg.MaxAttempts < 0 {
-			return nil, fmt.Errorf("remarkable: max_attempts must be >= 0, got %d", *cfg.MaxAttempts)
-		}
-		maxAttempts = *cfg.MaxAttempts
-	}
-
-	p := &poller{
-		host:         host,
-		client:       newRMClient(cfg.BaseURL, cfg.Email, cfg.Password, nil),
-		interval:     interval,
-		folderFilter: cfg.FolderFilter,
-		maxAttempts:  maxAttempts,
-		statePath:    statePath(host.DataDir),
-	}
-
-	return &extension{host: host, poller: p}, nil
+	return &extension{
+		host:      host,
+		client:    newRMClient(cfg.BaseURL, cfg.Email, cfg.Password, nil),
+		statePath: statePath(host.DataDir),
+	}, nil
 }
 
 type extension struct {
-	host   sdk.Host
-	poller *poller
+	host      sdk.Host
+	client    *rmClient
+	statePath string
+
+	mu sync.Mutex
+	st *state
 }
 
 var (
 	_ sdk.Extension   = (*extension)(nil)
 	_ sdk.Starter     = (*extension)(nil)
-	_ sdk.Stopper     = (*extension)(nil)
 	_ sdk.RunObserver = (*extension)(nil)
 	_ sdk.UI          = (*extension)(nil)
 )
@@ -125,17 +84,79 @@ var (
 func (e *extension) Tools() []tool.Tool { return nil }
 
 func (e *extension) RegisterRoutes(authed chi.Router, public chi.Router) {
+	authed.Get("/documents", e.handleDocuments)
+	authed.Post("/documents/ingest", e.handleIngest)
 	authed.Get("/status", e.handleStatus)
 	authed.Get("/status.json", e.handleStatusJSON)
 }
 
-func (e *extension) Start(ctx context.Context) error { return e.poller.Start(ctx) }
-func (e *extension) Stop(ctx context.Context) error  { return e.poller.Stop(ctx) }
+// Start loads persisted state and does one synchronous login so an
+// unreachable or misconfigured rmfakecloud fails startup loudly instead of
+// idling silently. No background loop: ingest only happens when a user
+// submits the documents page.
+func (e *extension) Start(ctx context.Context) error {
+	st, err := loadState(e.statePath)
+	if err != nil {
+		return fmt.Errorf("remarkable: load state: %w", err)
+	}
+	// Nothing is in flight at boot, by construction - a run can't outlive
+	// the process that dispatched it.
+	stale := false
+	for id, ds := range st.Documents {
+		if ds.InFlight {
+			ds.InFlight = false
+			ds.UpdatedAt = time.Now().UTC()
+			st.Documents[id] = ds
+			stale = true
+		}
+	}
 
+	e.mu.Lock()
+	e.st = st
+	if stale {
+		err = e.st.save(e.statePath)
+	}
+	e.mu.Unlock()
+	if err != nil {
+		e.host.Log.Error("remarkable: save state after clearing stale in-flight failed", "err", err)
+	}
+
+	if err := e.client.login(ctx); err != nil {
+		return fmt.Errorf("remarkable: cannot reach rmfakecloud at %s: %w", e.client.baseURL, err)
+	}
+	return nil
+}
+
+// RunEnded clears InFlight and records the terminal outcome. quack passes
+// the namespaced chat id ("ext:<extension>:<localID>"), so strip that back
+// to the document ID the state file is keyed by.
 func (e *extension) RunEnded(chatID string, outcome sdk.RunOutcome) {
-	e.poller.runEnded(chatID, outcome)
+	docID := strings.TrimPrefix(chatID, "ext:"+extensionName+":")
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.st == nil {
+		return
+	}
+	ds, ok := e.st.Documents[docID]
+	if !ok {
+		return // not one of ours, or state was reset since dispatch
+	}
+	ds.InFlight = false
+	ds.LastOutcome = string(outcome.Status)
+	ds.UpdatedAt = time.Now().UTC()
+	if outcome.Status == sdk.RunFailed {
+		ds.LastError = outcome.Answer
+	} else {
+		ds.LastError = ""
+	}
+	e.st.Documents[docID] = ds
+
+	if err := e.st.save(e.statePath); err != nil {
+		e.host.Log.Error("remarkable: save state after run ended failed", "err", err, "doc_id", docID)
+	}
 }
 
 func (e *extension) UI() sdk.UIDescriptor {
-	return sdk.UIDescriptor{Title: "reMarkable", Href: "/remarkable/status"}
+	return sdk.UIDescriptor{Title: "reMarkable", Href: documentsPath}
 }

@@ -8,13 +8,11 @@ import (
 	"time"
 )
 
-// statusResponse is the poller snapshot shared by both /status (HTML, the
-// page linked from the SPA nav via sdk.UI) and /status.json (the same data,
-// unrendered, for tooling/noop-style polling).
+// statusResponse is the dispatch-tracking snapshot shared by both /status
+// (HTML) and /status.json (the same data, unrendered, for tooling).
 type statusResponse struct {
 	Extension string      `json:"extension"`
 	BaseURL   string      `json:"base_url"`
-	LastPoll  time.Time   `json:"last_poll"`
 	Documents []statusDoc `json:"documents"`
 }
 
@@ -26,7 +24,6 @@ type statusDoc struct {
 	InFlight     bool      `json:"in_flight"`
 	LastOutcome  string    `json:"last_outcome,omitempty"`
 	LastError    string    `json:"last_error,omitempty"`
-	GaveUp       bool      `json:"gave_up"`
 	Attempts     int       `json:"attempts"`
 }
 
@@ -36,7 +33,7 @@ func (d statusDoc) Badge() string {
 	switch {
 	case d.InFlight:
 		return "warn"
-	case d.GaveUp, d.LastOutcome == "failed":
+	case d.LastOutcome == "failed":
 		return "err"
 	case d.LastOutcome == "done":
 		return "ok"
@@ -52,8 +49,6 @@ func (d statusDoc) Label() string {
 	switch {
 	case d.InFlight:
 		return "in flight"
-	case d.GaveUp:
-		return "gave up"
 	case d.LastOutcome == "":
 		return "never run"
 	default:
@@ -61,23 +56,20 @@ func (d statusDoc) Label() string {
 	}
 }
 
-func (r statusResponse) LastPollDisplay() string {
-	if r.LastPoll.IsZero() {
-		return "never"
-	}
-	return r.LastPoll.Format("2006-01-02 15:04:05 MST")
-}
-
 func (e *extension) statusSnapshot() statusResponse {
-	snap := e.poller.snapshot()
+	e.mu.Lock()
+	defer e.mu.Unlock()
 
+	docs := map[string]docState{}
+	if e.st != nil {
+		docs = e.st.Documents
+	}
 	resp := statusResponse{
 		Extension: extensionName,
-		BaseURL:   e.poller.client.baseURL,
-		LastPoll:  snap.LastPoll,
-		Documents: make([]statusDoc, 0, len(snap.Documents)),
+		BaseURL:   e.client.baseURL,
+		Documents: make([]statusDoc, 0, len(docs)),
 	}
-	for _, d := range snap.Documents {
+	for _, d := range docs {
 		resp.Documents = append(resp.Documents, statusDoc{
 			ID:           d.ID,
 			Name:         d.Name,
@@ -86,7 +78,6 @@ func (e *extension) statusSnapshot() statusResponse {
 			InFlight:     d.InFlight,
 			LastOutcome:  d.LastOutcome,
 			LastError:    d.LastError,
-			GaveUp:       d.GaveUp,
 			Attempts:     d.Attempts,
 		})
 	}
@@ -128,9 +119,12 @@ var statusTmpl = template.Must(template.New("status").Parse(`<!doctype html>
   <div class="qk-page__header">
     <div>
       <h1>reMarkable</h1>
-      <p>{{.BaseURL}} &middot; last poll {{.LastPollDisplay}}</p>
+      <p>{{.BaseURL}}</p>
     </div>
-    <a class="qk-btn" href="/remarkable/status.json">JSON</a>
+    <div>
+      <a class="qk-btn" href="/remarkable/documents">Documents</a>
+      <a class="qk-btn" href="/remarkable/status.json">JSON</a>
+    </div>
   </div>
   <div class="qk-table-wrap">
     <table class="qk-table">
@@ -148,7 +142,7 @@ var statusTmpl = template.Must(template.New("status").Parse(`<!doctype html>
           </td>
         </tr>
       {{else}}
-        <tr><td colspan="5">No documents seen yet.</td></tr>
+        <tr><td colspan="5">No documents dispatched yet.</td></tr>
       {{end}}
       </tbody>
     </table>

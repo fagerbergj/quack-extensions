@@ -7,18 +7,9 @@ import (
 	"time"
 )
 
-func newTestExtension(t *testing.T) *extension {
-	t.Helper()
-	fc := newFakeRMCloud("user@example.com", "pw")
-	t.Cleanup(fc.Close)
-	fh := &fakeDispatchHost{}
-	p := newTestPoller(t, fc, fh)
-	return &extension{host: p.host, poller: p}
-}
-
 func TestHandleStatusJSONUnchanged(t *testing.T) {
-	e := newTestExtension(t)
-	e.poller.st.Documents["doc-1"] = docState{
+	e, _, _ := newTestExtension(t)
+	e.st.Documents["doc-1"] = docState{
 		ID: "doc-1", Name: "Meeting Notes", Folder: "Inbox",
 		LastModified: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
 		LastOutcome:  "done", Attempts: 1,
@@ -38,17 +29,17 @@ func TestHandleStatusJSONUnchanged(t *testing.T) {
 }
 
 func TestHandleStatusRendersKitLinkedHTML(t *testing.T) {
-	e := newTestExtension(t)
-	e.poller.st.Documents["doc-1"] = docState{
+	e, _, _ := newTestExtension(t)
+	e.st.Documents["doc-1"] = docState{
 		ID: "doc-1", Name: "Meeting Notes", Folder: "Inbox",
 		LastModified: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
 		LastOutcome:  "done", Attempts: 1,
 	}
-	e.poller.st.Documents["doc-2"] = docState{
+	e.st.Documents["doc-2"] = docState{
 		ID: "doc-2", Name: "Bad Scan",
-		LastOutcome: "failed", LastError: "pdf decode failed", GaveUp: true, Attempts: 3,
+		LastOutcome: "failed", LastError: "pdf decode failed", Attempts: 3,
 	}
-	e.poller.st.Documents["doc-3"] = docState{
+	e.st.Documents["doc-3"] = docState{
 		ID: "doc-3", Name: "In Progress", InFlight: true,
 	}
 
@@ -69,7 +60,7 @@ func TestHandleStatusRendersKitLinkedHTML(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Meeting Notes", `qk-badge--ok">done`,
-		"Bad Scan", `qk-badge--err">gave up`, "pdf decode failed",
+		"Bad Scan", `qk-badge--err">failed`, "pdf decode failed",
 		"In Progress", `qk-badge--warn">in flight`,
 	} {
 		if !strings.Contains(body, want) {
@@ -79,8 +70,8 @@ func TestHandleStatusRendersKitLinkedHTML(t *testing.T) {
 }
 
 func TestHandleStatusEscapesDocumentName(t *testing.T) {
-	e := newTestExtension(t)
-	e.poller.st.Documents["doc-1"] = docState{ID: "doc-1", Name: `<script>alert(1)</script>`}
+	e, _, _ := newTestExtension(t)
+	e.st.Documents["doc-1"] = docState{ID: "doc-1", Name: `<script>alert(1)</script>`}
 
 	req := httptest.NewRequest("GET", "/status", nil)
 	rec := httptest.NewRecorder()
@@ -92,13 +83,13 @@ func TestHandleStatusEscapesDocumentName(t *testing.T) {
 }
 
 func TestHandleStatusNoDocumentsShowsEmptyState(t *testing.T) {
-	e := newTestExtension(t)
+	e, _, _ := newTestExtension(t)
 
 	req := httptest.NewRequest("GET", "/status", nil)
 	rec := httptest.NewRecorder()
 	e.handleStatus(rec, req)
 
-	if !strings.Contains(rec.Body.String(), "No documents seen yet.") {
+	if !strings.Contains(rec.Body.String(), "No documents dispatched yet.") {
 		t.Errorf("empty state missing: %s", rec.Body.String())
 	}
 }
