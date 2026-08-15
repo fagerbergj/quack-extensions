@@ -234,7 +234,7 @@ type Extension struct {
 	triggers           map[string]bool
 	labels             Labels
 	allowedUsers       map[string]bool // lower-cased; empty = deny all human-invoked triggers
-	inflight           sync.Map        // sessionID → struct{}{}; dedup for concurrent triggers (#665, #668)
+	inflight           sync.Map        // sessionID → time.Time claim; leased dedup for concurrent triggers (#665, #668, #29)
 	mergeMu            keyedMutex      // serializes merge-intent read-verdict-act per session (Risk 2)
 	pending            sync.Map        // globalChatID → *pendingRun; correlates RunEnded back to its dispatch
 	runTimeout         time.Duration

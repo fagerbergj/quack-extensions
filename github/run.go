@@ -24,7 +24,10 @@ type githubContext struct {
 // to do inline. Host.Dispatch is fire-and-forget - see webhook.go's dispatch
 // doc comment.
 type pendingRun struct {
-	sessionID      string
+	sessionID string
+	// claimedAt is the inflight lease token this run holds (webhook.go's
+	// claimInflight); finalize releases only its own claim.
+	claimedAt      time.Time
 	owner, repo    string
 	number         int
 	isPR           bool
@@ -47,12 +50,21 @@ type pendingRun struct {
 func (e *Extension) RunEnded(chatID string, outcome sdk.RunOutcome) {
 	v, ok := e.pending.Load(chatID)
 	if !ok {
-		return // not one of ours, or already finalized (defensive - should not happen)
+		// Not one of ours, or already finalized. Log it: this is where a run's
+		// whole outcome is dropped, and doing it silently is what made #29 take
+		// an hour to diagnose.
+		e.host.Log.Warn("github: RunEnded for a chat with no pending dispatch; dropping the outcome",
+			"chat", chatID, "status", outcome.Status)
+		return
 	}
 	pr := v.(*pendingRun)
 
 	if !pr.nudged && !outcome.PlanRan && pr.isLabelTrigger && outcome.Status != sdk.RunCancelled {
 		pr.nudged = true
+		// The nudge is a second run under the same claim - restart the lease so
+		// primary+nudge can't outlive it and get taken over mid-flight.
+		pr.claimedAt = time.Now()
+		e.inflight.Store(pr.sessionID, pr.claimedAt)
 		nudgeReq := sdk.DispatchRequest{
 			Chat: sdk.ChatRef{LocalID: pr.sessionID, User: pr.login},
 			Ask:  sdk.Ask{Message: runNudge},
@@ -74,7 +86,7 @@ func (e *Extension) RunEnded(chatID string, outcome sdk.RunOutcome) {
 // run (or its one nudge follow-up) is done: check the verified delivery
 // outcome, post a HITL question, or post the run's answer as a comment.
 func (e *Extension) finalize(chatID string, pr *pendingRun, outcome sdk.RunOutcome) {
-	defer e.inflight.Delete(pr.sessionID)
+	defer e.inflight.CompareAndDelete(pr.sessionID, pr.claimedAt)
 	defer e.pending.Delete(chatID)
 	owner, repo, number := pr.owner, pr.repo, pr.number
 
