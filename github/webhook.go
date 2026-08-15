@@ -603,7 +603,7 @@ func (e *Extension) mergeIfApproved(p pullRequestPayload, rawBody []byte) {
 	switch verdict {
 	case "":
 		msg := fmt.Sprintf("Queued: I have not reviewed this PR yet. @%s's `%s` label authorizes the merge once I approve.", p.Sender.Login, e.labels.Merge)
-		if _, inflight := e.inflight.Load(sessionID); inflight {
+		if _, live := e.inflightActive(sessionID); live {
 			msg += " A review is already in progress - I'll merge automatically once it lands, if it approves."
 		} else {
 			msg += " Reviewing it now."
@@ -826,6 +826,47 @@ func verifySignature(secret, body []byte, header string) bool {
 // firm instruction to actually do the work rather than narrate intent.
 const runNudge = "You answered without running anything. Do NOT reply in prose: use the plan and execute tools NOW to actually clone the repo, read the change, and carry out the review (or the requested change). Nothing has run yet and the user is waiting."
 
+// inflightLease bounds how long one session's in-flight claim suppresses new
+// triggers. A run that dies without settling never reaches finalize's delete -
+// quack-core deliberately skips RunEnded when shutdown force-cancels a run, and
+// a killed process skips it too - so a bare flag wedges the session until the
+// extension's own process restarts (#29). The margin past runTimeout covers
+// finalize's GitHub calls, which happen after the run's own deadline.
+func (e *Extension) inflightLease() time.Duration { return e.runTimeout + 10*time.Minute }
+
+// inflightActive reports a session's claim age and whether it is still live.
+// An expired claim is a leak, not a running review.
+func (e *Extension) inflightActive(sessionID string) (time.Duration, bool) {
+	v, ok := e.inflight.Load(sessionID)
+	if !ok {
+		return 0, false
+	}
+	age := time.Since(v.(time.Time))
+	return age, age < e.inflightLease()
+}
+
+// claimInflight takes sessionID's run slot. claimed is false only when a run is
+// genuinely in flight; an expired claim is taken over. age is the displaced
+// claim's age - zero when the slot was free. claimedAt is the token finalize
+// releases, so a late-settling run can't free a claim a takeover already re-took.
+func (e *Extension) claimInflight(sessionID string) (claimedAt time.Time, age time.Duration, claimed bool) {
+	lease := e.inflightLease()
+	for {
+		now := time.Now()
+		v, loaded := e.inflight.LoadOrStore(sessionID, now)
+		if !loaded {
+			return now, 0, true
+		}
+		prev := v.(time.Time)
+		if age = now.Sub(prev); age < lease {
+			return time.Time{}, age, false
+		}
+		if e.inflight.CompareAndSwap(sessionID, prev, now) {
+			return now, age, true
+		}
+	}
+}
+
 // dispatch shapes and sends one Host.Dispatch call for a webhook trigger.
 // Unlike quack-core's former synchronous dispatch (which drove the run to
 // completion inline via a Runner it owned), Host.Dispatch is fire-and-forget:
@@ -846,14 +887,23 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 	// Dedup: one run per session — second trigger is dropped, not queued (#665, #668).
 	sessionID := fmt.Sprintf("github-%s-%s-%d", owner, repo, number)
 	chatID := globalChatID(sessionID)
-	if _, inflight := e.inflight.LoadOrStore(sessionID, struct{}{}); inflight {
-		slog.Info("deduplicated trigger", "sessionID", sessionID)
+	claimedAt, age, claimed := e.claimInflight(sessionID)
+	if !claimed {
+		slog.Info("deduplicated trigger: a run for this session is still in flight",
+			"component", "github", "sessionID", sessionID, "repo", owner+"/"+repo, "issue", number,
+			"claim_age", age.Round(time.Second), "lease", e.inflightLease())
 		go e.ackDedup(owner, repo, number)
 		return
 	}
+	if age > 0 {
+		slog.Warn("github: took over an expired in-flight claim; the run holding it never settled",
+			"component", "github", "sessionID", sessionID, "repo", owner+"/"+repo, "issue", number,
+			"claim_age", age.Round(time.Second), "lease", e.inflightLease())
+	}
 	// clearInflight is called exactly once, either here (immediate failure) or
-	// from finalize (after RunEnded settles the whole chain).
-	clearInflight := func() { e.inflight.Delete(sessionID) }
+	// from finalize (after RunEnded settles the whole chain). Compare-and-delete
+	// so a straggler can't release the claim a takeover already re-took.
+	clearInflight := func() { e.inflight.CompareAndDelete(sessionID, claimedAt) }
 
 	ctx, cancel := context.WithTimeout(context.Background(), reactionTimeout)
 	defer cancel()
@@ -976,7 +1026,7 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 
 	// Stored BEFORE Dispatch: RunEnded can fire as soon as Dispatch returns.
 	e.pending.Store(chatID, &pendingRun{
-		sessionID: sessionID, owner: owner, repo: repo, number: number,
+		sessionID: sessionID, claimedAt: claimedAt, owner: owner, repo: repo, number: number,
 		isPR: isPR, login: login, gh: gh, isPlan: isPlan, isLabelTrigger: p.isLabelTrigger,
 	})
 

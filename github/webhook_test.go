@@ -401,6 +401,22 @@ func TestDispatchBuildsRequestAndStoresPending(t *testing.T) {
 	}
 }
 
+// claimInflightFor puts chatID's already-stored pendingRun into the state a
+// real dispatch leaves behind: a live inflight lease whose token the pendingRun
+// carries, so finalize's compare-and-delete releases it.
+func claimInflightFor(t *testing.T, e *Extension, chatID, sessionID string) {
+	t.Helper()
+	claimedAt, _, claimed := e.claimInflight(sessionID)
+	if !claimed {
+		t.Fatalf("claimInflight(%q) refused a free slot", sessionID)
+	}
+	v, ok := e.pending.Load(chatID)
+	if !ok {
+		t.Fatalf("no pendingRun stored for %q", chatID)
+	}
+	v.(*pendingRun).claimedAt = claimedAt
+}
+
 // TestDispatchDedupDropsSecondTrigger proves the inflight guard still works
 // unchanged: a second trigger for a session already dispatched is dropped,
 // not queued, and never reaches Host.Dispatch.
@@ -416,6 +432,85 @@ func TestDispatchDedupDropsSecondTrigger(t *testing.T) {
 
 	if calls := fh.calls(); len(calls) != 1 {
 		t.Fatalf("Dispatch calls = %d, want 1 (second trigger should dedup)", len(calls))
+	}
+}
+
+// TestDispatchTakesOverExpiredInflightClaim is #29: a run that dies without
+// settling never reaches finalize's delete, so its claim outlives it. Before the
+// lease that wedged the session for the life of the process - every later
+// trigger, of every type, took the dedup branch and returned. A claim older than
+// the lease must be taken over so the next trigger actually dispatches.
+func TestDispatchTakesOverExpiredInflightClaim(t *testing.T) {
+	posted := make(chan string, 1)
+	srv := stubGitHub(t, posted)
+	defer srv.Close()
+	e, fh := newTestExtension(t, srv.URL, nil)
+
+	sessionID := "github-acme-widgets-7"
+	// The owning run never settles: its claim just sits there, aged past the lease.
+	e.inflight.Store(sessionID, time.Now().Add(-e.inflightLease()-time.Minute))
+
+	e.dispatch(issueCommentPayloadFor("acme", "widgets", 7, "alice", "@quack go", srv.URL), "go")
+
+	if calls := fh.calls(); len(calls) != 1 {
+		t.Fatalf("Dispatch calls = %d, want 1 (an expired claim must not suppress a trigger)", len(calls))
+	}
+	if _, live := e.inflightActive(sessionID); !live {
+		t.Error("takeover left no live claim; the new run is unprotected from its own duplicates")
+	}
+}
+
+// TestDispatchDedupHoldsWithinLease is the other half of #29: taking over
+// EXPIRED claims must not weaken the real guard. A second trigger arriving while
+// a claim is still within its lease is still dropped.
+func TestDispatchDedupHoldsWithinLease(t *testing.T) {
+	posted := make(chan string, 1)
+	srv := stubGitHub(t, posted)
+	defer srv.Close()
+	e, fh := newTestExtension(t, srv.URL, nil)
+
+	sessionID := "github-acme-widgets-7"
+	// Old, but not old enough - a genuinely long-running review.
+	e.inflight.Store(sessionID, time.Now().Add(-e.inflightLease()+time.Minute))
+
+	e.dispatch(issueCommentPayloadFor("acme", "widgets", 7, "alice", "@quack go", srv.URL), "go")
+
+	if calls := fh.calls(); len(calls) != 0 {
+		t.Fatalf("Dispatch calls = %d, want 0 (a live claim must still dedup)", len(calls))
+	}
+}
+
+// TestStragglerFinalizeKeepsTakeoverClaim pins the compare-and-delete in
+// finalize: when a straggler from the displaced run finally settles, it must
+// release its OWN claim only - deleting the takeover's claim would let a third
+// trigger start a concurrent run on a session already running one.
+func TestStragglerFinalizeKeepsTakeoverClaim(t *testing.T) {
+	posted := make(chan string, 1)
+	srv := stubGitHub(t, posted)
+	defer srv.Close()
+	e, _ := newTestExtension(t, srv.URL, nil)
+
+	sessionID := "github-acme-widgets-7"
+	chatID := globalChatID(sessionID)
+	straggler := &pendingRun{
+		sessionID: sessionID, claimedAt: time.Now().Add(-e.inflightLease() - time.Minute),
+		owner: "acme", repo: "widgets", number: 7, login: "alice",
+	}
+	e.inflight.Store(sessionID, straggler.claimedAt)
+
+	takeoverAt, _, claimed := e.claimInflight(sessionID)
+	if !claimed {
+		t.Fatal("takeover did not claim the expired slot")
+	}
+
+	e.finalize(chatID, straggler, sdk.RunOutcome{Status: sdk.RunDone, Answer: "late"})
+
+	v, ok := e.inflight.Load(sessionID)
+	if !ok {
+		t.Fatal("straggler's finalize deleted the takeover's claim")
+	}
+	if v.(time.Time) != takeoverAt {
+		t.Errorf("claim = %v, want the takeover's %v", v, takeoverAt)
 	}
 }
 
@@ -436,7 +531,7 @@ func TestRunEndedNudgesOnceThenFinalizes(t *testing.T) {
 		sessionID: sessionID, owner: "acme", repo: "widgets", number: 7,
 		login: "alice", isLabelTrigger: true,
 	})
-	e.inflight.Store(sessionID, struct{}{})
+	claimInflightFor(t, e, chatID, sessionID)
 
 	e.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: false})
 
@@ -484,7 +579,7 @@ func TestFinalizeSkipsSummaryWhenDeliveryVerified(t *testing.T) {
 	chatID := globalChatID(sessionID)
 	pr := &pendingRun{sessionID: sessionID, owner: "acme", repo: "widgets", number: 7, login: "alice"}
 	e.pending.Store(chatID, pr)
-	e.inflight.Store(sessionID, struct{}{})
+	claimInflightFor(t, e, chatID, sessionID)
 	recordDelivery(chatID, deliveryOutcome{prNumber: 42, prURL: "https://github.com/acme/widgets/pull/42"})
 
 	e.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "I opened a PR"})
@@ -518,7 +613,7 @@ func TestFinalizePostsAnswerWhenPushLeftHeadUnchanged(t *testing.T) {
 		gh: githubContext{snap: Snapshot{IsPR: true, HeadSHA: "sha-before"}},
 	}
 	e.pending.Store(chatID, pr)
-	e.inflight.Store(sessionID, struct{}{})
+	claimInflightFor(t, e, chatID, sessionID)
 	recordDelivery(chatID, deliveryOutcome{prNumber: 42, prURL: "https://github.com/acme/widgets/pull/42", pushedSHA: "sha-before"})
 
 	e.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "nothing needed fixing - CI was flaky, re-run it"})
@@ -549,7 +644,7 @@ func TestFinalizeSkipsSummaryWhenPushActuallyMovedHead(t *testing.T) {
 		gh: githubContext{snap: Snapshot{IsPR: true, HeadSHA: "sha-before"}},
 	}
 	e.pending.Store(chatID, pr)
-	e.inflight.Store(sessionID, struct{}{})
+	claimInflightFor(t, e, chatID, sessionID)
 	recordDelivery(chatID, deliveryOutcome{prNumber: 42, prURL: "https://github.com/acme/widgets/pull/42", pushedSHA: "sha-after-fix"})
 
 	e.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "fixed the failing test"})
@@ -579,7 +674,7 @@ func TestRunEndedCancelledPostsNoCommentAndDoesNotNudge(t *testing.T) {
 		sessionID: sessionID, owner: "acme", repo: "widgets", number: 7,
 		login: "alice", isLabelTrigger: true,
 	})
-	e.inflight.Store(sessionID, struct{}{})
+	claimInflightFor(t, e, chatID, sessionID)
 
 	e.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunCancelled, PlanRan: false, Answer: "halfway through drafting a reply, the user hit stop"})
 
@@ -614,7 +709,7 @@ func TestRunEndedDoneStillPostsComment(t *testing.T) {
 	e.pending.Store(chatID, &pendingRun{
 		sessionID: sessionID, owner: "acme", repo: "widgets", number: 7, login: "alice",
 	})
-	e.inflight.Store(sessionID, struct{}{})
+	claimInflightFor(t, e, chatID, sessionID)
 
 	e.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "finished the task"})
 
