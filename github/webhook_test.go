@@ -764,6 +764,34 @@ func TestHandleWebhookPROpenedTrigger(t *testing.T) {
 	}
 }
 
+// TestChatOriginDistinguishesIssueFromPR pins #31: issue and PR numbers share
+// one sequence per repo, so the same number must still be tellable apart from
+// the sidebar chip alone - while Href keeps GitHub's own URL spelling.
+func TestChatOriginDistinguishesIssueFromPR(t *testing.T) {
+	issue := chatOrigin("acme", "widgets", false, 42, "open", sdk.SubjectOpen)
+	pr := chatOrigin("acme", "widgets", true, 42, "draft", sdk.SubjectOpen)
+
+	if issue.Label == pr.Label {
+		t.Errorf("issue and PR #42 share label %q; must be distinguishable without opening either", issue.Label)
+	}
+	if issue.Label != "acme/widgets issue#42" || issue.Kind != "issue" {
+		t.Errorf("issue: label=%q kind=%q, want acme/widgets issue#42 / issue", issue.Label, issue.Kind)
+	}
+	if pr.Label != "acme/widgets pr#42" || pr.Kind != "pr" {
+		t.Errorf("pr: label=%q kind=%q, want acme/widgets pr#42 / pr", pr.Label, pr.Kind)
+	}
+	if issue.Href != "https://github.com/acme/widgets/issues/42" {
+		t.Errorf("issue href = %q, want .../issues/42", issue.Href)
+	}
+	if pr.Href != "https://github.com/acme/widgets/pull/42" {
+		t.Errorf("pr href = %q, want .../pull/42", pr.Href)
+	}
+	// Badge/State stay subject status only - the type lives in Kind/Label.
+	if pr.Badge != "draft" || pr.State != sdk.SubjectOpen {
+		t.Errorf("pr badge/state = %q/%q, want draft/open", pr.Badge, pr.State)
+	}
+}
+
 // TestHandleWebhookIssueStateChangeRefreshesOrigin pins the event→badge
 // mapping for a plain issue's own close/reopen - #844.
 func TestHandleWebhookIssueStateChangeRefreshesOrigin(t *testing.T) {
@@ -800,8 +828,15 @@ func TestHandleWebhookIssueStateChangeRefreshesOrigin(t *testing.T) {
 			if calls[0].origin.State != tt.wantState {
 				t.Errorf("state = %q, want %q", calls[0].origin.State, tt.wantState)
 			}
-			if calls[0].origin.Kind != "issues" {
-				t.Errorf("kind = %q, want issues", calls[0].origin.Kind)
+			// A badge-only refresh rebuilds the whole origin - the type must survive it.
+			if calls[0].origin.Kind != "issue" {
+				t.Errorf("kind = %q, want issue", calls[0].origin.Kind)
+			}
+			if calls[0].origin.Label != "acme/widgets issue#7" {
+				t.Errorf("label = %q, want acme/widgets issue#7", calls[0].origin.Label)
+			}
+			if calls[0].origin.Href != "https://github.com/acme/widgets/issues/7" {
+				t.Errorf("href = %q, want .../issues/7", calls[0].origin.Href)
 			}
 
 			// A pure state change never triggers work.
@@ -854,8 +889,14 @@ func TestHandleWebhookPullRequestStateChangeRefreshesOrigin(t *testing.T) {
 			if calls[0].origin.State != tt.wantState {
 				t.Errorf("state = %q, want %q", calls[0].origin.State, tt.wantState)
 			}
-			if calls[0].origin.Kind != "pull" {
-				t.Errorf("kind = %q, want pull", calls[0].origin.Kind)
+			if calls[0].origin.Kind != "pr" {
+				t.Errorf("kind = %q, want pr", calls[0].origin.Kind)
+			}
+			if calls[0].origin.Label != "acme/widgets pr#7" {
+				t.Errorf("label = %q, want acme/widgets pr#7", calls[0].origin.Label)
+			}
+			if calls[0].origin.Href != "https://github.com/acme/widgets/pull/7" {
+				t.Errorf("href = %q, want .../pull/7", calls[0].origin.Href)
 			}
 
 			select {
