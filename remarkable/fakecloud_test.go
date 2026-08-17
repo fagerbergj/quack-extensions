@@ -28,6 +28,7 @@ type fakeRMCloud struct {
 
 	mu         sync.Mutex
 	docs       []fixtureDoc
+	failPDF    map[string]bool
 	token      string
 	tokenSeq   int
 	loginCount int
@@ -51,6 +52,17 @@ func (fc *fakeRMCloud) setDocs(docs []fixtureDoc) {
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
 	fc.docs = docs
+}
+
+// failDownloads makes the PDF export fail for these doc IDs while they stay
+// listed - a document that exports badly, not one that vanished.
+func (fc *fakeRMCloud) failDownloads(ids ...string) {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	fc.failPDF = map[string]bool{}
+	for _, id := range ids {
+		fc.failPDF[id] = true
+	}
 }
 
 func (fc *fakeRMCloud) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -101,6 +113,11 @@ func (fc *fakeRMCloud) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	fc.mu.Lock()
+	if fc.failPDF[id] {
+		fc.mu.Unlock()
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	var pdf []byte
 	found := false
 	for _, d := range fc.docs {

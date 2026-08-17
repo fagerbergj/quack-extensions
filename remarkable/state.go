@@ -10,8 +10,8 @@ import (
 
 const stateFileName = "state.json"
 
-// docState is the per-document record the poller diffs against: what we
-// last saw and what happened when we last dispatched it.
+// docState is the per-document dispatch record: what we last sent and what
+// happened to the run it started.
 type docState struct {
 	ID           string    `json:"id"`
 	Name         string    `json:"name"`
@@ -22,30 +22,20 @@ type docState struct {
 	// fires - it suppresses a re-dispatch of a run still in progress.
 	InFlight bool `json:"in_flight"`
 
-	// LastOutcome/LastError describe the most recent finished attempt.
-	// LastOutcome == "failed" (and not InFlight) is what makes pollOnce
-	// retry the document on the next cycle - exactly once per cycle,
-	// since each document is visited once per poll.
+	// LastOutcome/LastError describe the most recent finished run.
 	LastOutcome string `json:"last_outcome,omitempty"`
 	LastError   string `json:"last_error,omitempty"`
 
-	// GaveUp is true once Attempts has reached the configured cap for this
-	// LastModified value - the poller stops retrying until the document
-	// changes again. Set alongside the one-time Warn log.
-	GaveUp bool `json:"gave_up"`
-
+	// Attempts counts how many times this document has been dispatched.
 	Attempts  int       `json:"attempts"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-const outcomeFailed = "failed"
-
 // state is the whole extension-private record, persisted as one JSON file
-// in Host.DataDir. Single writer (the poll loop, plus RunEnded callbacks
-// serialized through poller.mu) - no need for sqlite.
+// in Host.DataDir. Writes (ingest handler, RunEnded callbacks) serialize
+// through extension.mu - no need for sqlite.
 type state struct {
 	Documents map[string]docState `json:"documents"`
-	LastPoll  time.Time           `json:"last_poll"`
 }
 
 func loadState(path string) (*state, error) {

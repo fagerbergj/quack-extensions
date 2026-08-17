@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/fagerbergj/quack-extensions/sdk"
 	"github.com/go-chi/chi/v5"
@@ -49,81 +49,20 @@ func TestFactoryRequiresDataDir(t *testing.T) {
 	}
 }
 
-func TestFactoryRejectsBadPollInterval(t *testing.T) {
+// Stale poll_interval keys in an existing quack.yaml must not break startup.
+func TestFactoryParsesConfigAndIgnoresRetiredKeys(t *testing.T) {
 	fh := &fakeDispatchHost{}
-	_, err := factory(testHost(t, fh), []byte("base_url: http://example.com\nemail: a@b.com\npassword: pw\npoll_interval: not-a-duration\n"))
-	if err == nil {
-		t.Fatal("expected an error for invalid poll_interval, got nil")
-	}
-}
-
-func TestFactoryDefaultsPollInterval(t *testing.T) {
-	fh := &fakeDispatchHost{}
-	extVal, err := factory(testHost(t, fh), []byte("base_url: http://example.com\nemail: a@b.com\npassword: pw\n"))
-	if err != nil {
-		t.Fatalf("factory: %v", err)
-	}
-	ext := extVal.(*extension)
-	if ext.poller.interval != defaultPollInterval {
-		t.Errorf("interval = %v, want default %v", ext.poller.interval, defaultPollInterval)
-	}
-}
-
-func TestFactoryDefaultsMaxAttempts(t *testing.T) {
-	fh := &fakeDispatchHost{}
-	extVal, err := factory(testHost(t, fh), []byte("base_url: http://example.com\nemail: a@b.com\npassword: pw\n"))
-	if err != nil {
-		t.Fatalf("factory: %v", err)
-	}
-	ext := extVal.(*extension)
-	if ext.poller.maxAttempts != defaultMaxAttempts {
-		t.Errorf("maxAttempts = %d, want default %d (0/unlimited must not be the default)", ext.poller.maxAttempts, defaultMaxAttempts)
-	}
-	if ext.poller.maxAttempts == 0 {
-		t.Fatal("default max_attempts must not be 0 (unlimited)")
-	}
-}
-
-func TestFactoryMaxAttemptsExplicitZeroMeansUnlimited(t *testing.T) {
-	fh := &fakeDispatchHost{}
-	raw := []byte("base_url: http://example.com\nemail: a@b.com\npassword: pw\nmax_attempts: 0\n")
+	raw := []byte("base_url: http://example.com\nemail: a@b.com\npassword: pw\npoll_interval: 5m\nmax_attempts: 7\n")
 	extVal, err := factory(testHost(t, fh), raw)
 	if err != nil {
 		t.Fatalf("factory: %v", err)
 	}
 	ext := extVal.(*extension)
-	if ext.poller.maxAttempts != 0 {
-		t.Errorf("maxAttempts = %d, want 0 (explicit unlimited)", ext.poller.maxAttempts)
+	if ext.client.baseURL != "http://example.com" {
+		t.Errorf("baseURL = %q, want http://example.com", ext.client.baseURL)
 	}
-}
-
-func TestFactoryRejectsNegativeMaxAttempts(t *testing.T) {
-	fh := &fakeDispatchHost{}
-	raw := []byte("base_url: http://example.com\nemail: a@b.com\npassword: pw\nmax_attempts: -1\n")
-	if _, err := factory(testHost(t, fh), raw); err == nil {
-		t.Fatal("expected an error for negative max_attempts, got nil")
-	}
-}
-
-func TestFactoryParsesConfig(t *testing.T) {
-	fh := &fakeDispatchHost{}
-	raw := []byte("base_url: http://example.com\nemail: a@b.com\npassword: pw\npoll_interval: 5m\nfolder_filter: Inbox\nmax_attempts: 7\n")
-	extVal, err := factory(testHost(t, fh), raw)
-	if err != nil {
-		t.Fatalf("factory: %v", err)
-	}
-	ext := extVal.(*extension)
-	if ext.poller.interval != 5*time.Minute {
-		t.Errorf("interval = %v, want 5m", ext.poller.interval)
-	}
-	if ext.poller.folderFilter != "Inbox" {
-		t.Errorf("folderFilter = %q, want Inbox", ext.poller.folderFilter)
-	}
-	if ext.poller.maxAttempts != 7 {
-		t.Errorf("maxAttempts = %d, want 7", ext.poller.maxAttempts)
-	}
-	if ext.poller.client.baseURL != "http://example.com" {
-		t.Errorf("baseURL = %q, want http://example.com", ext.poller.client.baseURL)
+	if ext.statePath == "" {
+		t.Error("statePath not set")
 	}
 }
 
@@ -145,38 +84,69 @@ func TestExtensionImplementsInterfaces(t *testing.T) {
 	if ext.Tools() != nil {
 		t.Errorf("Tools() = %v, want nil (inbound-only extension)", ext.Tools())
 	}
-
-	if ui := ext.UI(); ui.Title == "" || ui.Href == "" {
-		t.Errorf("UI() = %+v, want populated Title and Href", ui)
+	if ui := ext.UI(); ui.Title == "" || ui.Href != documentsPath {
+		t.Errorf("UI() = %+v, want the documents page as the nav entry", ui)
 	}
-
-	// RunEnded must reach the poller's own bookkeeping, not be a no-op stub.
-	// st is normally populated by Start(); seed it directly here.
-	st, err := loadState(ext.poller.statePath)
-	if err != nil {
-		t.Fatalf("loadState: %v", err)
-	}
-	ext.poller.st = st
-	ext.poller.st.Documents["doc-1"] = docState{ID: "doc-1", InFlight: true}
-	ext.RunEnded("doc-1", sdk.RunOutcome{Status: sdk.RunDone})
-	if ext.poller.st.Documents["doc-1"].InFlight {
-		t.Error("RunEnded via the extension did not clear InFlight on the poller's state")
+	if _, ok := extVal.(sdk.Stopper); ok {
+		t.Error("extension implements Stopper, but there is nothing to stop")
 	}
 }
 
-func TestStatusRouteReportsDocuments(t *testing.T) {
+func TestStartFailsLoudOnUnreachableCloud(t *testing.T) {
+	fc := newFakeRMCloud("user@example.com", "pw")
+	fc.Close()
+	fh := &fakeDispatchHost{}
+	host := testHost(t, fh)
+	e := &extension{host: host, client: newRMClient(fc.Server.URL, "user@example.com", "pw", nil), statePath: statePath(host.DataDir)}
+
+	err := e.Start(context.Background())
+	if err == nil {
+		t.Fatal("Start succeeded against a closed rmfakecloud, want a loud failure")
+	}
+	if !strings.Contains(err.Error(), "cannot reach rmfakecloud") {
+		t.Errorf("err = %v, want it to name the unreachable cloud", err)
+	}
+}
+
+func TestStartClearsStaleInFlight(t *testing.T) {
 	fc := newFakeRMCloud("user@example.com", "pw")
 	defer fc.Close()
-	mod := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
-	fc.setDocs([]fixtureDoc{{ID: "doc-1", Name: "Notes", Folder: "Inbox", LastModified: mod, PDF: []byte("x")}})
-
 	fh := &fakeDispatchHost{}
-	p := newTestPoller(t, fc, fh)
-	p.pollOnce(context.Background())
+	host := testHost(t, fh)
+	path := statePath(host.DataDir)
 
-	ext := &extension{host: p.host, poller: p}
+	// A previous process died mid-run: in_flight never got cleared.
+	st := &state{Documents: map[string]docState{"doc-a": {ID: "doc-a", InFlight: true}}}
+	if err := st.save(path); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	e := &extension{host: host, client: newRMClient(fc.Server.URL, fc.email, fc.password, nil), statePath: path}
+	if err := e.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if e.st.Documents["doc-a"].InFlight {
+		t.Error("Start left a stale in-flight document set")
+	}
+	reloaded, err := loadState(path)
+	if err != nil {
+		t.Fatalf("loadState: %v", err)
+	}
+	if reloaded.Documents["doc-a"].InFlight {
+		t.Error("cleared in-flight flag was not persisted")
+	}
+}
+
+func TestStatusRouteReportsDispatchedDocuments(t *testing.T) {
+	e, fc, _ := newTestExtension(t)
+	fc.setDocs(threeDocs())
+
+	req := httptest.NewRequest(http.MethodPost, "/documents/ingest", strings.NewReader("doc_id=doc-a"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r := chi.NewRouter()
-	ext.RegisterRoutes(r, chi.NewRouter())
+	e.RegisterRoutes(r, chi.NewRouter())
+	r.ServeHTTP(httptest.NewRecorder(), req)
 
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/status.json", nil))
@@ -191,52 +161,17 @@ func TestStatusRouteReportsDocuments(t *testing.T) {
 	if got.Extension != extensionName {
 		t.Errorf("Extension = %q, want %q", got.Extension, extensionName)
 	}
-	if len(got.Documents) != 1 || got.Documents[0].ID != "doc-1" {
-		t.Fatalf("Documents = %+v, want one entry doc-1", got.Documents)
+	if len(got.Documents) != 1 || got.Documents[0].ID != "doc-a" {
+		t.Fatalf("Documents = %+v, want one entry doc-a", got.Documents)
 	}
-	if got.Documents[0].Folder != "Inbox" {
-		t.Errorf("Folder = %q, want Inbox", got.Documents[0].Folder)
-	}
-	if got.Documents[0].GaveUp {
-		t.Error("GaveUp = true for a freshly-dispatched document, want false")
+	if got.Documents[0].Folder != "Inbox" || !got.Documents[0].InFlight || got.Documents[0].Attempts != 1 {
+		t.Errorf("Documents[0] = %+v", got.Documents[0])
 	}
 }
 
-func TestStatusRouteReportsGaveUp(t *testing.T) {
-	fc := newFakeRMCloud("user@example.com", "pw")
-	defer fc.Close()
-	mod := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
-	fc.setDocs([]fixtureDoc{{ID: "doc-1", Name: "Notes", LastModified: mod, PDF: []byte("x")}})
-
-	fh := &fakeDispatchHost{fn: alwaysFailDispatch}
-	p := newTestPoller(t, fc, fh)
-	p.maxAttempts = 1
-	ctx := context.Background()
-	p.pollOnce(ctx) // attempt 1: fails, at cap
-	p.pollOnce(ctx) // cap reached: GaveUp set
-
-	ext := &extension{host: p.host, poller: p}
-	r := chi.NewRouter()
-	ext.RegisterRoutes(r, chi.NewRouter())
-
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/status.json", nil))
-
-	var got statusResponse
-	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(got.Documents) != 1 || !got.Documents[0].GaveUp {
-		t.Fatalf("Documents = %+v, want one entry with GaveUp=true", got.Documents)
-	}
-	if got.Documents[0].LastOutcome != outcomeFailed {
-		t.Errorf("LastOutcome = %q, want %q", got.Documents[0].LastOutcome, outcomeFailed)
-	}
-}
-
-// TestStatusRouteBeforeAnyPollDoesNotPanic exercises /status itself (HTML,
-// zero documents) - status_test.go covers its rendered content in detail.
-func TestStatusRouteBeforeAnyPollDoesNotPanic(t *testing.T) {
+// TestStatusRouteBeforeAnyIngestDoesNotPanic exercises /status with no state
+// loaded at all (Start never ran) - status_test.go covers rendered content.
+func TestStatusRouteBeforeAnyIngestDoesNotPanic(t *testing.T) {
 	fh := &fakeDispatchHost{}
 	extVal, err := factory(testHost(t, fh), []byte("base_url: http://example.com\nemail: a@b.com\npassword: pw\n"))
 	if err != nil {
@@ -250,5 +185,27 @@ func TestStatusRouteBeforeAnyPollDoesNotPanic(t *testing.T) {
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/status", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status code = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// Downloads must outlive the request: a proxy timeout during a batch cannot
+// be allowed to silently drop the documents that hadn't started yet.
+func TestIngestSurvivesRequestCancellation(t *testing.T) {
+	e, fc, fh := newTestExtension(t)
+	fc.setDocs(threeDocs())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	fh.fn = func(sdk.DispatchRequest) error {
+		cancel() // client hangs up after the first dispatch
+		return nil
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/documents/ingest", strings.NewReader("doc_id=doc-a&doc_id=doc-c")).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	testRouter(e).ServeHTTP(rec, req)
+
+	if got := fh.dispatchedIDs(); len(got) != 2 {
+		t.Fatalf("dispatched %v, want both docs despite the cancelled request", got)
 	}
 }

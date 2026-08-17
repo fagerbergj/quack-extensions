@@ -22,7 +22,7 @@ func TestStateSaveAndReload(t *testing.T) {
 
 	st := &state{Documents: map[string]docState{
 		"doc-1": {ID: "doc-1", Name: "Notes", LastModified: mod, LastOutcome: "done", Attempts: 1},
-	}, LastPoll: mod}
+	}}
 
 	if err := st.save(path); err != nil {
 		t.Fatalf("save: %v", err)
@@ -41,8 +41,5 @@ func TestStateSaveAndReload(t *testing.T) {
 	}
 	if !got.LastModified.Equal(mod) {
 		t.Errorf("LastModified = %v, want %v", got.LastModified, mod)
-	}
-	if !reloaded.LastPoll.Equal(mod) {
-		t.Errorf("LastPoll = %v, want %v", reloaded.LastPoll, mod)
 	}
 }
