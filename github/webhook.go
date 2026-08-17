@@ -1056,15 +1056,17 @@ func sdkDeliveryKinds(kinds []string) []sdk.DeliveryKind {
 // shared by dispatch (initial stamp) and refreshChatOrigin (badge-only
 // updates on later state-change webhooks).
 func chatOrigin(owner, repo string, isPR bool, number int, badge string, state sdk.SubjectState) sdk.ChatOrigin {
-	kind := "issues"
+	// kind is the SDK's documented grouping vocabulary; seg is GitHub's URL
+	// spelling. Same distinction, different spellings - don't merge them.
+	kind, seg := "issue", "issues"
 	if isPR {
-		kind = "pull"
+		kind, seg = "pr", "pull"
 	}
 	return sdk.ChatOrigin{
 		Extension: extensionName,
-		Label:     fmt.Sprintf("%s/%s#%d", owner, repo, number),
+		Label:     fmt.Sprintf("%s/%s %s#%d", owner, repo, kind, number),
 		Kind:      kind,
-		Href:      fmt.Sprintf("https://github.com/%s/%s/%s/%d", owner, repo, kind, number),
+		Href:      fmt.Sprintf("https://github.com/%s/%s/%s/%d", owner, repo, seg, number),
 		Badge:     badge,
 		State:     state,
 		Labels:    map[string][]sdk.LabelValue{"repo": {{Value: owner + "/" + repo, Href: fmt.Sprintf("https://github.com/%s/%s", owner, repo)}}},
