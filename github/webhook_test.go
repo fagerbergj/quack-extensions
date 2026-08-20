@@ -3949,3 +3949,80 @@ func TestHandleWebhookRequestChangesIgnoresOtherPRs(t *testing.T) {
 		})
 	}
 }
+
+// reviewCommandBody is an issue_comment payload on a PR, with labels and author association.
+func reviewCommandBody(comment, association string, labels ...string) []byte {
+	quoted := make([]string, len(labels))
+	for i, l := range labels {
+		quoted[i] = fmt.Sprintf(`{"name":%q}`, l)
+	}
+	return []byte(fmt.Sprintf(`{
+		"action":"created",
+		"comment":{"id":999,"body":%q,"user":{"login":"alice"},"author_association":%q},
+		"issue":{"number":7,"labels":[%s],"pull_request":{}},
+		"repository":{"name":"widgets","owner":{"login":"acme"},"clone_url":"https://github.com/acme/widgets.git","default_branch":"main"},
+		"installation":{"id":5}
+	}`, comment, association, strings.Join(quoted, ",")))
+}
+
+func TestHandleWebhookReviewCommand(t *testing.T) {
+	tests := []struct {
+		name     string
+		triggers []string
+		body     []byte
+		wantRun  bool
+	}{
+		{"bare /review with label and write access fires", []string{"label"}, reviewCommandBody("  /review \n", "COLLABORATOR", "quack-auto-review"), true},
+		{"owner association fires", []string{"label"}, reviewCommandBody("/review", "OWNER", "quack-auto-review"), true},
+		{"missing review label is a no-op", []string{"label"}, reviewCommandBody("/review", "OWNER", "other"), false},
+		{"read-only author is a no-op", []string{"label"}, reviewCommandBody("/review", "CONTRIBUTOR", "quack-auto-review"), false},
+		{"extra text is not the command", []string{"label"}, reviewCommandBody("/review please", "OWNER", "quack-auto-review"), false},
+		{"label trigger disabled is a no-op", []string{"mention"}, reviewCommandBody("/review", "OWNER", "quack-auto-review"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := stubGitHub(t, make(chan string, 1))
+			defer srv.Close()
+			ext, fh := newTestExtension(t, srv.URL, tt.triggers)
+
+			rec := httptest.NewRecorder()
+			ext.handleWebhook(rec, signedRequest("issue_comment", tt.body))
+			if rec.Code != http.StatusAccepted && rec.Code != http.StatusOK {
+				t.Fatalf("status = %d", rec.Code)
+			}
+
+			if tt.wantRun {
+				req := fh.waitForDispatch(t, 2*time.Second)
+				if !strings.Contains(req.Ask.Message, "<deliverable>a review with inline comments and a verdict</deliverable>") {
+					t.Errorf("ask = %q; want the auto-review deliverable", req.Ask.Message)
+				}
+			} else {
+				select {
+				case <-fh.notify:
+					t.Errorf("%s: should not have dispatched a run", tt.name)
+				case <-time.After(200 * time.Millisecond):
+				}
+			}
+		})
+	}
+}
+
+// TestHandleWebhookReviewCommandRespectsAllowlist pins that /review still goes
+// through the allowed_users gate like every human-invoked trigger.
+func TestHandleWebhookReviewCommandRespectsAllowlist(t *testing.T) {
+	srv := stubGitHub(t, make(chan string, 1))
+	defer srv.Close()
+	ext, fh := newTestExtension(t, srv.URL, []string{"label"})
+	ext.allowedUsers = map[string]bool{"someone-else": true}
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("issue_comment", reviewCommandBody("/review", "OWNER", "quack-auto-review")))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rec.Code)
+	}
+	select {
+	case <-fh.notify:
+		t.Error("disallowed user should not dispatch")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
