@@ -31,12 +31,16 @@ type issueCommentPayload struct {
 		User struct {
 			Login string `json:"login"`
 		} `json:"user"`
+		AuthorAssociation string `json:"author_association"`
 	} `json:"comment"`
 	Issue struct {
 		Number int    `json:"number"`
 		Title  string `json:"title"`
 		Body   string `json:"body"`
 		State  string `json:"state"`
+		Labels []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
 		// Present only when the issue is a PR.
 		PullRequest *struct{} `json:"pull_request"`
 	} `json:"issue"`
@@ -173,6 +177,27 @@ func (e *Extension) handleIssueComment(w http.ResponseWriter, body []byte) {
 	// Never act on another bot's comments.
 	if strings.HasSuffix(p.Comment.User.Login, "[bot]") {
 		w.WriteHeader(http.StatusOK)
+		return
+	}
+	// A bare "/review" re-runs the label-triggered review: cycling the label
+	// off/on fast enough coalesces into no webhook at all, so the label alone
+	// can't re-trigger.
+	if e.isReviewCommand(p) {
+		if !e.isInvokerAllowed(p.Comment.User.Login) {
+			slog.Warn("github webhook: invoker not in allowed_users; ignoring", "component", "github",
+				"repo", p.Repository.Owner.Login+"/"+p.Repository.Name, "issue", p.Issue.Number, "user", p.Comment.User.Login)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		p.rawEvent = json.RawMessage(body)
+		p.eventName = "issue_comment." + p.Action
+		p.isLabelTrigger = true // same run the labeled event dispatches, not a mention
+		slog.Info("github webhook received", "component", "github",
+			"repo", p.Repository.Owner.Login+"/"+p.Repository.Name, "pr", p.Issue.Number,
+			"command", "/review", "user", p.Comment.User.Login, "installation", p.Installation.ID)
+		go e.ackReaction(p)
+		go e.dispatch(p, autoReviewTask)
+		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 	task, ok := e.triggerTask(p)
@@ -768,6 +793,29 @@ func (e *Extension) ackDedup(owner, repo string, number int) {
 		slog.Warn("github dedup ack reaction failed", "component", "github",
 			"repo", owner+"/"+repo, "issue", number, "err", err)
 	}
+}
+
+// isReviewCommand reports whether a comment is a bare "/review" (surrounding
+// whitespace allowed) from a write/admin author on a PR carrying the review
+// label. Gated on the same "label" trigger as the labeled-event path.
+func (e *Extension) isReviewCommand(p issueCommentPayload) bool {
+	if !e.triggers["label"] || p.Action != "created" || p.Issue.PullRequest == nil {
+		return false
+	}
+	if strings.TrimSpace(p.Comment.Body) != "/review" {
+		return false
+	}
+	switch p.Comment.AuthorAssociation {
+	case "OWNER", "MEMBER", "COLLABORATOR": // write or admin
+	default:
+		return false
+	}
+	for _, l := range p.Issue.Labels {
+		if l.Name == e.labels.Review {
+			return true
+		}
+	}
+	return false
 }
 
 // triggerTask extracts the task from a mention at the START OF A LINE (leading spaces/tabs only) — makes quote-reply safe.
