@@ -3,7 +3,7 @@ module github.com/fagerbergj/quack-extensions/usage
 go 1.26.5
 
 require (
-	github.com/fagerbergj/quack-extensions/sdk v0.4.2
+	github.com/fagerbergj/quack-extensions/sdk v0.6.0
 	github.com/go-chi/chi/v5 v5.3.1
 	google.golang.org/adk/v2 v2.2.0
 	gopkg.in/yaml.v3 v3.0.1
