@@ -221,7 +221,7 @@ var documentsTmpl = template.Must(template.New("documents").Parse(`<!doctype htm
 <head>
 <meta charset="utf-8">
 <title>reMarkable documents - quack</title>
-<link rel="stylesheet" href="` + statusKitCSS + `">
+<link rel="stylesheet" href="` + sdk.UIKitCSS + `">
 </head>
 <body class="qk-page">
 <div class="qk-page__inner">

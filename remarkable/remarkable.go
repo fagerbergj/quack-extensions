@@ -158,5 +158,5 @@ func (e *extension) RunEnded(chatID string, outcome sdk.RunOutcome) {
 }
 
 func (e *extension) UI() sdk.UIDescriptor {
-	return sdk.UIDescriptor{Title: "reMarkable", Href: documentsPath}
+	return sdk.UIDescriptor{Title: "reMarkable", Href: documentsPath, Icon: "🖊️"}
 }
