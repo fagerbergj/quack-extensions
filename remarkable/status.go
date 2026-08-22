@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"sort"
 	"time"
+
+	"github.com/fagerbergj/quack-extensions/sdk"
 )
 
 // statusResponse is the dispatch-tracking snapshot shared by both /status
@@ -102,17 +104,12 @@ func (e *extension) handleStatusJSON(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// statusKitCSS: this module still pins an sdk release older than
-// sdk.UIKitCSS (v0.2.3), so the frozen v1 path is inlined - swap for the
-// constant once go.mod bumps.
-const statusKitCSS = "/assets/ext/v1/kit.css"
-
 var statusTmpl = template.Must(template.New("status").Parse(`<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
 <title>reMarkable - quack</title>
-<link rel="stylesheet" href="` + statusKitCSS + `">
+<link rel="stylesheet" href="` + sdk.UIKitCSS + `">
 </head>
 <body class="qk-page">
 <div class="qk-page__inner">
@@ -132,7 +129,7 @@ var statusTmpl = template.Must(template.New("status").Parse(`<!doctype html>
       <tbody>
       {{range .Documents}}
         <tr>
-          <td>{{.Name}}</td>
+          <td><a href="/chat/ext:remarkable:{{.ID}}" target="_top">{{.Name}}</a></td>
           <td>{{.Folder}}</td>
           <td>{{.LastModified.Format "2006-01-02 15:04"}}</td>
           <td>{{.Attempts}}</td>
