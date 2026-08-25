@@ -498,12 +498,89 @@ func TestDeliverReviewTargetsCreatedPRNotIssue(t *testing.T) {
 	}
 }
 
-// A 422 on the inline anchors must not lose the review (#1063: the branch moved
-// mid-run and GitHub rejected the whole submit).
+// A 422 on the inline anchors must not lose the review: the clone is never
+// refreshed, so a mid-run push leaves findings on lines the current diff lacks.
+// Re-anchor against a fresh diff and resubmit rather than dropping everything.
+func TestSubmitReviewReanchorsOn422(t *testing.T) {
+	var attempts, fileFetches int
+	var lastBody string
+	var lastLines []int
+	app := seededApp(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/pulls/7/files") {
+			fileFetches++
+			if fileFetches == 1 { // the diff as it looked when the clone was taken
+				_, _ = io.WriteString(w, `[{"filename":"auth.go","patch":"@@ -200,2 +200,4 @@\n ctx\n+a\n+b\n cleanup"}]`)
+				return
+			}
+			_, _ = io.WriteString(w, `[{"filename":"auth.go","patch":"@@ -40,2 +40,4 @@\n ctx\n+a\n+b\n cleanup"}]`)
+			return
+		}
+		var req struct {
+			Body     string `json:"body"`
+			Comments []struct {
+				Line int `json:"line"`
+			} `json:"comments"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		attempts++
+		lastBody = req.Body
+		lastLines = nil
+		for _, c := range req.Comments {
+			lastLines = append(lastLines, c.Line)
+		}
+		if attempts == 1 {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = io.WriteString(w, `{"message":"Unprocessable Entity","errors":["Line could not be resolved"]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":99,"html_url":"https://github.com/acme/widgets/pull/7#r99"}`)
+	})
+
+	// Prime the diff cache the way a run does, then let the branch move under it.
+	if _, err := app.commentablePositions(context.Background(), "acme", "widgets", 7); err != nil {
+		t.Fatalf("prime diff cache: %v", err)
+	}
+
+	res, err := app.submitReview(context.Background(), submitReviewArgs{
+		Owner: "acme", Repo: "widgets", PullNumber: 7, Event: "COMMENT", Body: "summary",
+		Comments: []reviewComment{
+			{Path: "auth.go", Line: 42, Body: "valid anchor"},
+			{Path: "auth.go", Line: 999, Body: "stale anchor"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("submitReview: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d; want 2", attempts)
+	}
+	if res.ReviewID != 99 {
+		t.Errorf("ReviewID = %d; want 99", res.ReviewID)
+	}
+	// Both survive inline: 42 as-is, 999 re-anchored onto a commentable line.
+	if len(lastLines) != 2 {
+		t.Fatalf("retry sent %d inline comments (lines %v); want 2", len(lastLines), lastLines)
+	}
+	for _, ln := range lastLines {
+		if ln < 40 || ln > 43 {
+			t.Errorf("retry anchored on line %d, outside the current diff %v", ln, lastLines)
+		}
+	}
+	if strings.Contains(lastBody, "stale anchor") {
+		t.Error("finding was dumped into the body despite a commentable line being available")
+	}
+}
+
+// When the diff cannot be refetched there is nothing to re-anchor against, so
+// the findings go to the body rather than being lost with the review.
 func TestSubmitReviewFallsBackToBodyOnlyOn422(t *testing.T) {
 	var bodies []string
 	var attempts int
 	app := seededApp(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/pulls/7/files") {
+			w.WriteHeader(http.StatusInternalServerError) // diff unreadable: nothing can be re-anchored
+			return
+		}
 		if !strings.HasSuffix(r.URL.Path, "/pulls/7/reviews") {
 			t.Errorf("unexpected path %s", r.URL.Path)
 			return

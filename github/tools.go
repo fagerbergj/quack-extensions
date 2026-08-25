@@ -288,18 +288,33 @@ func (a *App) submitReview(ctx context.Context, args submitReviewArgs) (submitRe
 	marker := "\n\n" + deliveryMarker("review")
 	url, id, err := a.createReview(ctx, args.Owner, args.Repo, args.PullNumber, event, body+marker, comments)
 	if err != nil && len(comments) > 0 && strings.Contains(err.Error(), "status 422") {
-		// GitHub rejects the entire review if one anchor no longer resolves - which
-		// happens whenever the branch moves mid-run. Repost body-only rather than
-		// lose the whole review to a stale line number.
-		slog.Warn("github: delivery: inline anchors rejected; reposting the review body-only",
-			"component", "github", "repo", args.Owner+"/"+args.Repo, "pr", args.PullNumber, "comments", len(comments), "err", err)
-		stranded := make([]sdk.ReviewComment, len(comments))
+		// One unresolvable anchor 422s the WHOLE review, and GitHub never says which
+		// comment is at fault. The clone is fetched once at run start and never
+		// refreshed, so a branch pushed mid-run leaves the findings anchored to line
+		// numbers the current diff no longer has. Re-validate against a freshly
+		// fetched diff, move only the anchors that no longer resolve into the body,
+		// and resubmit the rest inline.
+		a.invalidateDiff(args.Owner, args.Repo, args.PullNumber)
+		stale := make([]sdk.ReviewComment, len(comments))
 		for i, c := range comments {
-			stranded[i] = sdk.ReviewComment{Path: c.Path, Line: c.Line, Body: c.Body}
+			stale[i] = sdk.ReviewComment{Path: c.Path, Line: c.Line, Body: c.Body}
 		}
-		body += renderUnanchoredFindings(stranded)
-		comments = nil
-		url, id, err = a.createReview(ctx, args.Owner, args.Repo, args.PullNumber, event, body+marker, nil)
+		keep, moved := a.validComments(ctx, args.Owner, args.Repo, args.PullNumber, stale)
+		slog.Warn("github: delivery: review rejected on its inline anchors; re-anchoring against the current diff",
+			"component", "github", "repo", args.Owner+"/"+args.Repo, "pr", args.PullNumber,
+			"kept", len(keep), "moved_to_body", len(moved), "err", err)
+		retryBody := body + renderUnanchoredFindings(moved)
+		if url, id, err = a.createReview(ctx, args.Owner, args.Repo, args.PullNumber, event, retryBody+marker, keep); err == nil {
+			comments = keep
+		}
+		if err != nil {
+			// Still rejected: the review is worth more in the body than lost entirely.
+			slog.Warn("github: delivery: re-anchored review still rejected; posting body-only",
+				"component", "github", "repo", args.Owner+"/"+args.Repo, "pr", args.PullNumber, "err", err)
+			body += renderUnanchoredFindings(stale)
+			comments = nil
+			url, id, err = a.createReview(ctx, args.Owner, args.Repo, args.PullNumber, event, body+marker, nil)
+		}
 	}
 	if err != nil {
 		return submitReviewResult{}, err

@@ -630,6 +630,14 @@ func draftKey(owner, repo string, number int) string {
 	return fmt.Sprintf("%s/%s#%d", owner, repo, number)
 }
 
+// invalidateDiff drops the cached PR diff so the next read refetches - used when
+// GitHub rejects anchors the cached diff still considers valid.
+func (a *App) invalidateDiff(owner, repo string, number int) {
+	a.reviewMu.Lock()
+	delete(a.diffs, draftKey(owner, repo, number))
+	a.reviewMu.Unlock()
+}
+
 func (a *App) commentablePositions(ctx context.Context, owner, repo string, number int) (map[string]diffPositions, error) {
 	key := draftKey(owner, repo, number)
 	a.reviewMu.Lock()
