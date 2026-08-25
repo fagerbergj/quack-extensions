@@ -500,34 +500,23 @@ func TestDeliverReviewTargetsCreatedPRNotIssue(t *testing.T) {
 
 // A 422 on the inline anchors must not lose the review: the clone is never
 // refreshed, so a mid-run push leaves findings on lines the current diff lacks.
-// Re-anchor against a fresh diff and resubmit rather than dropping everything.
-func TestSubmitReviewReanchorsOn422(t *testing.T) {
-	var attempts, fileFetches int
+// Every finding moves to the summary, even ones that would still anchor.
+func TestSubmitReviewMovesAllFindingsToSummaryOn422(t *testing.T) {
+	var attempts int
 	var lastBody string
-	var lastLines []int
+	var lastComments int
 	app := seededApp(t, func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/pulls/7/files") {
-			fileFetches++
-			if fileFetches == 1 { // the diff as it looked when the clone was taken
-				_, _ = io.WriteString(w, `[{"filename":"auth.go","patch":"@@ -200,2 +200,4 @@\n ctx\n+a\n+b\n cleanup"}]`)
-				return
-			}
-			_, _ = io.WriteString(w, `[{"filename":"auth.go","patch":"@@ -40,2 +40,4 @@\n ctx\n+a\n+b\n cleanup"}]`)
+		if !strings.HasSuffix(r.URL.Path, "/pulls/7/reviews") {
+			t.Errorf("unexpected path %s", r.URL.Path)
 			return
 		}
 		var req struct {
 			Body     string `json:"body"`
-			Comments []struct {
-				Line int `json:"line"`
-			} `json:"comments"`
+			Comments []any  `json:"comments"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		attempts++
-		lastBody = req.Body
-		lastLines = nil
-		for _, c := range req.Comments {
-			lastLines = append(lastLines, c.Line)
-		}
+		lastBody, lastComments = req.Body, len(req.Comments)
 		if attempts == 1 {
 			w.WriteHeader(http.StatusUnprocessableEntity)
 			_, _ = io.WriteString(w, `{"message":"Unprocessable Entity","errors":["Line could not be resolved"]}`)
@@ -535,11 +524,6 @@ func TestSubmitReviewReanchorsOn422(t *testing.T) {
 		}
 		_, _ = io.WriteString(w, `{"id":99,"html_url":"https://github.com/acme/widgets/pull/7#r99"}`)
 	})
-
-	// Prime the diff cache the way a run does, then let the branch move under it.
-	if _, err := app.commentablePositions(context.Background(), "acme", "widgets", 7); err != nil {
-		t.Fatalf("prime diff cache: %v", err)
-	}
 
 	res, err := app.submitReview(context.Background(), submitReviewArgs{
 		Owner: "acme", Repo: "widgets", PullNumber: 7, Event: "COMMENT", Body: "summary",
@@ -552,22 +536,21 @@ func TestSubmitReviewReanchorsOn422(t *testing.T) {
 		t.Fatalf("submitReview: %v", err)
 	}
 	if attempts != 2 {
-		t.Fatalf("attempts = %d; want 2", attempts)
+		t.Fatalf("attempts = %d; want 2 (inline, then summary-only)", attempts)
 	}
 	if res.ReviewID != 99 {
 		t.Errorf("ReviewID = %d; want 99", res.ReviewID)
 	}
-	// Both survive inline: 42 as-is, 999 re-anchored onto a commentable line.
-	if len(lastLines) != 2 {
-		t.Fatalf("retry sent %d inline comments (lines %v); want 2", len(lastLines), lastLines)
+	if lastComments != 0 {
+		t.Errorf("retry sent %d inline comments; want 0", lastComments)
 	}
-	for _, ln := range lastLines {
-		if ln < 40 || ln > 43 {
-			t.Errorf("retry anchored on line %d, outside the current diff %v", ln, lastLines)
+	for _, want := range []string{"valid anchor", "stale anchor", "auth.go"} {
+		if !strings.Contains(lastBody, want) {
+			t.Errorf("summary lost %q: %s", want, lastBody)
 		}
 	}
-	if strings.Contains(lastBody, "stale anchor") {
-		t.Error("finding was dumped into the body despite a commentable line being available")
+	if res.Comments != 0 {
+		t.Errorf("result reports %d inline comments; want 0", res.Comments)
 	}
 }
 
