@@ -181,3 +181,28 @@ func TestChatOriginCarriesStateIndependentOfBadge(t *testing.T) {
 		t.Errorf("zero-value ChatOrigin.State = %q, want \"\" (unknown/not-applicable)", zero.State)
 	}
 }
+
+// TestHostInvalidateSetupDegradesGracefullyWhenNil pins that a nil
+// InvalidateSetup (an extension running against a core that predates it) is
+// a valid state callers must check for, not assume away.
+func TestHostInvalidateSetupDegradesGracefullyWhenNil(t *testing.T) {
+	var h sdk.Host
+	if h.InvalidateSetup != nil {
+		t.Fatalf("zero-value Host.InvalidateSetup = non-nil, want nil")
+	}
+
+	var invalidated []string
+	h.InvalidateSetup = func(chatID string) error {
+		if chatID == "" {
+			return errors.New("missing chat id")
+		}
+		invalidated = append(invalidated, chatID)
+		return nil
+	}
+	if err := h.InvalidateSetup("ext:github:github-acme-widgets-9"); err != nil {
+		t.Fatalf("InvalidateSetup: %v", err)
+	}
+	if len(invalidated) != 1 || invalidated[0] != "ext:github:github-acme-widgets-9" {
+		t.Errorf("invalidated = %v, want [ext:github:github-acme-widgets-9]", invalidated)
+	}
+}
