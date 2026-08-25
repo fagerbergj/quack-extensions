@@ -285,8 +285,22 @@ func (a *App) submitReview(ctx context.Context, args submitReviewArgs) (submitRe
 		body = defaultReviewBody(event, len(comments))
 	}
 	// Marker lets a later run find this review.
-	body += "\n\n" + deliveryMarker("review")
-	url, id, err := a.createReview(ctx, args.Owner, args.Repo, args.PullNumber, event, body, comments)
+	marker := "\n\n" + deliveryMarker("review")
+	url, id, err := a.createReview(ctx, args.Owner, args.Repo, args.PullNumber, event, body+marker, comments)
+	if err != nil && len(comments) > 0 && strings.Contains(err.Error(), "status 422") {
+		// GitHub rejects the entire review if one anchor no longer resolves - which
+		// happens whenever the branch moves mid-run. Repost body-only rather than
+		// lose the whole review to a stale line number.
+		slog.Warn("github: delivery: inline anchors rejected; reposting the review body-only",
+			"component", "github", "repo", args.Owner+"/"+args.Repo, "pr", args.PullNumber, "comments", len(comments), "err", err)
+		stranded := make([]sdk.ReviewComment, len(comments))
+		for i, c := range comments {
+			stranded[i] = sdk.ReviewComment{Path: c.Path, Line: c.Line, Body: c.Body}
+		}
+		body += renderUnanchoredFindings(stranded)
+		comments = nil
+		url, id, err = a.createReview(ctx, args.Owner, args.Repo, args.PullNumber, event, body+marker, nil)
+	}
 	if err != nil {
 		return submitReviewResult{}, err
 	}

@@ -497,3 +497,46 @@ func TestDeliverReviewTargetsCreatedPRNotIssue(t *testing.T) {
 			reviewPaths[0], want)
 	}
 }
+
+// A 422 on the inline anchors must not lose the review (#1063: the branch moved
+// mid-run and GitHub rejected the whole submit).
+func TestSubmitReviewFallsBackToBodyOnlyOn422(t *testing.T) {
+	var bodies []string
+	var attempts int
+	app := seededApp(t, func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/pulls/7/reviews") {
+			t.Errorf("unexpected path %s", r.URL.Path)
+			return
+		}
+		var req struct {
+			Body     string `json:"body"`
+			Comments []any  `json:"comments"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		attempts++
+		bodies = append(bodies, req.Body)
+		if len(req.Comments) > 0 {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = io.WriteString(w, `{"message":"Unprocessable Entity","errors":["Line could not be resolved"]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":99,"html_url":"https://github.com/acme/widgets/pull/7#r99"}`)
+	})
+
+	res, err := app.submitReview(context.Background(), submitReviewArgs{
+		Owner: "acme", Repo: "widgets", PullNumber: 7, Event: "COMMENT", Body: "summary",
+		Comments: []reviewComment{{Path: "auth.go", Line: 42, Body: "nil deref here"}},
+	})
+	if err != nil {
+		t.Fatalf("submitReview: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d; want 2 (inline, then body-only)", attempts)
+	}
+	if res.ReviewID != 99 {
+		t.Errorf("ReviewID = %d; want 99", res.ReviewID)
+	}
+	if !strings.Contains(bodies[1], "nil deref here") || !strings.Contains(bodies[1], "auth.go") {
+		t.Errorf("retry body dropped the finding: %q", bodies[1])
+	}
+}
