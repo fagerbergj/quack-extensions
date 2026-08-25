@@ -280,6 +280,14 @@ func (e *Extension) handlePullRequest(w http.ResponseWriter, body []byte) {
 		return
 	}
 
+	// A push under a running review leaves its clone pointing at a commit
+	// that no longer exists on the branch; core decides if refreshing is safe.
+	if p.Action == "synchronize" {
+		e.invalidateSetup(p.Repository.Owner.Login, p.Repository.Name, p.Number)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	fires := (p.Action == "opened" && e.triggers["pr_opened"]) ||
 		(p.Action == "labeled" && e.triggers["label"] && p.Label.Name == e.labels.Review)
 	if !fires {
@@ -292,6 +300,25 @@ func (e *Extension) handlePullRequest(w http.ResponseWriter, body []byte) {
 		"action", p.Action, "installation", p.Installation.ID)
 	go e.dispatch(autoReviewPayload(p, body), autoReviewTask)
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// invalidateSetup signals a moved branch, but only for a PR with a run still
+// in flight - pending is the only record of that, and an unknown chat means
+// there is no clone to refresh.
+func (e *Extension) invalidateSetup(owner, repo string, number int) {
+	if e.host.InvalidateSetup == nil {
+		return
+	}
+	chatID := globalChatID(fmt.Sprintf("github-%s-%s-%d", owner, repo, number))
+	if _, running := e.pending.Load(chatID); !running {
+		return
+	}
+	slog.Info("github: branch moved under a running review; invalidating its clone",
+		"component", "github", "repo", owner+"/"+repo, "pr", number)
+	if err := e.host.InvalidateSetup(chatID); err != nil {
+		slog.Warn("github: invalidate setup failed", "component", "github",
+			"repo", owner+"/"+repo, "pr", number, "err", err)
+	}
 }
 
 // autoReviewPayload shapes a PR event as an issueCommentPayload so the mention path's dispatch/envelope builder handles it.

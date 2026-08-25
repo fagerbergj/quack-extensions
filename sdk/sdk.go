@@ -182,6 +182,13 @@ type Host struct {
 	// ErrUnknownChat when localID never reached Dispatch.
 	UpdateChatOrigin func(localID string, origin ChatOrigin) error
 
+	// InvalidateSetup tells quack the branch a run was cloned from has moved
+	// under it, so the clone no longer matches. quack decides whether
+	// refreshing it is safe - re-cloning is destructive and it will refuse
+	// rather than discard a node's work. Same nil-tolerant, best-effort class
+	// as ArchiveChat: callers must nil-check.
+	InvalidateSetup func(chatID string) error
+
 	// Classify is a single free-text model round trip - a classification or
 	// short judgment call an extension needs INLINE, before it decides how
 	// to shape a DispatchRequest (e.g. "is this comment asking for work, or

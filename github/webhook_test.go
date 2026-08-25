@@ -57,6 +57,22 @@ type fakeDispatchHost struct {
 	// by localID, lets a test simulate sdk.ErrUnknownChat or any other failure.
 	originUpdates []originUpdate
 	originErr     map[string]error
+
+	// invalidated records every Host.InvalidateSetup call.
+	invalidated []string
+}
+
+func (f *fakeDispatchHost) invalidateSetup(chatID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.invalidated = append(f.invalidated, chatID)
+	return nil
+}
+
+func (f *fakeDispatchHost) invalidateCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.invalidated...)
 }
 
 type originUpdate struct {
@@ -266,6 +282,7 @@ func newTestExtension(t *testing.T, apiBase string, triggers []string) (*Extensi
 	host := sdk.Host{
 		Dispatch:         fh.dispatch,
 		UpdateChatOrigin: fh.updateChatOrigin,
+		InvalidateSetup:  fh.invalidateSetup,
 		Log:              slog.New(slog.NewTextHandler(io.Discard, nil)),
 		DataDir:          t.TempDir(),
 	}
@@ -4024,5 +4041,42 @@ func TestHandleWebhookReviewCommandRespectsAllowlist(t *testing.T) {
 	case <-fh.notify:
 		t.Error("disallowed user should not dispatch")
 	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// TestHandleWebhookSynchronizeInvalidatesOnlyARunningPR pins both halves of
+// the push signal: a PR with a run in flight gets its clone invalidated, and
+// a PR with none must not - there is no clone to refresh, and no run to
+// disturb.
+func TestHandleWebhookSynchronizeInvalidatesOnlyARunningPR(t *testing.T) {
+	srv := stubGitHub(t, make(chan string, 1))
+	defer srv.Close()
+	ext, fh := newTestExtension(t, srv.URL, nil)
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("pull_request", pullRequestBody("synchronize", "")))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := fh.invalidateCalls(); len(got) != 0 {
+		t.Fatalf("InvalidateSetup calls with no run in flight = %v, want none", got)
+	}
+
+	chatID := globalChatID("github-acme-widgets-7")
+	ext.pending.Store(chatID, &pendingRun{sessionID: "github-acme-widgets-7", owner: "acme", repo: "widgets", number: 7, isPR: true})
+
+	rec = httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("pull_request", pullRequestBody("synchronize", "")))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := fh.invalidateCalls(); len(got) != 1 || got[0] != chatID {
+		t.Fatalf("InvalidateSetup calls = %v, want [%s]", got, chatID)
+	}
+
+	select {
+	case <-fh.notify:
+		t.Error("pull_request.synchronize should never dispatch a run")
+	case <-time.After(100 * time.Millisecond):
 	}
 }
