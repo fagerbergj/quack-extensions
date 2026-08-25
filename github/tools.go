@@ -285,8 +285,24 @@ func (a *App) submitReview(ctx context.Context, args submitReviewArgs) (submitRe
 		body = defaultReviewBody(event, len(comments))
 	}
 	// Marker lets a later run find this review.
-	body += "\n\n" + deliveryMarker("review")
-	url, id, err := a.createReview(ctx, args.Owner, args.Repo, args.PullNumber, event, body, comments)
+	marker := "\n\n" + deliveryMarker("review")
+	url, id, err := a.createReview(ctx, args.Owner, args.Repo, args.PullNumber, event, body+marker, comments)
+	if err != nil && len(comments) > 0 && strings.Contains(err.Error(), "status 422") {
+		// One unresolvable anchor 422s the WHOLE review and GitHub never says which
+		// comment is at fault, so there is nothing to salvage selectively. The clone
+		// is taken once at run start and never refreshed, so a branch pushed mid-run
+		// leaves findings on lines the current diff no longer has. Put every finding
+		// in the body: a located bullet beats losing the review outright.
+		slog.Warn("github: delivery: review rejected on its inline anchors; posting every finding in the summary instead",
+			"component", "github", "repo", args.Owner+"/"+args.Repo, "pr", args.PullNumber, "findings", len(comments), "err", err)
+		stranded := make([]sdk.ReviewComment, len(comments))
+		for i, c := range comments {
+			stranded[i] = sdk.ReviewComment{Path: c.Path, Line: c.Line, Body: c.Body}
+		}
+		body += renderUnanchoredFindings(stranded)
+		comments = nil
+		url, id, err = a.createReview(ctx, args.Owner, args.Repo, args.PullNumber, event, body+marker, nil)
+	}
 	if err != nil {
 		return submitReviewResult{}, err
 	}

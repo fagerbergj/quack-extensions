@@ -497,3 +497,59 @@ func TestDeliverReviewTargetsCreatedPRNotIssue(t *testing.T) {
 			reviewPaths[0], want)
 	}
 }
+
+// A 422 on the inline anchors must not lose the review: the clone is never
+// refreshed, so a mid-run push leaves findings on lines the current diff lacks.
+// Every finding moves to the summary, even ones that would still anchor.
+func TestSubmitReviewMovesAllFindingsToSummaryOn422(t *testing.T) {
+	var attempts int
+	var lastBody string
+	var lastComments int
+	app := seededApp(t, func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/pulls/7/reviews") {
+			t.Errorf("unexpected path %s", r.URL.Path)
+			return
+		}
+		var req struct {
+			Body     string `json:"body"`
+			Comments []any  `json:"comments"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		attempts++
+		lastBody, lastComments = req.Body, len(req.Comments)
+		if attempts == 1 {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = io.WriteString(w, `{"message":"Unprocessable Entity","errors":["Line could not be resolved"]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":99,"html_url":"https://github.com/acme/widgets/pull/7#r99"}`)
+	})
+
+	res, err := app.submitReview(context.Background(), submitReviewArgs{
+		Owner: "acme", Repo: "widgets", PullNumber: 7, Event: "COMMENT", Body: "summary",
+		Comments: []reviewComment{
+			{Path: "auth.go", Line: 42, Body: "valid anchor"},
+			{Path: "auth.go", Line: 999, Body: "stale anchor"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("submitReview: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d; want 2 (inline, then summary-only)", attempts)
+	}
+	if res.ReviewID != 99 {
+		t.Errorf("ReviewID = %d; want 99", res.ReviewID)
+	}
+	if lastComments != 0 {
+		t.Errorf("retry sent %d inline comments; want 0", lastComments)
+	}
+	for _, want := range []string{"valid anchor", "stale anchor", "auth.go"} {
+		if !strings.Contains(lastBody, want) {
+			t.Errorf("summary lost %q: %s", want, lastBody)
+		}
+	}
+	if res.Comments != 0 {
+		t.Errorf("result reports %d inline comments; want 0", res.Comments)
+	}
+}
