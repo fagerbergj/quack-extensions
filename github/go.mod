@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3
-	github.com/fagerbergj/quack-extensions/sdk v0.6.0
+	github.com/fagerbergj/quack-extensions/sdk v0.7.0
 	github.com/glebarez/go-sqlite v1.23.0
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -53,6 +53,3 @@ require (
 	rsc.io/omap v1.2.0 // indirect
 	rsc.io/ordered v1.1.1 // indirect
 )
-
-// Development-only: removed at release time (sdk vNEXT untagged)
-replace github.com/fagerbergj/quack-extensions/sdk => ../sdk
