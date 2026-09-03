@@ -156,11 +156,24 @@ type Host struct {
 	// alone.
 	DataDir string
 
-	// EnsureContextDir allocates (creating if needed) a sandboxed directory
-	// alongside a dispatched run's own clone, for evidence files too large
-	// or too raw for Ask.Message/ContextItems - the extension writes into it
-	// directly; quack only guarantees the path is sandboxed for chatID.
+	// Deprecated: EnsureContextDir is superseded by ReadArtifact/
+	// WriteArtifact (quack issue #1010) - a workspace-dir sibling to a
+	// dispatched run's clone, for evidence files too large or too raw for
+	// Ask.Message/ContextItems. Kept only until this module stops calling
+	// it; slated for removal once no consumer remains.
 	EnsureContextDir func(userID, chatID string) (string, error)
+
+	// ReadArtifact returns the latest bytes for a named input artifact in
+	// this chat, or ok=false when it does not exist yet (e.g. first
+	// dispatch - no baseline to diff against). nil = host predates this
+	// capability; callers treat that the same as "no baseline".
+	ReadArtifact func(chatID, name string) (data []byte, ok bool)
+
+	// WriteArtifact persists (or re-saves) a named input artifact for this
+	// chat and returns the resulting revision (1-based, increasing per
+	// name) and whether the bytes changed versus the prior revision.
+	// nil = capability unavailable.
+	WriteArtifact func(chatID, name, mimeType string, data []byte) (revision int64, changed bool, err error)
 
 	// ChatUser returns the ADK session identity a chat is running as -
 	// e.g. recovering the acting user when an extension re-engages a chat
