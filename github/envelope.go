@@ -155,8 +155,8 @@ const maxEnvelopeChecks = 20
 
 // checksBlock renders the PR's current head-commit check runs as compact
 // status lines (name: status[, conclusion]) plus a one-line failing/pending/
-// passing summary - the compact companion to check-runs.json's full JSON
-// already in the context dir. Empty when there are no checks to report.
+// passing summary - the compact companion to the "check-runs" input
+// artifact's full JSON (#1010). Empty when there are no checks to report.
 func checksBlock(checks []checkRunView) string {
 	if len(checks) == 0 {
 		return ""

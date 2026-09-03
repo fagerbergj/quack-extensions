@@ -62,7 +62,7 @@ type issueCommentPayload struct {
 	deliverableHint string          // fixed deliverable for synthetic triggers (CI auto-heal, own-PR).
 	rawEvent        json.RawMessage // originating webhook JSON → envelope's <event> block.
 	eventName       string          // originating webhook dotted name.
-	checkSHA        string          // CI commit: dump check-runs.json. "" = plan/review/mention run.
+	checkSHA        string          // CI commit: write the "check-runs" input artifact. "" = plan/review/mention run.
 	// issueDeliverableCache memoizes classifyIssueDeliverable for one dispatch:
 	// shared by pointer across every copy of p passed to
 	// buildEnvelope/buildWorkerAsk/deliverableIsPlan, so a live classifier

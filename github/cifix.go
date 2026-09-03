@@ -217,8 +217,8 @@ func (e *Extension) fixLabelApplied(p pullRequestPayload, rawBody []byte) {
 // session - the shared tail of both the automatic (workflow_run) and explicit
 // (labeled) fix paths. rawBody/eventName carry the ORIGINATING webhook
 // (workflow_run.completed or pull_request.labeled) into the envelope's
-// <event> block; sha doubles as the context directory's check-runs scope
-// (#660's ContextRequest.CheckSHA).
+// <event> block; sha doubles as the "check-runs" input artifact's scope
+// (#1010's ContextRequest.CheckSHA).
 func (e *Extension) beginFix(ctx context.Context, ri repoInfo, number int, sha, intro, checksText string, rawBody []byte, eventName string) {
 	sessionID := fmt.Sprintf("github-%s-%s-%d", ri.Owner, ri.Name, number)
 	chatID := globalChatID(sessionID)
