@@ -295,7 +295,7 @@ func artifactsManifestBlock(entries []artifactEntry) string {
 		if e.Changed {
 			status = "new"
 		}
-		fmt.Fprintf(&b, "  <artifact id=%q revision=\"%d\" status=%q>%s</artifact>\n", e.Name, e.Revision, status, e.Note)
+		fmt.Fprintf(&b, "  <artifact id=%q revision=\"%d\" status=%q>%s</artifact>\n", e.ID(), e.Revision, status, e.Note)
 	}
 	b.WriteString("</artifacts>\n")
 	return b.String()

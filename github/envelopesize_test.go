@@ -77,11 +77,11 @@ func TestBuildEnvelopeSizeWithManifest(t *testing.T) {
 	env := ext.buildEnvelope(context.Background(), issue, "task", seedGC(Snapshot{}, 0), nil, manifest)
 
 	want := "<artifacts>\n" +
-		`  <artifact id="comments" revision="4" status="new">47 total, 3 new</artifact>` + "\n" +
-		`  <artifact id="event" revision="4" status="unchanged">issues.labeled</artifact>` + "\n" +
-		`  <artifact id="timeline" revision="1" status="unchanged">12 entries</artifact>` + "\n" +
-		`  <artifact id="check-runs" revision="2" status="new">5 checks, 1 failed</artifact>` + "\n" +
-		`  <artifact id="annotations-go-test" revision="1" status="new">14 annotations</artifact>` + "\n" +
+		`  <artifact id="bytes:comments" revision="4" status="new">47 total, 3 new</artifact>` + "\n" +
+		`  <artifact id="bytes:event" revision="4" status="unchanged">issues.labeled</artifact>` + "\n" +
+		`  <artifact id="bytes:timeline" revision="1" status="unchanged">12 entries</artifact>` + "\n" +
+		`  <artifact id="bytes:check-runs" revision="2" status="new">5 checks, 1 failed</artifact>` + "\n" +
+		`  <artifact id="bytes:annotations-go-test" revision="1" status="new">14 annotations</artifact>` + "\n" +
 		"</artifacts>\n"
 	if !strings.Contains(env, want) {
 		t.Errorf("manifest block =\n%s\nwant it to contain:\n%s", truncateForLog(env), want)

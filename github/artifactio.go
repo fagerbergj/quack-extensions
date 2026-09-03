@@ -28,11 +28,22 @@ const (
 
 // artifactEntry names one input artifact recorded in a dispatch's manifest.
 type artifactEntry struct {
-	Name     string // artifact-local name ("comments", "event", "annotations-go-test", ...)
+	Name     string // artifact-local name ("comments", "event", "annotations-go-test", ...) - what Host.ReadArtifact/WriteArtifact take
 	Revision int64
 	Changed  bool
 	Note     string // one-line human summary rendered in the manifest
 }
+
+// inputArtifactKind is the recordstore kind core (internal/serve's own
+// inputArtifactKind) saves every dispatch input artifact under. The SDK
+// boundary carries a bare Name, not the store's full id, so read_artifact
+// needs the prefix restored - ID is the one place this extension does that,
+// so the manifest can never drift from what read_artifact actually accepts.
+const inputArtifactKind = "bytes"
+
+// ID is the id read_artifact accepts for this entry - the manifest MUST
+// render this, not Name, or a worker's read_artifact call 404s.
+func (e artifactEntry) ID() string { return inputArtifactKind + ":" + e.Name }
 
 // writeArtifact stores data under name via host.WriteArtifact and returns
 // the resulting manifest entry, nil when the capability is unavailable or
