@@ -422,6 +422,13 @@ type DeliveryContext struct {
 	GatePassed     bool
 	GateFeedback   string
 	ChecksSkipNote string
+
+	// IdempotencyKey identifies this delivery for crash recovery (#1093,
+	// quack design V4 §4.9): quack's target artifact id + revision. "" on a
+	// build that predates this field - an extension that embeds it in the
+	// posted item (e.g. a hidden marker) makes that post findable later by
+	// DeliveryRecoverer without ever posting twice.
+	IdempotencyKey string
 }
 
 // StagedDelivery is one item quack has gated and is ready to deliver.
@@ -462,6 +469,16 @@ type DeliveryItemOutcome struct {
 	Kind  string
 	URL   string
 	Error string
+}
+
+// DeliveryRecoverer is an optional interface an extension implements so
+// quack can reconcile a delivery.intent with no delivery.done after a crash
+// (#1093, quack design V4 §4.9): look the idempotency key up at the target
+// (a hidden body marker, a document id) and report whether it was already
+// posted, without posting again. Detected via type assertion, same pattern
+// as Deliverer.
+type DeliveryRecoverer interface {
+	RecoverDelivery(ctx context.Context, key string, dc DeliveryContext) (found bool, outcome DeliveryItemOutcome, err error)
 }
 
 // GitCredentialSource is an optional interface an extension implements to
