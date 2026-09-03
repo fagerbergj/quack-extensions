@@ -54,3 +54,41 @@ func TestBuildEnvelopeSizeShrinksOrderOfMagnitude(t *testing.T) {
 		t.Errorf("envelope still inlines raw webhook payload noise:\n%s", truncateForLog(env))
 	}
 }
+
+// TestBuildEnvelopeSizeWithManifest pins the <artifacts> manifest's own
+// contribution to envelope size: even with every #1006-shaped input
+// artifact listed, the manifest block itself stays small (one compact line
+// per artifact), not a second copy of what it points at.
+func TestBuildEnvelopeSizeWithManifest(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+
+	var issue issueCommentPayload
+	issue.Issue.Number = 1006
+	issue.Action = "created"
+	issue.eventName = "issues.labeled"
+
+	manifest := []artifactEntry{
+		{Name: "comments", Revision: 4, Changed: true, Note: "47 total, 3 new"},
+		{Name: "event", Revision: 4, Changed: false, Note: "issues.labeled"},
+		{Name: "timeline", Revision: 1, Changed: false, Note: "12 entries"},
+		{Name: "check-runs", Revision: 2, Changed: true, Note: "5 checks, 1 failed"},
+		{Name: "annotations-go-test", Revision: 1, Changed: true, Note: "14 annotations"},
+	}
+	env := ext.buildEnvelope(context.Background(), issue, "task", seedGC(Snapshot{}, 0), nil, manifest)
+
+	want := "<artifacts>\n" +
+		`  <artifact id="comments" revision="4" status="new">47 total, 3 new</artifact>` + "\n" +
+		`  <artifact id="event" revision="4" status="unchanged">issues.labeled</artifact>` + "\n" +
+		`  <artifact id="timeline" revision="1" status="unchanged">12 entries</artifact>` + "\n" +
+		`  <artifact id="check-runs" revision="2" status="new">5 checks, 1 failed</artifact>` + "\n" +
+		`  <artifact id="annotations-go-test" revision="1" status="new">14 annotations</artifact>` + "\n" +
+		"</artifacts>\n"
+	if !strings.Contains(env, want) {
+		t.Errorf("manifest block =\n%s\nwant it to contain:\n%s", truncateForLog(env), want)
+	}
+	// The manifest is a pointer, not a payload: five entries render in well
+	// under 500 chars regardless of how large the artifacts they name are.
+	if len(want) > 500 {
+		t.Errorf("manifest block is %d chars for 5 entries - no longer a compact pointer", len(want))
+	}
+}
