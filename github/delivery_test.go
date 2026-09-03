@@ -1161,3 +1161,46 @@ func TestDeliverClosesTrailerNotDuplicated(t *testing.T) {
 		t.Fatalf("Closes #5 appears %d times, want exactly 1: %s", n, posted.Body)
 	}
 }
+
+// #1093 finding 1: a review delivered with dc.IdempotencyKey set embeds the
+// key marker in the posted body, through the real Deliver path (not just
+// deliveryKeyMarker in isolation) - what RecoverDelivery later searches for.
+func TestDeliverReviewEmbedsIdempotencyKeyMarker(t *testing.T) {
+	var reviewBody []byte
+	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/app"):
+			io.WriteString(w, `{"slug":"quack"}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls/7"):
+			io.WriteString(w, `{"user":{"login":"alice"}}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/reviews"):
+			io.WriteString(w, `[]`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/pulls/7/reviews"):
+			reviewBody, _ = io.ReadAll(r.Body)
+			io.WriteString(w, `{"id":9,"html_url":"https://github.com/acme/widgets/pull/7#pullrequestreview-9"}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	})
+
+	dc := sdk.DeliveryContext{
+		GatePassed:     true,
+		ChatID:         "github-acme-widgets-7",
+		CloneURL:       "https://github.com/acme/widgets.git",
+		IssueNumber:    7,
+		IdempotencyKey: "code_review:pr:7@3",
+		Items:          []sdk.StagedDelivery{{Kind: "review", Event: "approve", Body: "looks good"}},
+	}
+	if _, err := app.Deliver(context.Background(), dc); err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	var posted struct {
+		Body string `json:"body"`
+	}
+	if err := json.Unmarshal(reviewBody, &posted); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(posted.Body, deliveryKeyMarker("code_review:pr:7@3")) {
+		t.Fatalf("posted body = %q, want the idempotency key marker embedded", posted.Body)
+	}
+}
