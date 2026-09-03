@@ -885,6 +885,14 @@ func isTokenRune(b byte) bool {
 	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
 
+// SignWebhookBody computes the X-Hub-Signature-256 header value for body -
+// the QA mock sender's counterpart to verifySignature below.
+func SignWebhookBody(secret, body []byte) string {
+	mac := hmac.New(sha256.New, secret)
+	mac.Write(body)
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
 // verifySignature checks GitHub's X-Hub-Signature-256 using constant-time compare — the trust boundary.
 func verifySignature(secret, body []byte, header string) bool {
 	if len(secret) == 0 || !strings.HasPrefix(header, "sha256=") {
