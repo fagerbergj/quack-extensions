@@ -814,6 +814,8 @@ type ghUserRef struct {
 }
 
 type prReview struct {
+	ID          int64     `json:"id"`
+	HTMLURL     string    `json:"html_url"`
 	NodeID      string    `json:"node_id"`
 	CommitID    string    `json:"commit_id"`
 	State       string    `json:"state"`
