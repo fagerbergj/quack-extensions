@@ -53,3 +53,7 @@ require (
 	rsc.io/omap v1.2.0 // indirect
 	rsc.io/ordered v1.1.1 // indirect
 )
+// TEMPORARY (#1093): sdk's DeliveryRecoverer/IdempotencyKey additions aren't
+// tagged yet. Remove this replace and bump the require above to the tagged
+// sdk version once it's cut.
+replace github.com/fagerbergj/quack-extensions/sdk => ../sdk

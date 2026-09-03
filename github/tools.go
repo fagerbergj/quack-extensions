@@ -314,6 +314,42 @@ func deliveryMarker(family string) string {
 	return "<!-- quack:delivery:" + family + " -->"
 }
 
+// deliveryKeyMarker embeds #1093's idempotency key (quack's target artifact
+// id + revision) into the posted body, separate from deliveryMarker's own
+// family marker so existing parsers (reviewVerdictMarkerRe et al.) never see
+// it and don't need to change. "" key = don't embed - review predates this
+// scheme, and DeliveryRecoverer's search below correctly won't find it.
+func deliveryKeyMarker(key string) string {
+	if key == "" {
+		return ""
+	}
+	return "\n<!-- quack:delivery:key:" + key + " -->"
+}
+
+// deliveryKeyMarkerRe extracts a review's embedded idempotency key, if any.
+var deliveryKeyMarkerRe = regexp.MustCompile(`<!-- quack:delivery:key:([^\s]+) -->`)
+
+// RecoverDelivery implements sdk.DeliveryRecoverer (#1093): scans quack's
+// own reviews on the PR for one already carrying key, so `quack ledger
+// recover` can tell a crash AFTER the post landed (found=true, don't
+// redeliver) from a crash BEFORE it did (found=false, redeliver).
+func (a *App) RecoverDelivery(ctx context.Context, key string, dc sdk.DeliveryContext) (bool, sdk.DeliveryItemOutcome, error) {
+	owner, repo, ok := ownerRepoFromURL(dc.CloneURL)
+	if !ok || dc.IssueNumber == 0 {
+		return false, sdk.DeliveryItemOutcome{}, fmt.Errorf("github: recover: %q/#%d is not a recoverable PR reference", dc.CloneURL, dc.IssueNumber)
+	}
+	reviews, err := a.listReviews(ctx, owner, repo, dc.IssueNumber)
+	if err != nil {
+		return false, sdk.DeliveryItemOutcome{}, err
+	}
+	for _, r := range reviews {
+		if m := deliveryKeyMarkerRe.FindStringSubmatch(r.Body); m != nil && m[1] == key {
+			return true, sdk.DeliveryItemOutcome{Kind: "review", URL: r.HTMLURL}, nil
+		}
+	}
+	return false, sdk.DeliveryItemOutcome{}, nil
+}
+
 // collapsePriorReviews minimizes prior quack-authored reviews before submitting a new one. Best-effort.
 func (a *App) collapsePriorReviews(ctx context.Context, owner, repo string, number int) {
 	reviews, err := a.listReviews(ctx, owner, repo, number)
@@ -854,7 +890,7 @@ func (a *App) deliverOne(ctx context.Context, owner, repo string, dc sdk.Deliver
 					verdict = "comment"
 				}
 				body := "_quack authored this PR, so GitHub won't let it record an approve or request-changes verdict - this review is a comment. A maintainer decides._\n\n" + StripVerdictTail(item.Body)
-				body += "\n\n" + deliveryMarker("review:"+verdict)
+				body += "\n\n" + deliveryMarker("review:"+verdict) + deliveryKeyMarker(dc.IdempotencyKey)
 				a.collapsePriorReviews(ctx, owner, repo, dc.IssueNumber) // superseded prior attempts
 				inline, unanchored := a.validComments(ctx, owner, repo, dc.IssueNumber, item.Comments)
 				body += renderUnanchoredFindings(unanchored)
@@ -874,7 +910,7 @@ func (a *App) deliverOne(ctx context.Context, owner, repo string, dc sdk.Deliver
 		a.collapsePriorReviews(ctx, owner, repo, dc.IssueNumber) // superseded prior attempts
 		// Validate inline findings before submit — one bad anchor 422s the whole review.
 		inline, unanchored := a.validComments(ctx, owner, repo, dc.IssueNumber, item.Comments)
-		body := item.Body + renderUnanchoredFindings(unanchored)
+		body := item.Body + renderUnanchoredFindings(unanchored) + deliveryKeyMarker(dc.IdempotencyKey)
 		res, err := a.submitReview(ctx, submitReviewArgs{Owner: owner, Repo: repo, PullNumber: dc.IssueNumber, Body: gateCaveat(dc, body), Event: event, Comments: inline})
 		if err != nil {
 			return deliveryItemResult{}, fmt.Errorf("github: delivery: submit review: %w", err)
