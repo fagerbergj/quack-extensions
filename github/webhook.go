@@ -1022,27 +1022,23 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 	p.issueDeliverableCache = &issueDeliverableResult{}
 	isPlan := e.deliverableIsPlan(ctx, p, task, allowedKinds, isPR)
 
-	// Context directory: best-effort, skipped when Host has no capability wired.
-	var ctxDir string
-	var ctxFiles []ContextFile
-	if e.host.EnsureContextDir != nil {
-		if dir, derr := e.host.EnsureContextDir(login, chatID); derr != nil {
-			slog.Warn("github: context dir setup failed; running without one", "component", "github",
-				"repo", owner+"/"+repo, "issue", number, "err", derr)
-		} else {
-			ctxDir = dir
-			if werr := e.app.WriteContextDir(ctx, ctxDir, ContextRequest{
-				Owner: owner, Repo: repo, Number: number, IsPR: isPR, CheckSHA: p.checkSHA,
-			}); werr != nil {
-				slog.Warn("github: context dir write failed; running with a partial or empty one", "component", "github",
-					"repo", owner+"/"+repo, "issue", number, "err", werr)
-			}
-			ctxFiles = contextDirFiles(ctxDir, owner, repo, number, p.checkSHA)
+	// Input artifacts (#1010): the heavy evidence a worker only sometimes
+	// needs - full comment thread, raw webhook payload, timeline, CI
+	// check-runs/annotations - one write per dispatch, best-effort. Skipped
+	// entirely (no fetches) when Host has no artifact capability wired.
+	var manifest []artifactEntry
+	if e.host.WriteArtifact != nil {
+		manifest = e.writeInputArtifacts(ctx, chatID, ContextRequest{
+			Owner: owner, Repo: repo, Number: number, IsPR: isPR, CheckSHA: p.checkSHA,
+		})
+		if entry := writeArtifact(e.host, chatID, "event", "application/json", p.rawEvent, eventNote(p)); entry != nil {
+			manifest = append(manifest, *entry)
 		}
+		sort.Slice(manifest, func(i, j int) bool { return manifest[i].Name < manifest[j].Name })
 	}
 
-	message := e.buildEnvelope(ctx, p, task, gh, allowedKinds, ctxDir, ctxFiles)
-	workerAsk := e.buildWorkerAsk(ctx, p, task, gh, allowedKinds, ctxDir)
+	message := e.buildEnvelope(ctx, p, task, gh, allowedKinds, manifest)
+	workerAsk := e.buildWorkerAsk(ctx, p, task, gh, allowedKinds, manifest)
 	var contextItems []sdk.NamedContext
 	if p.checkSHA != "" {
 		if checks, cerr := e.failingChecks(ctx, owner, repo, p.checkSHA); cerr != nil {

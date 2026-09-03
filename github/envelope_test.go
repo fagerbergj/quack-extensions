@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -81,7 +79,7 @@ func TestBuildEnvelopeLargeIssueBodyReachesIntact(t *testing.T) {
 	issue.Issue.Number = 42
 	issue.Repository.Name, issue.Repository.Owner.Login = "widgets", "acme"
 
-	env := ext.buildEnvelope(context.Background(), issue, "add a feature", seedGC(Snapshot{Body: body}, 0), nil, "", nil)
+	env := ext.buildEnvelope(context.Background(), issue, "add a feature", seedGC(Snapshot{Body: body}, 0), nil, nil)
 
 	if !strings.Contains(env, body) {
 		t.Fatalf("12000-char issue body did not reach the envelope intact:\n%s", truncateForLog(env))
@@ -100,7 +98,7 @@ func TestBuildEnvelopeTruncatesOversizedDescription(t *testing.T) {
 	var issue issueCommentPayload
 	issue.Issue.Number = 7
 
-	env := ext.buildEnvelope(context.Background(), issue, "task", seedGC(Snapshot{Body: body}, 0), nil, "", nil)
+	env := ext.buildEnvelope(context.Background(), issue, "task", seedGC(Snapshot{Body: body}, 0), nil, nil)
 
 	if !strings.Contains(env, "TRUNCATED") {
 		t.Errorf("an oversized description should be marked truncated:\n%s", truncateForLog(env))
@@ -124,7 +122,7 @@ func TestBuildEnvelopeTruncatesOversizedPRDescription(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	env := ext.buildEnvelope(context.Background(), pr, "review this", seedGC(Snapshot{IsPR: true, Body: body}, 0), nil, "", nil)
+	env := ext.buildEnvelope(context.Background(), pr, "review this", seedGC(Snapshot{IsPR: true, Body: body}, 0), nil, nil)
 
 	if !strings.Contains(env, "pull.json") {
 		t.Errorf("a truncated PR description should point at pull.json:\n%s", truncateForLog(env))
@@ -145,7 +143,7 @@ func TestBuildEnvelopeCommentDeletionVisibleInDelta(t *testing.T) {
 	var issue issueCommentPayload
 	issue.Issue.Number = 7
 
-	env := ext.buildEnvelope(context.Background(), issue, "what changed?", gh, nil, "", nil)
+	env := ext.buildEnvelope(context.Background(), issue, "what changed?", gh, nil, nil)
 
 	if !strings.Contains(env, `deleted="1"`) {
 		t.Errorf("envelope missing the deleted=1 comment-delta marker:\n%s", truncateForLog(env))
@@ -168,14 +166,14 @@ func TestBuildEnvelopeTitleChangeMarking(t *testing.T) {
 	changed := diffSnapshots(old, cur, 0)
 	gh := githubContext{snap: cur, delta: &changed}
 
-	env := ext.buildEnvelope(context.Background(), issue, "task", gh, nil, "", nil)
+	env := ext.buildEnvelope(context.Background(), issue, "task", gh, nil, nil)
 	if !strings.Contains(env, `New title (changed from "Old title")`) {
 		t.Errorf("a changed title should be marked and quote the old value:\n%s", truncateForLog(env))
 	}
 
 	unchanged := diffSnapshots(cur, cur, 0)
 	ghSame := githubContext{snap: cur, delta: &unchanged}
-	envSame := ext.buildEnvelope(context.Background(), issue, "task", ghSame, nil, "", nil)
+	envSame := ext.buildEnvelope(context.Background(), issue, "task", ghSame, nil, nil)
 	if strings.Contains(envSame, "changed from") {
 		t.Errorf("an unchanged title should not be marked changed:\n%s", truncateForLog(envSame))
 	}
@@ -282,7 +280,7 @@ func TestBuildEnvelopeReviewOnlyPermissionsNeverNameStagePR(t *testing.T) {
 	}
 	pr.isLabelTrigger = true
 
-	env := ext.buildEnvelope(context.Background(), pr, autoReviewTask, seedGC(Snapshot{IsPR: true}, 0), allowedKinds, "", nil)
+	env := ext.buildEnvelope(context.Background(), pr, autoReviewTask, seedGC(Snapshot{IsPR: true}, 0), allowedKinds, nil)
 	permLine := env[strings.Index(env, "<permissions>") : strings.Index(env, "</permissions>")+len("</permissions>")]
 	if strings.Contains(permLine, "pull_request") {
 		t.Errorf("review-only envelope must not grant the pull_request kind:\n%s", permLine)
@@ -292,45 +290,38 @@ func TestBuildEnvelopeReviewOnlyPermissionsNeverNameStagePR(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeContextBlockListsWrittenFiles pins #660's wiring into the
-// envelope: contextDirFiles labels each file WriteContextDir actually wrote
-// with the endpoint that produced it, and buildEnvelope renders exactly that.
-func TestBuildEnvelopeContextBlockListsWrittenFiles(t *testing.T) {
+// TestBuildEnvelopeArtifactsManifestListsEntries pins #1010's wiring into the
+// envelope: buildEnvelope renders one <artifact> line per input artifact
+// this dispatch wrote, naming its revision and new/unchanged status.
+func TestBuildEnvelopeArtifactsManifestListsEntries(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "issue.json"), []byte("{}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "comments.json"), []byte("[]"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	var issue issueCommentPayload
 	issue.Issue.Number = 7
 
-	files := contextDirFiles(dir, "acme", "widgets", 7, "")
-	env := ext.buildEnvelope(context.Background(), issue, "task", seedGC(Snapshot{}, 0), nil, dir, files)
+	manifest := []artifactEntry{
+		{Name: "comments", Revision: 4, Changed: true, Note: "47 items"},
+		{Name: "event", Revision: 4, Changed: false, Note: "issues.labeled"},
+	}
+	env := ext.buildEnvelope(context.Background(), issue, "task", seedGC(Snapshot{}, 0), nil, manifest)
 
-	if !strings.Contains(env, fmt.Sprintf("<context dir=%q>", dir)) {
-		t.Errorf("envelope missing the context dir attribute:\n%s", truncateForLog(env))
+	if !strings.Contains(env, `<artifact id="comments" revision="4" status="new">47 items</artifact>`) {
+		t.Errorf("envelope missing the comments manifest entry:\n%s", truncateForLog(env))
 	}
-	if !strings.Contains(env, `<file name="issue.json">GET /repos/acme/widgets/issues/7</file>`) {
-		t.Errorf("envelope missing the issue.json context file entry:\n%s", truncateForLog(env))
-	}
-	if !strings.Contains(env, `<file name="comments.json">GET /repos/acme/widgets/issues/7/comments</file>`) {
-		t.Errorf("envelope missing the comments.json context file entry:\n%s", truncateForLog(env))
+	if !strings.Contains(env, `<artifact id="event" revision="4" status="unchanged">issues.labeled</artifact>`) {
+		t.Errorf("envelope missing the event manifest entry:\n%s", truncateForLog(env))
 	}
 }
 
-// TestBuildEnvelopeNoContextBlockWithoutDir pins the degrade path: a run
-// whose jail isn't wired (ctxDir == "") gets no <context> block at all,
+// TestBuildEnvelopeNoArtifactsBlockWithoutEntries pins the degrade path: a
+// dispatch with no input artifacts written gets no <artifacts> block at all,
 // rather than an empty or malformed one.
-func TestBuildEnvelopeNoContextBlockWithoutDir(t *testing.T) {
+func TestBuildEnvelopeNoArtifactsBlockWithoutEntries(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	var issue issueCommentPayload
 	issue.Issue.Number = 7
-	env := ext.buildEnvelope(context.Background(), issue, "task", seedGC(Snapshot{}, 0), nil, "", nil)
-	if strings.Contains(env, "<context") {
-		t.Errorf("envelope should have no <context> block when ctxDir is empty:\n%s", truncateForLog(env))
+	env := ext.buildEnvelope(context.Background(), issue, "task", seedGC(Snapshot{}, 0), nil, nil)
+	if strings.Contains(env, "<artifacts") {
+		t.Errorf("envelope should have no <artifacts> block when nothing was written:\n%s", truncateForLog(env))
 	}
 }
 
@@ -351,7 +342,7 @@ func TestBuildEnvelopeFortyFilePRHasChurnAndFullListNoContentButFullDescription(
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	env := ext.buildEnvelope(context.Background(), pr, "review this", seedGC(Snapshot{IsPR: true, Body: body, Files: files}, 0), nil, "", nil)
+	env := ext.buildEnvelope(context.Background(), pr, "review this", seedGC(Snapshot{IsPR: true, Body: body, Files: files}, 0), nil, nil)
 
 	if !strings.Contains(env, `<changed_files count="40" additions="400" deletions="200">`) {
 		t.Errorf("envelope missing the churn summary for a 40-file PR:\n%s", truncateForLog(env))
@@ -461,7 +452,7 @@ func TestBuildEnvelopeIncludesChecksSection(t *testing.T) {
 	}
 
 	gh := githubContext{snap: Snapshot{IsPR: true}, firstLoad: true, checks: checks}
-	env := ext.buildEnvelope(context.Background(), pr, "review this", gh, nil, "", nil)
+	env := ext.buildEnvelope(context.Background(), pr, "review this", gh, nil, nil)
 	if !strings.Contains(env, "go-test: completed failure") {
 		t.Errorf("PR envelope missing the <checks> section:\n%s", truncateForLog(env))
 	}
@@ -471,7 +462,7 @@ func TestBuildEnvelopeIncludesChecksSection(t *testing.T) {
 
 	var issue issueCommentPayload
 	issue.Issue.Number = 7
-	issueEnv := ext.buildEnvelope(context.Background(), issue, "task", seedGC(Snapshot{}, 0), nil, "", nil)
+	issueEnv := ext.buildEnvelope(context.Background(), issue, "task", seedGC(Snapshot{}, 0), nil, nil)
 	if strings.Contains(issueEnv, "<checks") {
 		t.Errorf("an issue (non-PR) envelope must never carry a <checks> section:\n%s", truncateForLog(issueEnv))
 	}
@@ -491,7 +482,7 @@ func TestBuildWorkerAskIncludesChecksSection(t *testing.T) {
 	allowedKinds := []string{"review", "comment"}
 
 	gh := githubContext{snap: Snapshot{IsPR: true}, firstLoad: true, checks: checks}
-	ask := ext.buildWorkerAsk(context.Background(), pr, "review this", gh, allowedKinds, "")
+	ask := ext.buildWorkerAsk(context.Background(), pr, "review this", gh, allowedKinds, nil)
 	if !strings.Contains(ask, "go-test: completed failure") {
 		t.Errorf("worker ask missing the <checks> section a reviewer needs to avoid approving red CI:\n%s", truncateForLog(ask))
 	}
@@ -510,7 +501,7 @@ func TestBuildWorkerAskOmitsEvidenceKeepsAsk(t *testing.T) {
 	}
 	allowedKinds := []string{"review", "comment"}
 
-	ask := ext.buildWorkerAsk(context.Background(), pr, "review this", seedGC(Snapshot{IsPR: true, Body: body, Files: files}, 0), allowedKinds, "")
+	ask := ext.buildWorkerAsk(context.Background(), pr, "review this", seedGC(Snapshot{IsPR: true, Body: body, Files: files}, 0), allowedKinds, nil)
 
 	if strings.Contains(ask, "changed_files") {
 		t.Errorf("worker ask must not carry the orchestrator's changed_files evidence:\n%s", truncateForLog(ask))
@@ -589,10 +580,10 @@ func TestNoTriggerOutputNamesSkillOrToolMechanics(t *testing.T) {
 	}
 
 	cases := map[string]string{
-		"plan-only":      ext.buildEnvelope(context.Background(), planOnly, "plan it", seedGC(Snapshot{}, 0), nil, "", nil),
-		"implement":      ext.buildEnvelope(context.Background(), implement, "implement it", seedGC(Snapshot{}, 0), nil, "", nil),
-		"review-only":    ext.buildEnvelope(context.Background(), pr, "please review this PR", seedGC(Snapshot{IsPR: true, HeadRef: "x"}, 0), nil, "", nil),
-		"conversational": ext.buildEnvelope(context.Background(), issue, "what changed?", seedGC(Snapshot{}, 0), nil, "", nil),
+		"plan-only":      ext.buildEnvelope(context.Background(), planOnly, "plan it", seedGC(Snapshot{}, 0), nil, nil),
+		"implement":      ext.buildEnvelope(context.Background(), implement, "implement it", seedGC(Snapshot{}, 0), nil, nil),
+		"review-only":    ext.buildEnvelope(context.Background(), pr, "please review this PR", seedGC(Snapshot{IsPR: true, HeadRef: "x"}, 0), nil, nil),
+		"conversational": ext.buildEnvelope(context.Background(), issue, "what changed?", seedGC(Snapshot{}, 0), nil, nil),
 	}
 	for name, env := range cases {
 		for _, banned := range []string{"present-coding-plan", "stage_pr", "stage_review", "github_add_review_comment"} {

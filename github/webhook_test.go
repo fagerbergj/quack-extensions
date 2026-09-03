@@ -767,8 +767,8 @@ func TestHandleWebhookPROpenedTrigger(t *testing.T) {
 
 			if tt.wantRun {
 				req := fh.waitForDispatch(t, 2*time.Second)
-				if !strings.Contains(req.Ask.Message, `<pull_request number="7">`) || !strings.Contains(req.Ask.Message, `"name":"widgets"`) {
-					t.Errorf("dispatch message missing the hoisted PR ask / repo event: %q", req.Ask.Message)
+				if !strings.Contains(req.Ask.Message, `<pull_request number="7">`) {
+					t.Errorf("dispatch message missing the hoisted PR ask: %q", req.Ask.Message)
 				}
 			} else {
 				select {
@@ -1067,9 +1067,12 @@ func TestHandleWebhookMentionTriggersRun(t *testing.T) {
 		t.Fatalf("status = %d; want 202", rec.Code)
 	}
 
+	// The repo's own name is no longer inlined (#1010 dropped the raw event
+	// payload from the envelope; Setup.Repo already carries it for the run) -
+	// only the triggering comment's own text still is.
 	req := fh.waitForDispatch(t, 2*time.Second)
-	if !strings.Contains(req.Ask.Message, "add a feature") || !strings.Contains(req.Ask.Message, `"name":"widgets"`) {
-		t.Errorf("dispatch message missing task or repo: %q", req.Ask.Message)
+	if !strings.Contains(req.Ask.Message, "add a feature") {
+		t.Errorf("dispatch message missing the triggering comment's task: %q", req.Ask.Message)
 	}
 
 	chatID := globalChatID("github-acme-widgets-7")
@@ -1606,7 +1609,7 @@ func TestBuildEnvelopeDeliverableClassification(t *testing.T) {
 	if err := json.Unmarshal(pullCommentBody("@quack review this, focusing on the auth path"), &pr); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	env := ext.buildEnvelope(context.Background(), pr, "review this, focusing on the auth path", seedGC(Snapshot{IsPR: true}, 0), nil, "", nil)
+	env := ext.buildEnvelope(context.Background(), pr, "review this, focusing on the auth path", seedGC(Snapshot{IsPR: true}, 0), nil, nil)
 	if !strings.Contains(env, "<deliverable>a review with inline comments and a verdict</deliverable>") {
 		t.Errorf("review-intent PR envelope missing the review deliverable:\n%s", env)
 	}
@@ -1615,7 +1618,7 @@ func TestBuildEnvelopeDeliverableClassification(t *testing.T) {
 	}
 
 	// A PR request that DOES ask to change code gets the implement deliverable.
-	implEnv := ext.buildEnvelope(context.Background(), pr, "fix the null dereference in the auth path and open a PR", seedGC(Snapshot{IsPR: true}, 0), nil, "", nil)
+	implEnv := ext.buildEnvelope(context.Background(), pr, "fix the null dereference in the auth path and open a PR", seedGC(Snapshot{IsPR: true}, 0), nil, nil)
 	if !strings.Contains(implEnv, "<deliverable>a commit addressing the requested change</deliverable>") {
 		t.Errorf("implement-intent PR envelope missing the implement deliverable:\n%s", implEnv)
 	}
@@ -1625,7 +1628,7 @@ func TestBuildEnvelopeDeliverableClassification(t *testing.T) {
 	if err := json.Unmarshal(issueCommentBody("@quack add a feature"), &issue); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	imsg := ext.buildEnvelope(context.Background(), issue, "add a feature", seedGC(Snapshot{}, 0), nil, "", nil)
+	imsg := ext.buildEnvelope(context.Background(), issue, "add a feature", seedGC(Snapshot{}, 0), nil, nil)
 	if strings.Contains(imsg, "a review with inline comments") {
 		t.Errorf("issue envelope should not mention the review deliverable:\n%s", imsg)
 	}
@@ -1651,14 +1654,14 @@ func TestBuildEnvelopeDeliverableClassifierResolvesFindingsAddress(t *testing.T)
 	if err := json.Unmarshal(pullCommentBody("@quack please address these findings make sure they are valid first"), &pr); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	env := ext.buildEnvelope(context.Background(), pr, "please address these findings make sure they are valid first", seedGC(Snapshot{IsPR: true}, 0), allowedKinds, "", nil)
+	env := ext.buildEnvelope(context.Background(), pr, "please address these findings make sure they are valid first", seedGC(Snapshot{IsPR: true}, 0), allowedKinds, nil)
 	if !strings.Contains(env, "<deliverable>a commit addressing the requested change</deliverable>") {
 		t.Errorf("a findings-address request with pull_request granted should get the commit deliverable, not a second review:\n%s", env)
 	}
 
 	// Same grant, a genuine review ask still gets the review deliverable.
 	ext.intentClassifier = &fakeIntentClassifier{grantedDeliverable: "REVIEW"}
-	revEnv := ext.buildEnvelope(context.Background(), pr, "take another look at the auth changes", seedGC(Snapshot{IsPR: true}, 0), allowedKinds, "", nil)
+	revEnv := ext.buildEnvelope(context.Background(), pr, "take another look at the auth changes", seedGC(Snapshot{IsPR: true}, 0), allowedKinds, nil)
 	if !strings.Contains(revEnv, "<deliverable>a review with inline comments and a verdict</deliverable>") {
 		t.Errorf("a genuine review ask should still get the review deliverable:\n%s", revEnv)
 	}
@@ -1683,7 +1686,7 @@ func TestBuildEnvelopeDeliverableBoundedBySoleGrant(t *testing.T) {
 	if err := json.Unmarshal(pullCommentBody("@quack please address these findings"), &pr); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	env := ext.buildEnvelope(context.Background(), pr, "please address these findings", seedGC(Snapshot{IsPR: true}, 0), allowedKinds, "", nil)
+	env := ext.buildEnvelope(context.Background(), pr, "please address these findings", seedGC(Snapshot{IsPR: true}, 0), allowedKinds, nil)
 	if !strings.Contains(env, "<deliverable>a review with inline comments and a verdict</deliverable>") {
 		t.Errorf("with only review granted, the deliverable must fall back to review even though the message asks for a fix:\n%s", env)
 	}
@@ -1713,7 +1716,7 @@ func TestBuildEnvelopeGrantedPRChangeRequestClassifiesAsCommit(t *testing.T) {
 	if err := json.Unmarshal(pullCommentBody(task), &pr); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	env := ext.buildEnvelope(context.Background(), pr, task, seedGC(Snapshot{IsPR: true}, 0), allowedKinds, "", nil)
+	env := ext.buildEnvelope(context.Background(), pr, task, seedGC(Snapshot{IsPR: true}, 0), allowedKinds, nil)
 	if !strings.Contains(env, "<deliverable>a commit addressing the requested change</deliverable>") {
 		t.Errorf("a numbered change request on a push-granted PR should classify as commit, not reply:\n%s", env)
 	}
@@ -1732,7 +1735,7 @@ func TestBuildEnvelopeGrantedPRQuestionStaysReply(t *testing.T) {
 	if err := json.Unmarshal(pullCommentBody(task), &pr); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	env := ext.buildEnvelope(context.Background(), pr, task, seedGC(Snapshot{IsPR: true}, 0), allowedKinds, "", nil)
+	env := ext.buildEnvelope(context.Background(), pr, task, seedGC(Snapshot{IsPR: true}, 0), allowedKinds, nil)
 	if !strings.Contains(env, "<deliverable>a reply to their message") {
 		t.Errorf("a genuine question on a push-granted PR must stay a reply, not regress to commit:\n%s", env)
 	}
@@ -1751,7 +1754,7 @@ func TestBuildEnvelopeGrantedPRDeliverableFailsSafeToReply(t *testing.T) {
 	if err := json.Unmarshal(pullCommentBody(task), &pr); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	env := ext.buildEnvelope(context.Background(), pr, task, seedGC(Snapshot{IsPR: true}, 0), allowedKinds, "", nil)
+	env := ext.buildEnvelope(context.Background(), pr, task, seedGC(Snapshot{IsPR: true}, 0), allowedKinds, nil)
 	if !strings.Contains(env, "<deliverable>a reply to their message") {
 		t.Errorf("a classifier failure on a push-granted PR must fail safe to reply, not guess commit:\n%s", env)
 	}
@@ -1770,7 +1773,7 @@ func TestBuildEnvelopeGrantedPRDeliverableIgnoresUngrantedReview(t *testing.T) {
 	if err := json.Unmarshal(pullCommentBody(task), &pr); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	env := ext.buildEnvelope(context.Background(), pr, task, seedGC(Snapshot{IsPR: true}, 0), allowedKinds, "", nil)
+	env := ext.buildEnvelope(context.Background(), pr, task, seedGC(Snapshot{IsPR: true}, 0), allowedKinds, nil)
 	if !strings.Contains(env, "<deliverable>a reply to their message") {
 		t.Errorf("a review verdict without review granted must degrade to reply, not surface an ungranted review deliverable:\n%s", env)
 	}
@@ -1791,13 +1794,13 @@ func TestBuildEnvelopeIssueDeliverableClassification(t *testing.T) {
 	}
 
 	granted := []string{"pull_request"} // issue-scoped grant{OpenPR: true}
-	env := ext.buildEnvelope(context.Background(), issue, "implement this and open the PR", seedGC(Snapshot{}, 0), granted, "", nil)
+	env := ext.buildEnvelope(context.Background(), issue, "implement this and open the PR", seedGC(Snapshot{}, 0), granted, nil)
 	if !strings.Contains(env, "a pull request implementing the approved plan") {
 		t.Errorf("implement request with pull_request granted should get the PR deliverable:\n%s", env)
 	}
 
 	// Same message, no quack:implement label: the grant bounds it back to a comment.
-	ungranted := ext.buildEnvelope(context.Background(), issue, "implement this and open the PR", seedGC(Snapshot{}, 0), nil, "", nil)
+	ungranted := ext.buildEnvelope(context.Background(), issue, "implement this and open the PR", seedGC(Snapshot{}, 0), nil, nil)
 	if strings.Contains(ungranted, "a pull request implementing") {
 		t.Errorf("implement request WITHOUT pull_request granted must not surface the PR deliverable:\n%s", ungranted)
 	}
@@ -1808,7 +1811,7 @@ func TestBuildEnvelopeIssueDeliverableClassification(t *testing.T) {
 	// A plain question with the label still present stays a comment - the
 	// classifier, not the grant alone, decides what was actually asked.
 	ext.intentClassifier = &fakeIntentClassifier{issueDeliverable: "COMMENT"}
-	question := ext.buildEnvelope(context.Background(), issue, "what do you think the right approach is here?", seedGC(Snapshot{}, 0), granted, "", nil)
+	question := ext.buildEnvelope(context.Background(), issue, "what do you think the right approach is here?", seedGC(Snapshot{}, 0), granted, nil)
 	if !strings.Contains(question, "an answer to their message") {
 		t.Errorf("a plain question should stay a comment even with pull_request granted:\n%s", question)
 	}
@@ -1831,13 +1834,13 @@ func TestBuildEnvelopeIssueDeliverableClassifierFailureFallsBack(t *testing.T) {
 	// ImplementationIntent("implement this, commit it, and open a PR") is true
 	// (implement verb + delivery word) - the classifier failure must still
 	// land on the PR deliverable via the heuristic, not silently downgrade it.
-	env := ext.buildEnvelope(context.Background(), issue, "implement this, commit it, and open a PR", seedGC(Snapshot{}, 0), granted, "", nil)
+	env := ext.buildEnvelope(context.Background(), issue, "implement this, commit it, and open a PR", seedGC(Snapshot{}, 0), granted, nil)
 	if !strings.Contains(env, "a pull request implementing the approved plan") {
 		t.Errorf("classifier failure should fall back to ImplementationIntent's reading, not conversational:\n%s", env)
 	}
 
 	// A message with no delivery wording falls back to the heuristic's negative reading too.
-	plain := ext.buildEnvelope(context.Background(), issue, "what do you think?", seedGC(Snapshot{}, 0), granted, "", nil)
+	plain := ext.buildEnvelope(context.Background(), issue, "what do you think?", seedGC(Snapshot{}, 0), granted, nil)
 	if !strings.Contains(plain, "an answer to their message") {
 		t.Errorf("classifier failure on a non-implement message should still fall back to the comment deliverable:\n%s", plain)
 	}
@@ -1862,7 +1865,7 @@ func TestBuildEnvelopeSeedsFullOnFirstLoad(t *testing.T) {
 			{ID: 999, User: "fagerbergj", Body: "rework it - mem0 is not a store", CreatedAt: "t2"},
 		},
 	}
-	env := ext.buildEnvelope(context.Background(), issue, "rework it - mem0 is not a store", seedGC(snap, issue.Comment.ID), nil, "", nil)
+	env := ext.buildEnvelope(context.Background(), issue, "rework it - mem0 is not a store", seedGC(snap, issue.Comment.ID), nil, nil)
 	if !strings.Contains(env, "evaluate mem0 as a memory backend") {
 		t.Errorf("envelope missing the seeded issue body:\n%s", env)
 	}
@@ -1893,7 +1896,7 @@ func TestBuildEnvelopeResumeSeedsOnlyDelta(t *testing.T) {
 		{ID: 2, User: "carol", Body: "a brand new comment", CreatedAt: "t1"},
 	}}
 	delta := diffSnapshots(old, cur, 0)
-	env := ext.buildEnvelope(context.Background(), issue, "what's new?", githubContext{snap: cur, delta: &delta}, nil, "", nil)
+	env := ext.buildEnvelope(context.Background(), issue, "what's new?", githubContext{snap: cur, delta: &delta}, nil, nil)
 	if !strings.Contains(env, "a brand new comment") {
 		t.Errorf("resume envelope missing the new comment:\n%s", env)
 	}
@@ -1909,7 +1912,7 @@ func TestBuildEnvelopeResumeSeedsOnlyDelta(t *testing.T) {
 	if !unchanged.Empty() {
 		t.Fatalf("diffSnapshots(cur, cur) = %+v; want an empty delta", unchanged)
 	}
-	noopEnv := ext.buildEnvelope(context.Background(), issue, "anything new?", githubContext{snap: cur, delta: &unchanged}, nil, "", nil)
+	noopEnv := ext.buildEnvelope(context.Background(), issue, "anything new?", githubContext{snap: cur, delta: &unchanged}, nil, nil)
 	if strings.Contains(noopEnv, "a brand new comment") || strings.Contains(noopEnv, "first comment") {
 		t.Errorf("an unchanged-snapshot resume should inject no comment content:\n%s", noopEnv)
 	}
@@ -1930,7 +1933,7 @@ func TestBuildEnvelopeChangedFilesOnPRRuns(t *testing.T) {
 		IsPR:  true,
 		Files: []changedFile{{Filename: "a.go", Additions: 10, Deletions: 2}, {Filename: "b.go", Additions: 1}},
 	}
-	env := ext.buildEnvelope(context.Background(), pr, "review this", seedGC(snap, 0), nil, "", nil)
+	env := ext.buildEnvelope(context.Background(), pr, "review this", seedGC(snap, 0), nil, nil)
 	if !strings.Contains(env, `<changed_files count="2" additions="11" deletions="2">`) {
 		t.Errorf("envelope missing the changed_files summary attributes:\n%s", env)
 	}
@@ -1940,7 +1943,7 @@ func TestBuildEnvelopeChangedFilesOnPRRuns(t *testing.T) {
 
 	var issue issueCommentPayload
 	issue.Issue.Number = 7
-	issueEnv := ext.buildEnvelope(context.Background(), issue, "task", seedGC(Snapshot{}, 0), nil, "", nil)
+	issueEnv := ext.buildEnvelope(context.Background(), issue, "task", seedGC(Snapshot{}, 0), nil, nil)
 	if strings.Contains(issueEnv, "<changed_files") {
 		t.Errorf("an issue-scoped envelope should carry no changed_files block:\n%s", issueEnv)
 	}
@@ -1958,7 +1961,7 @@ func TestBuildEnvelopeIncrementalReviewScoping(t *testing.T) {
 	}
 
 	// First-time review: no prior baseline, the full-review deliverable.
-	first := ext.buildEnvelope(context.Background(), pr, "review this", seedGC(Snapshot{IsPR: true}, 0), nil, "", nil)
+	first := ext.buildEnvelope(context.Background(), pr, "review this", seedGC(Snapshot{IsPR: true}, 0), nil, nil)
 	if !strings.Contains(first, "<deliverable>a review with inline comments and a verdict</deliverable>") {
 		t.Errorf("first-time review should get the full-review deliverable:\n%s", first)
 	}
@@ -1967,14 +1970,14 @@ func TestBuildEnvelopeIncrementalReviewScoping(t *testing.T) {
 	withNew := ext.buildEnvelope(context.Background(), pr, "review this", githubContext{
 		snap:       Snapshot{IsPR: true},
 		newCommits: []snapshotCommit{{SHA: "abc1234567", Message: "fix the bug"}},
-	}, nil, "", nil)
+	}, nil, nil)
 	if !strings.Contains(withNew, "a review of what is new since the last one") || !strings.Contains(withNew, "abc1234") {
 		t.Errorf("incremental review envelope missing the scoped deliverable naming the new commit:\n%s", withNew)
 	}
 
 	// Resume with zero new commits still reads as "scoped to what's new" (a
 	// review baseline exists), not the first-time framing.
-	noneNew := ext.buildEnvelope(context.Background(), pr, "review this", githubContext{snap: Snapshot{IsPR: true}, newCommits: []snapshotCommit{}}, nil, "", nil)
+	noneNew := ext.buildEnvelope(context.Background(), pr, "review this", githubContext{snap: Snapshot{IsPR: true}, newCommits: []snapshotCommit{}}, nil, nil)
 	if !strings.Contains(noneNew, "already looked at every commit") {
 		t.Errorf("zero-new-commits resume should say there's nothing new, not the first-time framing:\n%s", noneNew)
 	}
@@ -1989,14 +1992,14 @@ func TestBuildEnvelopeConversationalFollowup(t *testing.T) {
 	if err := json.Unmarshal(pullCommentBody("@quack which finding matters most? No need to re-review."), &pr); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	env := ext.buildEnvelope(context.Background(), pr, "which finding matters most? No need to re-review.", seedGC(Snapshot{IsPR: true}, 0), nil, "", nil)
+	env := ext.buildEnvelope(context.Background(), pr, "which finding matters most? No need to re-review.", seedGC(Snapshot{IsPR: true}, 0), nil, nil)
 	if !strings.Contains(env, "<deliverable>a reply to their message, posted as a comment") {
 		t.Errorf("conversational envelope missing the reply deliverable:\n%s", env)
 	}
 
 	// A genuine review request, classified as a work request, gets the work deliverable.
 	ext.intentClassifier = &fakeIntentClassifier{verdict: "WORK"}
-	rev := ext.buildEnvelope(context.Background(), pr, "please review this PR", seedGC(Snapshot{IsPR: true, HeadRef: "x"}, 0), nil, "", nil)
+	rev := ext.buildEnvelope(context.Background(), pr, "please review this PR", seedGC(Snapshot{IsPR: true, HeadRef: "x"}, 0), nil, nil)
 	if !strings.Contains(rev, "<deliverable>a review with inline comments and a verdict</deliverable>") {
 		t.Errorf("a classified work request must still get the review deliverable:\n%s", rev)
 	}
@@ -2011,7 +2014,7 @@ func TestBuildEnvelopeMentionClassifiedAsWork(t *testing.T) {
 	if err := json.Unmarshal(pullCommentBody("@quack review this, focusing on the auth path"), &pr); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	env := ext.buildEnvelope(context.Background(), pr, "review this, focusing on the auth path", seedGC(Snapshot{IsPR: true}, 0), nil, "", nil)
+	env := ext.buildEnvelope(context.Background(), pr, "review this, focusing on the auth path", seedGC(Snapshot{IsPR: true}, 0), nil, nil)
 	if strings.Contains(env, "a reply to their message") {
 		t.Errorf("a mention classified WORK should not get the conversational deliverable:\n%s", env)
 	}
@@ -2024,7 +2027,7 @@ func TestBuildEnvelopeMentionClassifiedAsConversational(t *testing.T) {
 	if err := json.Unmarshal(pullCommentBody("@quack what did you mean by that finding?"), &pr); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	env := ext.buildEnvelope(context.Background(), pr, "what did you mean by that finding?", seedGC(Snapshot{IsPR: true}, 0), nil, "", nil)
+	env := ext.buildEnvelope(context.Background(), pr, "what did you mean by that finding?", seedGC(Snapshot{IsPR: true}, 0), nil, nil)
 	if !strings.Contains(env, "a reply to their message") {
 		t.Errorf("a mention classified CONVERSATIONAL should get the reply deliverable:\n%s", env)
 	}
@@ -2043,7 +2046,7 @@ func TestBuildEnvelopeLabelTriggerNeverClassifies(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	pr.isLabelTrigger = true
-	env := ext.buildEnvelope(context.Background(), pr, autoReviewTask, seedGC(Snapshot{IsPR: true}, 0), nil, "", nil)
+	env := ext.buildEnvelope(context.Background(), pr, autoReviewTask, seedGC(Snapshot{IsPR: true}, 0), nil, nil)
 	if strings.Contains(env, "a reply to their message") {
 		t.Errorf("a label-triggered PR request should never get the conversational deliverable:\n%s", env)
 	}
@@ -2063,12 +2066,12 @@ func TestBuildEnvelopePartialFixOmitsClosesKeyword(t *testing.T) {
 	issue.Issue.Number = 42
 	issue.isLabelTrigger = true
 
-	full := ext.buildEnvelope(context.Background(), issue, "implement it", seedGC(Snapshot{Labels: []string{"quack:implement"}}, 0), nil, "", nil)
+	full := ext.buildEnvelope(context.Background(), issue, "implement it", seedGC(Snapshot{Labels: []string{"quack:implement"}}, 0), nil, nil)
 	if !strings.Contains(full, "Closes #42") {
 		t.Errorf("a non-partial implement envelope should ask for a Closes keyword:\n%s", full)
 	}
 
-	partial := ext.buildEnvelope(context.Background(), issue, "implement it", seedGC(Snapshot{Labels: []string{"quack:implement", "quack:partial-fix"}}, 0), nil, "", nil)
+	partial := ext.buildEnvelope(context.Background(), issue, "implement it", seedGC(Snapshot{Labels: []string{"quack:implement", "quack:partial-fix"}}, 0), nil, nil)
 	if strings.Contains(partial, "Closes #42") {
 		t.Errorf("a partial-fix envelope must not ask for a Closes keyword:\n%s", partial)
 	}
@@ -2097,7 +2100,7 @@ func TestBuildEnvelopePlanOnlyDeliverable(t *testing.T) {
 	synthetic.planOnly = true
 	synthetic.isLabelTrigger = true
 
-	env := ext.buildEnvelope(context.Background(), synthetic, task, seedGC(Snapshot{Body: body}, 0), nil, "", nil)
+	env := ext.buildEnvelope(context.Background(), synthetic, task, seedGC(Snapshot{Body: body}, 0), nil, nil)
 
 	if n := strings.Count(env, body); n != 1 {
 		t.Errorf("issue body appears %d times in the plan-only envelope, want exactly 1:\n%s", n, env)
@@ -2201,7 +2204,7 @@ func TestBuildEnvelopeQuotedCodeCorrectionNotWorkRequest(t *testing.T) {
 	if err := json.Unmarshal(pullCommentBody(task), &pr); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	env := ext.buildEnvelope(context.Background(), pr, task, seedGC(Snapshot{IsPR: true}, 0), nil, "", nil)
+	env := ext.buildEnvelope(context.Background(), pr, task, seedGC(Snapshot{IsPR: true}, 0), nil, nil)
 	if !strings.Contains(env, "a reply to their message") {
 		t.Errorf("a correction quoting code must be conversational, not a work request:\n%s", env)
 	}
@@ -3817,7 +3820,11 @@ func TestHandleWebhookIssuePlanLabel(t *testing.T) {
 			}
 			req := fh.waitForDispatch(t, 2*time.Second)
 			msg := req.Ask.Message
-			if !strings.Contains(msg, "Add widget cache") {
+			// The issue title/body come from the fetched snapshot (stubGitHub's
+			// fixed issue meta), not the raw webhook payload - #1010 moved the
+			// latter to the "event" input artifact and out of the inline
+			// envelope, so it no longer carries the payload's own title text.
+			if !strings.Contains(msg, "Test issue") {
 				t.Errorf("plan message missing issue context: %q", msg)
 			}
 			if !strings.Contains(msg, "PLANNING-ONLY") {
@@ -3924,7 +3931,7 @@ func TestHandleWebhookRequestChangesEngagesOwnPR(t *testing.T) {
 		t.Fatalf("status = %d; want 202", rec.Code)
 	}
 	req := fh.waitForDispatch(t, 2*time.Second)
-	for _, want := range []string{"requested changes", `"login":"alice"`} {
+	for _, want := range []string{"requested changes", `"actor":"alice"`} {
 		if !strings.Contains(req.Ask.Message, want) {
 			t.Errorf("engagement message missing %q: %q", want, req.Ask.Message)
 		}

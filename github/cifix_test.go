@@ -121,7 +121,7 @@ func TestWorkflowRunAutoHealEligibility(t *testing.T) {
 
 			if tt.wantRun {
 				req := fh.waitForDispatch(t, 2*time.Second)
-				for _, want := range []string{`<pull_request number="7">`, "commits on this PR's head branch that make the failing checks pass", `"conclusion":"failure"`} {
+				for _, want := range []string{`<pull_request number="7">`, "commits on this PR's head branch that make the failing checks pass", "go-test"} {
 					if !strings.Contains(req.Ask.Message, want) {
 						t.Errorf("fix run message missing %q: %q", want, req.Ask.Message)
 					}
@@ -361,7 +361,7 @@ func TestFixLabelApplied(t *testing.T) {
 			t.Fatalf("status = %d; want 202", rec.Code)
 		}
 		req := fh.waitForDispatch(t, 2*time.Second)
-		for _, want := range []string{`<pull_request number="7">`, "commits on this PR's head branch that make the failing checks pass", `"name":"quack:fix"`, `"login":"alice"`} {
+		for _, want := range []string{`<pull_request number="7">`, "commits on this PR's head branch that make the failing checks pass", "go-test"} {
 			if !strings.Contains(req.Ask.Message, want) {
 				t.Errorf("fix run message missing %q: %q", want, req.Ask.Message)
 			}

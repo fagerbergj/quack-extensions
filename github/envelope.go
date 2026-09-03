@@ -4,10 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 )
 
@@ -245,86 +242,67 @@ func askBlock(p issueCommentPayload, gh githubContext, isPR bool) string {
 		tag, p.Issue.Number, title, desc, tag)
 }
 
+// compactEvent is eventBlock's inline replacement for the raw webhook
+// payload (#1010) - the only four fields any prompt in this codebase
+// actually consumes, plus the triggering comment's own body: it is
+// deliberately excluded from <comments> (visibleComments/diffSnapshots'
+// excludeCommentID) because it's "their request" quoted here instead of
+// double-shipped. The full payload lives in the "event" input artifact.
+type compactEvent struct {
+	Action  string `json:"action"`
+	Actor   string `json:"actor,omitempty"`
+	Number  int    `json:"number,omitempty"`
+	HeadSHA string `json:"head_sha,omitempty"`
+	Comment string `json:"comment,omitempty"`
+}
+
+func eventNote(p issueCommentPayload) string {
+	name := p.eventName
+	if name == "" {
+		name = "unknown"
+	}
+	return name
+}
+
 func eventBlock(p issueCommentPayload) string {
 	name := p.eventName
 	if name == "" {
 		name = "unknown"
 	}
-	return fmt.Sprintf("<event name=%q>%s</event>\n", name, filterGitHubJSON(p.rawEvent))
-}
-
-// ContextFile names one file WriteContextDir wrote and the endpoint that produced it.
-type ContextFile struct {
-	Name     string
-	Endpoint string
-}
-
-func contextFileEndpoint(name, owner, repo string, number int, checkSHA string) string {
-	base := fmt.Sprintf("/repos/%s/%s", owner, repo)
-	switch {
-	case name == "issue.json":
-		return fmt.Sprintf("GET %s/issues/%d", base, number)
-	case name == "comments.json":
-		return fmt.Sprintf("GET %s/issues/%d/comments", base, number)
-	case name == "timeline.json":
-		return fmt.Sprintf("GET %s/issues/%d/timeline", base, number)
-	case name == "pull.json":
-		return fmt.Sprintf("GET %s/pulls/%d", base, number)
-	case name == "files.json":
-		return fmt.Sprintf("GET %s/pulls/%d/files", base, number)
-	case name == "commits.json":
-		return fmt.Sprintf("GET %s/pulls/%d/commits", base, number)
-	case name == "reviews.json":
-		return fmt.Sprintf("GET %s/pulls/%d/reviews", base, number)
-	case name == "review-comments.json":
-		return fmt.Sprintf("GET %s/pulls/%d/comments", base, number)
-	case name == "check-runs.json":
-		return fmt.Sprintf("GET %s/commits/%s/check-runs", base, checkSHA)
-	case strings.HasPrefix(name, "annotations-"):
-		return fmt.Sprintf("GET %s/check-runs/{id}/annotations", base)
-	case strings.HasPrefix(name, "linked-issue-") && strings.HasSuffix(name, "-comments.json"):
-		n := strings.TrimSuffix(strings.TrimPrefix(name, "linked-issue-"), "-comments.json")
-		return fmt.Sprintf("GET %s/issues/%s/comments", base, n)
-	case strings.HasPrefix(name, "linked-issue-"):
-		n := strings.TrimSuffix(strings.TrimPrefix(name, "linked-issue-"), ".json")
-		return fmt.Sprintf("GET %s/issues/%s", base, n)
-	default:
-		return "GET (unknown endpoint)"
+	ce := compactEvent{Action: p.Action, Actor: p.Comment.User.Login, Number: p.Issue.Number, HeadSHA: p.checkSHA}
+	if p.Comment.ID != 0 {
+		ce.Comment = p.Comment.Body
 	}
-}
-
-func contextDirFiles(dir, owner, repo string, number int, checkSHA string) []ContextFile {
-	entries, err := os.ReadDir(dir)
+	b, err := json.Marshal(ce)
 	if err != nil {
-		return nil
+		b = []byte("{}")
 	}
-	names := make([]string, 0, len(entries))
-	for _, ent := range entries {
-		if ent.IsDir() {
-			continue
-		}
-		names = append(names, ent.Name())
-	}
-	sort.Strings(names)
-	out := make([]ContextFile, 0, len(names))
-	for _, n := range names {
-		out = append(out, ContextFile{Name: n, Endpoint: contextFileEndpoint(n, owner, repo, number, checkSHA)})
-	}
-	return out
+	return fmt.Sprintf("<event name=%q>%s</event>\n", name, string(b))
 }
 
-func contextBlock(dir string, files []ContextFile) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "<context dir=%q>\n", filepath.ToSlash(dir))
-	for _, f := range files {
-		fmt.Fprintf(&b, "  <file name=%q>%s</file>\n", f.Name, f.Endpoint)
+// artifactsManifestBlock replaces the deleted context-dir mechanism's
+// <context> block: one line per input artifact this dispatch wrote or
+// reused, so a worker knows what read_artifact can fetch without paying for
+// the content inline (#1010).
+func artifactsManifestBlock(entries []artifactEntry) string {
+	if len(entries) == 0 {
+		return ""
 	}
-	b.WriteString("</context>\n")
+	var b strings.Builder
+	b.WriteString("<artifacts>\n")
+	for _, e := range entries {
+		status := "unchanged"
+		if e.Changed {
+			status = "new"
+		}
+		fmt.Fprintf(&b, "  <artifact id=%q revision=\"%d\" status=%q>%s</artifact>\n", e.Name, e.Revision, status, e.Note)
+	}
+	b.WriteString("</artifacts>\n")
 	return b.String()
 }
 
-// buildEnvelope builds the trigger envelope: permissions, deliverable, ask, comments, changed_files, event, context.
-func (e *Extension) buildEnvelope(ctx context.Context, p issueCommentPayload, task string, gh githubContext, allowedKinds []string, ctxDir string, ctxFiles []ContextFile) string {
+// buildEnvelope builds the trigger envelope: permissions, deliverable, ask, comments, changed_files, event, artifacts manifest.
+func (e *Extension) buildEnvelope(ctx context.Context, p issueCommentPayload, task string, gh githubContext, allowedKinds []string, manifest []artifactEntry) string {
 	isPR := p.Issue.PullRequest != nil
 	deliverable := e.deliverableText(ctx, p, task, gh, allowedKinds, isPR)
 
@@ -341,9 +319,7 @@ func (e *Extension) buildEnvelope(ctx context.Context, p issueCommentPayload, ta
 		b.WriteString(checksBlock(gh.checks))
 	}
 	b.WriteString(eventBlock(p))
-	if ctxDir != "" {
-		b.WriteString(contextBlock(ctxDir, ctxFiles))
-	}
+	b.WriteString(artifactsManifestBlock(manifest))
 	return b.String()
 }
 
@@ -351,7 +327,7 @@ func (e *Extension) buildEnvelope(ctx context.Context, p issueCommentPayload, ta
 // orchestrator-level evidence - checksBlock is the one exception (#876/#880/
 // #882): it's a few compact lines, not the churn-scale evidence the split
 // exists to keep out, and a review node with no CI status can approve red.
-func (e *Extension) buildWorkerAsk(ctx context.Context, p issueCommentPayload, task string, gh githubContext, allowedKinds []string, ctxDir string) string {
+func (e *Extension) buildWorkerAsk(ctx context.Context, p issueCommentPayload, task string, gh githubContext, allowedKinds []string, manifest []artifactEntry) string {
 	isPR := p.Issue.PullRequest != nil
 	deliverable := e.deliverableText(ctx, p, task, gh, allowedKinds, isPR)
 
@@ -366,10 +342,7 @@ func (e *Extension) buildWorkerAsk(ctx context.Context, p issueCommentPayload, t
 	if isPR {
 		b.WriteString(checksBlock(gh.checks))
 	}
-	if ctxDir != "" {
-		fmt.Fprintf(&b, "<context dir=%q>Evidence for your task - diffs, CI annotations, review threads, linked issues - lives here as GitHub's own JSON, one file per endpoint. Read what your task needs.</context>\n",
-			filepath.ToSlash(ctxDir))
-	}
+	b.WriteString(artifactsManifestBlock(manifest))
 	return b.String()
 }
 

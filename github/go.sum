@@ -14,6 +14,8 @@ github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkp
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
 github.com/fagerbergj/quack-extensions/sdk v0.7.0 h1:bR/8fI+kYm3ZfO6c6ZXb4GBWuq8ONn663DkzSsWeLCo=
 github.com/fagerbergj/quack-extensions/sdk v0.7.0/go.mod h1:Oz7IYjngThAs2uTJcHTw4KXRFgIQDQxCSV6/DvcZJhU=
+github.com/fagerbergj/quack-extensions/sdk v0.8.0 h1:IvWeUSlLASSl6Y1W0yASx3LsbZJDV2wBzI9gMPD4mDQ=
+github.com/fagerbergj/quack-extensions/sdk v0.8.0/go.mod h1:Oz7IYjngThAs2uTJcHTw4KXRFgIQDQxCSV6/DvcZJhU=
 github.com/felixge/httpsnoop v1.0.4 h1:NFTV2Zj1bL4mc9sqWACXbQFVBBg2W3GPvqp8/ESS2Wg=
 github.com/felixge/httpsnoop v1.0.4/go.mod h1:m8KPJKqk1gH5J9DgRY2ASl2lWCfGKXixSwevea8zH2U=
 github.com/glebarez/go-sqlite v1.23.0 h1:FyhIq4jqmgphQAUlY79zPldYGwISEZikaDfhiGWkkaI=
