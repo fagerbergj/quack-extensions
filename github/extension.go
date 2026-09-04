@@ -82,6 +82,8 @@ type config struct {
 	Labels             Labels   `yaml:"labels"`
 	RunTimeoutMinutes  int      `yaml:"run_timeout_minutes"`
 	AutoArchiveOnMerge bool     `yaml:"auto_archive_on_merge"`
+	// APIBase overrides api.github.com - QA-only, points at tools/qa/github-mock.
+	APIBase string `yaml:"api_base"`
 }
 
 func (c *config) issuer() string {
@@ -179,6 +181,7 @@ func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
 		return nil, fmt.Errorf("github: init: %w", err)
 	}
 	app.SetPartialFixLabel(cfg.Labels.PartialFix)
+	app.SetAPIBase(cfg.APIBase)
 
 	st, err := openStore(host.DataDir)
 	if err != nil {

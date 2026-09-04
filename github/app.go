@@ -82,6 +82,14 @@ func (a *App) SetPartialFixLabel(label string) {
 	}
 }
 
+// SetAPIBase points the client at something other than api.github.com - the
+// lever a QA mock GitHub server needs (see tools/qa/github-mock).
+func (a *App) SetAPIBase(base string) {
+	if base != "" {
+		a.apiBase = strings.TrimRight(base, "/")
+	}
+}
+
 func LoadPrivateKey(inline, path string) (string, error) {
 	if inline != "" {
 		return inline, nil
