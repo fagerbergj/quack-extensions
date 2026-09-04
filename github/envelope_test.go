@@ -304,10 +304,10 @@ func TestBuildEnvelopeArtifactsManifestListsEntries(t *testing.T) {
 	}
 	env := ext.buildEnvelope(context.Background(), issue, "task", seedGC(Snapshot{}, 0), nil, manifest)
 
-	if !strings.Contains(env, `<artifact id="comments" revision="4" status="new">47 items</artifact>`) {
+	if !strings.Contains(env, `<artifact id="bytes:comments" revision="4" status="new">47 items</artifact>`) {
 		t.Errorf("envelope missing the comments manifest entry:\n%s", truncateForLog(env))
 	}
-	if !strings.Contains(env, `<artifact id="event" revision="4" status="unchanged">issues.labeled</artifact>`) {
+	if !strings.Contains(env, `<artifact id="bytes:event" revision="4" status="unchanged">issues.labeled</artifact>`) {
 		t.Errorf("envelope missing the event manifest entry:\n%s", truncateForLog(env))
 	}
 }
