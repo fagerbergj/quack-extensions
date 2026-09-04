@@ -132,6 +132,10 @@ type RunOutcome struct {
 	// NodeID is which node paused when Status is RunNeedsInput.
 	NodeID string
 
+	// Error is the failed node's sanitized cause when Status is RunFailed;
+	// empty means a true silent-gap failure with no known cause.
+	Error string
+
 	// PlanRan is false when a label/trigger-driven dispatch produced no
 	// plan at all - the caller may choose to re-dispatch once.
 	PlanRan bool

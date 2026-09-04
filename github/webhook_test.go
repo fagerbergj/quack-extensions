@@ -620,6 +620,62 @@ func TestFinalizeSkipsSummaryWhenDeliveryVerified(t *testing.T) {
 	}
 }
 
+// TestFinalizePostsFailureCause pins #45: when RunOutcome.Error is set on a
+// failed run, finalize must post the real cause instead of the generic
+// silent-gap message.
+func TestFinalizePostsFailureCause(t *testing.T) {
+	posted := make(chan string, 1)
+	srv := stubGitHub(t, posted)
+	defer srv.Close()
+	e, _ := newTestExtension(t, srv.URL, nil)
+
+	sessionID := "github-acme-widgets-7"
+	chatID := globalChatID(sessionID)
+	pr := &pendingRun{sessionID: sessionID, owner: "acme", repo: "widgets", number: 7, login: "alice"}
+	e.pending.Store(chatID, pr)
+	claimInflightFor(t, e, chatID, sessionID)
+
+	e.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunFailed, PlanRan: true, Error: "model gateway returned 502 Bad Gateway"})
+
+	select {
+	case body := <-posted:
+		if !strings.Contains(body, "model gateway returned 502 Bad Gateway") {
+			t.Errorf("posted comment missing the failure cause: %q", body)
+		}
+		if strings.Contains(body, "silent-gap") {
+			t.Errorf("posted comment should not fall back to the generic silent-gap text: %q", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no comment posted for a failed run with a known cause")
+	}
+}
+
+// TestFinalizePostsSilentGapWhenNoError pins the complement: a failed run
+// with no Error and no Answer still gets the generic silent-gap message.
+func TestFinalizePostsSilentGapWhenNoError(t *testing.T) {
+	posted := make(chan string, 1)
+	srv := stubGitHub(t, posted)
+	defer srv.Close()
+	e, _ := newTestExtension(t, srv.URL, nil)
+
+	sessionID := "github-acme-widgets-7"
+	chatID := globalChatID(sessionID)
+	pr := &pendingRun{sessionID: sessionID, owner: "acme", repo: "widgets", number: 7, login: "alice"}
+	e.pending.Store(chatID, pr)
+	claimInflightFor(t, e, chatID, sessionID)
+
+	e.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunFailed, PlanRan: true})
+
+	select {
+	case body := <-posted:
+		if !strings.Contains(body, "silent-gap") {
+			t.Errorf("expected the generic silent-gap comment, got: %q", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no comment posted for a failed run with no cause")
+	}
+}
+
 // TestFinalizePostsAnswerWhenPushLeftHeadUnchanged pins #876/#880/#882: a
 // ci_fix run that correctly finds nothing to fix still pushes (a no-op) and
 // still records a delivery outcome - if that alone suppressed the summary,
