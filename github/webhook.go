@@ -1099,6 +1099,7 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 	e.pending.Store(chatID, &pendingRun{
 		sessionID: sessionID, claimedAt: claimedAt, owner: owner, repo: repo, number: number,
 		isPR: isPR, login: login, gh: gh, isPlan: isPlan, isLabelTrigger: p.isLabelTrigger,
+		dispatched: req,
 	})
 
 	slog.Info("github run dispatched", "component", "github", "repo", owner+"/"+repo, "issue", number)

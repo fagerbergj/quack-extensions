@@ -415,6 +415,12 @@ type DeliveryContext struct {
 	// itself.
 	PushedSHA string
 
+	// PushError is non-empty when quack's own push failed before Deliver was
+	// called - Items are still the originally staged set (never attempted).
+	// Deliverer implementations must skip attempting them and report this as
+	// each item's failure instead (quack #1155/#1158).
+	PushError string
+
 	Branch string
 
 	IssueNumber int

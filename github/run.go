@@ -36,6 +36,12 @@ type pendingRun struct {
 	isPlan         bool
 	isLabelTrigger bool
 
+	// dispatched is the original DispatchRequest, kept so the no-plan nudge
+	// can re-send its Run/Ask.ContextItems/Ask.NodeContext - a fresh Run/Ask
+	// built from scratch drops Run.Setup and strands the planner without
+	// the PR's real head branch (#47).
+	dispatched sdk.DispatchRequest
+
 	// nudged is set once this chat's one-shot "you answered without running
 	// anything" retry has fired, so finalize is never re-entered as a nudge
 	// twice for the same primary dispatch.
@@ -65,10 +71,18 @@ func (e *Extension) RunEnded(chatID string, outcome sdk.RunOutcome) {
 		// primary+nudge can't outlive it and get taken over mid-flight.
 		pr.claimedAt = time.Now()
 		e.inflight.Store(pr.sessionID, pr.claimedAt)
+		// Chat/ResetHistory intentionally NOT copied from the original
+		// dispatch: ResetHistory would wipe the very turn the nudge needs to
+		// see, and re-stamping Title/Origin on every nudge is pointless.
 		nudgeReq := sdk.DispatchRequest{
 			Chat: sdk.ChatRef{LocalID: pr.sessionID, User: pr.login},
-			Ask:  sdk.Ask{Message: runNudge},
-			Run:  sdk.RunConfig{Timeout: e.runTimeout},
+			Ask: sdk.Ask{
+				Message:      runNudge,
+				NodeContext:  pr.dispatched.Ask.NodeContext,
+				ContextItems: pr.dispatched.Ask.ContextItems,
+			},
+			Run:      pr.dispatched.Run,
+			Delivery: pr.dispatched.Delivery,
 		}
 		e.host.Log.Warn("github: work request produced no plan; nudging it to run the work once",
 			"repo", pr.owner+"/"+pr.repo, "issue", pr.number)
