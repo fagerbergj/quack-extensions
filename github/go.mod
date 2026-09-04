@@ -54,5 +54,7 @@ require (
 	rsc.io/ordered v1.1.1 // indirect
 )
 
-// Development-only: removed at release time (sdk vNEXT untagged)
+// TEMPORARY (#1093): sdk's DeliveryRecoverer/IdempotencyKey additions aren't
+// tagged yet. Remove this replace and bump the require above to the tagged
+// sdk version once it's cut.
 replace github.com/fagerbergj/quack-extensions/sdk => ../sdk
