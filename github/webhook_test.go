@@ -2202,7 +2202,7 @@ func TestIsWorkRequestTolerantOfWrappedVerdict(t *testing.T) {
 		t.Run(tt.answer, func(t *testing.T) {
 			ext, _ := newTestExtension(t, "http://unused", nil)
 			ext.intentClassifier = &fakeIntentClassifier{verdict: tt.answer}
-			if got := ext.isWorkRequest(context.Background(), "@quack review this"); got != tt.want {
+			if got := ext.isWorkRequest(context.Background(), issueCommentPayload{}, "@quack review this"); got != tt.want {
 				t.Errorf("isWorkRequest(%q) = %v, want %v", tt.answer, got, tt.want)
 			}
 		})
@@ -2223,10 +2223,140 @@ func TestIsWorkRequestFailsSafe(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			ext.intentClassifier = c.classifier
-			if ext.isWorkRequest(context.Background(), "review this PR") {
+			if ext.isWorkRequest(context.Background(), issueCommentPayload{}, "review this PR") {
 				t.Errorf("isWorkRequest = true, want false (fail safe to conversational)")
 			}
 		})
+	}
+}
+
+// prWithReviewLabel builds a minimal payload carrying the extension's
+// configured review label, for the #1172 fallback-to-review tests.
+func prWithReviewLabel() issueCommentPayload {
+	var p issueCommentPayload
+	p.Issue.Labels = []struct {
+		Name string `json:"name"`
+	}{{Name: "quack-auto-review"}}
+	return p
+}
+
+// fallbackNoticeServer stubs the GitHub REST calls a fallback comment needs
+// (auth + POST .../comments) and records every comment body posted.
+func fallbackNoticeServer(t *testing.T) (*httptest.Server, *[]string) {
+	t.Helper()
+	var posted []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			fmt.Fprint(w, `{"id":5}`)
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+			body, _ := io.ReadAll(r.Body)
+			posted = append(posted, string(body))
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &posted
+}
+
+// TestIsWorkRequestFallbackDefaultsToReviewOnReviewLabel is #1172 branch (a):
+// a classifier failure on a PR that already carries the review label must
+// default to work/review, not conversational, and must post a visible
+// fallback notice rather than failing silently.
+func TestIsWorkRequestFallbackDefaultsToReviewOnReviewLabel(t *testing.T) {
+	srv, posted := fallbackNoticeServer(t)
+	ext, _ := newTestExtension(t, srv.URL, nil)
+	ext.intentClassifier = &fakeIntentClassifier{errAlways: errors.New("model unavailable")}
+
+	p := prWithReviewLabel()
+	if !ext.isWorkRequest(context.Background(), p, "what do you think?") {
+		t.Error("isWorkRequest = false, want true (review label present, classifier failed)")
+	}
+	if len(*posted) != 1 || !strings.Contains((*posted)[0], "treating as review") {
+		t.Errorf("fallback notice not posted as expected, got %v", *posted)
+	}
+}
+
+// TestIsWorkRequestFallbackDefaultsToReviewOnBareReRunPhrase is #1172 branch
+// (a)'s other trigger: a bare "re-review"/"review again" mention with no
+// review label still must not fall back to conversational.
+func TestIsWorkRequestFallbackDefaultsToReviewOnBareReRunPhrase(t *testing.T) {
+	srv, posted := fallbackNoticeServer(t)
+	ext, _ := newTestExtension(t, srv.URL, nil)
+
+	for _, task := range []string{"re-review", "  review again  ", "Re-Review."} {
+		t.Run(task, func(t *testing.T) {
+			ext.intentClassifier = &fakeIntentClassifier{verdict: "gibberish"} // unparseable
+			*posted = nil
+			if !ext.isWorkRequest(context.Background(), issueCommentPayload{}, task) {
+				t.Errorf("isWorkRequest(%q) = false, want true (bare re-run phrase)", task)
+			}
+			if len(*posted) != 1 || !strings.Contains((*posted)[0], "treating as review") {
+				t.Errorf("fallback notice not posted as expected, got %v", *posted)
+			}
+		})
+	}
+
+	// A re-review ask with extra words is NOT bare - goes through the model, no forced fallback.
+	ext.intentClassifier = &fakeIntentClassifier{verdict: "CONVERSATIONAL"}
+	*posted = nil
+	if ext.isWorkRequest(context.Background(), issueCommentPayload{}, "please re-review this when you get a chance") {
+		t.Error("isWorkRequest = true, want false (non-bare phrasing goes through the classifier)")
+	}
+	if len(*posted) != 0 {
+		t.Errorf("no fallback expected when the classifier answered cleanly, got %v", *posted)
+	}
+}
+
+// TestIsWorkRequestFallbackPostsNoticeWithoutReviewSignal is #1172 branch (c)
+// on the plain conversational path: no review label, no bare re-run phrase -
+// the fallback still must be announced, not silent.
+func TestIsWorkRequestFallbackPostsNoticeWithoutReviewSignal(t *testing.T) {
+	srv, posted := fallbackNoticeServer(t)
+	ext, _ := newTestExtension(t, srv.URL, nil)
+	ext.intentClassifier = &fakeIntentClassifier{verdict: "not sure"}
+
+	if ext.isWorkRequest(context.Background(), issueCommentPayload{}, "what do you think about this?") {
+		t.Error("isWorkRequest = true, want false (no review signal present)")
+	}
+	if len(*posted) != 1 || !strings.Contains((*posted)[0], "treating as conversational") {
+		t.Errorf("fallback notice not posted as expected, got %v", *posted)
+	}
+}
+
+// sequencedIntentClassifier returns errAlways on its first N calls, then verdict.
+type sequencedIntentClassifier struct {
+	failCalls int32
+	verdict   string
+	calls     int32
+}
+
+func (s *sequencedIntentClassifier) Classify(_ context.Context, _ string) (string, error) {
+	n := atomic.AddInt32(&s.calls, 1)
+	if n <= s.failCalls {
+		return "", errors.New("timed out")
+	}
+	return s.verdict, nil
+}
+
+// TestIsWorkRequestRetriesOnceBeforeFallingBack is #1172 branch (b): a
+// classifier call that fails once (e.g. the 5s deadline on a cold model) gets
+// one retry with the longer deadline before any fallback kicks in.
+func TestIsWorkRequestRetriesOnceBeforeFallingBack(t *testing.T) {
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	classifier := &sequencedIntentClassifier{failCalls: 1, verdict: "WORK"}
+	ext.intentClassifier = classifier
+
+	if !ext.isWorkRequest(context.Background(), issueCommentPayload{}, "review this PR") {
+		t.Error("isWorkRequest = false, want true (second attempt succeeded)")
+	}
+	if calls := atomic.LoadInt32(&classifier.calls); calls != 2 {
+		t.Errorf("classifier called %d times, want exactly 2 (one retry)", calls)
 	}
 }
 
@@ -2246,7 +2376,7 @@ func TestIsWorkRequestTimeoutFailsSafe(t *testing.T) {
 	ext.intentClassifier = blockingIntentClassifier{}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if ext.isWorkRequest(ctx, "review this PR") {
+	if ext.isWorkRequest(ctx, issueCommentPayload{}, "review this PR") {
 		t.Error("isWorkRequest = true on timeout, want false (fail safe to conversational)")
 	}
 }
