@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3
-	github.com/fagerbergj/quack-extensions/sdk v0.8.0
+	github.com/fagerbergj/quack-extensions/sdk v0.9.0
 	github.com/glebarez/go-sqlite v1.23.0
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -54,7 +54,3 @@ require (
 	rsc.io/ordered v1.1.1 // indirect
 )
 
-// TEMPORARY (#1093): sdk's DeliveryRecoverer/IdempotencyKey additions aren't
-// tagged yet. Remove this replace and bump the require above to the tagged
-// sdk version once it's cut.
-replace github.com/fagerbergj/quack-extensions/sdk => ../sdk
