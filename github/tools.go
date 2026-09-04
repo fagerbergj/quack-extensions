@@ -656,6 +656,10 @@ func (a *App) Deliver(ctx context.Context, dc sdk.DeliveryContext) (outcomes []s
 	if len(dc.Items) == 0 {
 		return nil, nil
 	}
+	if dc.PushError != "" {
+		err = fmt.Errorf("github: delivery: push %q: %s", dc.Branch, dc.PushError)
+		return itemOutcomesForPushFailure(dc, err), err
+	}
 	owner, repo, ok := ownerRepoFromURL(dc.CloneURL)
 	if !ok {
 		return nil, fmt.Errorf("github: delivery: %q is not a github.com clone URL - nothing to deliver against", dc.CloneURL)

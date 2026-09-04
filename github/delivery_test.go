@@ -81,6 +81,29 @@ func TestDeliverPullRequestUpdatesExistingInsteadOfDuplicate(t *testing.T) {
 	}
 }
 
+// TestDeliverPushErrorShortCircuits pins #46: a gate push failure carried on
+// dc.PushError must post the failure and attempt nothing against a branch
+// that was never pushed.
+func TestDeliverPushErrorShortCircuits(t *testing.T) {
+	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected request %s %s - Deliver must not call GitHub on a push failure", r.Method, r.URL.Path)
+	})
+	dc := sdk.DeliveryContext{
+		ChatID:    "chat-1",
+		CloneURL:  "https://github.com/acme/widgets.git",
+		Branch:    "feature",
+		PushError: "git push exit 128",
+		Items:     []sdk.StagedDelivery{{Kind: "pull_request", Title: "Add widget", Body: "does the thing"}},
+	}
+	outcomes, err := app.Deliver(context.Background(), dc)
+	if err == nil || !strings.Contains(err.Error(), "git push exit 128") {
+		t.Fatalf("Deliver err = %v, want it naming the push failure", err)
+	}
+	if len(outcomes) != 1 || outcomes[0].Error == "" {
+		t.Fatalf("outcomes = %+v, want every item marked failed", outcomes)
+	}
+}
+
 // TestDeliverPushWithNothingToSayOmitsThePatch pins #724 test case 1: a
 // stage_push with no title/body must leave the existing PR completely
 // untouched - openOrUpdatePullRequest reuses findOpenPR's own url/number

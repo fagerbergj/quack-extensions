@@ -547,6 +547,9 @@ func TestRunEndedNudgesOnceThenFinalizes(t *testing.T) {
 	e.pending.Store(chatID, &pendingRun{
 		sessionID: sessionID, owner: "acme", repo: "widgets", number: 7,
 		login: "alice", isLabelTrigger: true,
+		dispatched: sdk.DispatchRequest{
+			Run: sdk.RunConfig{Setup: &sdk.Setup{Repo: "https://github.com/acme/widgets.git", ExistingHeadRef: "pr-7-head"}},
+		},
 	})
 	claimInflightFor(t, e, chatID, sessionID)
 
@@ -558,6 +561,11 @@ func TestRunEndedNudgesOnceThenFinalizes(t *testing.T) {
 	}
 	if calls[0].Ask.Message != runNudge {
 		t.Errorf("nudge message = %q, want runNudge", calls[0].Ask.Message)
+	}
+	// #47: the nudge must carry the original dispatch's Run.Setup, or a
+	// nudged PR review can never plan (no ExistingHeadRef to override).
+	if calls[0].Run.Setup == nil || calls[0].Run.Setup.ExistingHeadRef != "pr-7-head" {
+		t.Errorf("nudge Run.Setup = %+v, want ExistingHeadRef %q carried over from the first dispatch", calls[0].Run.Setup, "pr-7-head")
 	}
 	if _, ok := e.pending.Load(chatID); !ok {
 		t.Fatalf("pending entry removed after nudge - RunEnded must keep it for the nudge's own callback")
