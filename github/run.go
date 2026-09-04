@@ -126,7 +126,11 @@ func (e *Extension) finalize(chatID string, pr *pendingRun, outcome sdk.RunOutco
 				baselineCancel()
 
 				mergeCtx, mergeCancel := context.WithTimeout(context.Background(), mergeTimeout)
-				e.tryMergeStandingIntent(mergeCtx, owner, repo, number, chatID, pr.gh.snap.HeadSHA)
+				cloneURL := ""
+				if pr.dispatched.Run.Setup != nil {
+					cloneURL = pr.dispatched.Run.Setup.Repo
+				}
+				e.tryMergeStandingIntent(mergeCtx, owner, repo, number, chatID, pr.gh.snap.HeadSHA, cloneURL)
 				mergeCancel()
 			}
 			e.persistGithubSnapshot(chatID, pr.gh)

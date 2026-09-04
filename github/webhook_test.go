@@ -3233,6 +3233,91 @@ func newTestExtensionWithStore(t *testing.T, apiBase string, triggers []string, 
 	return e, fh
 }
 
+// TestTryMergeStandingIntentReReviewsOnHeadModified pins #1142: when the
+// PUT .../merge call fails with GitHub's "Head branch was modified" error,
+// tryMergeStandingIntent must keep the standing intent (never clear it),
+// dispatch a fresh auto-review of the new head, and post exactly one comment.
+func TestTryMergeStandingIntentReReviewsOnHeadModified(t *testing.T) {
+	posted := make(chan string, 8)
+	newHeadSHA := "newhead2"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			fmt.Fprint(w, `{"id":5}`)
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		case strings.HasSuffix(r.URL.Path, "/app"):
+			fmt.Fprint(w, `{"slug":"quack"}`)
+		case strings.HasSuffix(r.URL.Path, "/reviews"):
+			fmt.Fprint(w, `[{"state":"APPROVED","user":{"login":"quack[bot]"}}]`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+			fmt.Fprint(w, `[]`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+			body, _ := io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{}`)
+			posted <- string(body)
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/merge"):
+			w.WriteHeader(http.StatusConflict)
+			fmt.Fprint(w, `{"message":"Head branch was modified. Review and try the merge again."}`)
+		case strings.HasSuffix(r.URL.Path, "/files"):
+			fmt.Fprint(w, `[]`)
+		case strings.HasSuffix(r.URL.Path, "/commits"):
+			fmt.Fprint(w, `[]`)
+		case strings.Contains(r.URL.Path, "/check-runs"):
+			fmt.Fprint(w, `{"check_runs":[]}`)
+		case strings.Contains(r.URL.Path, "/pulls/"):
+			fmt.Fprintf(w, `{"title":"Test PR","body":"","state":"open","head":{"ref":"feature-branch","sha":%q},"base":{"ref":"main"}}`, newHeadSHA)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	e, fh := newTestExtension(t, srv.URL, []string{"merge"})
+	owner, repo, number := "acme", "widgets", 7
+	sessionID := fmt.Sprintf("github-%s-%s-%d", owner, repo, number)
+	chatID := globalChatID(sessionID)
+
+	if err := e.store.SetMergeIntent(context.Background(), chatID, "alice"); err != nil {
+		t.Fatalf("SetMergeIntent: %v", err)
+	}
+
+	e.tryMergeStandingIntent(context.Background(), owner, repo, number, chatID, "oldhead1", "https://github.com/acme/widgets.git")
+
+	// Standing intent must survive this specific failure.
+	intent, err := e.store.GetMergeIntent(context.Background(), chatID)
+	if err != nil {
+		t.Fatalf("GetMergeIntent: %v", err)
+	}
+	if intent == nil {
+		t.Fatal("standing intent was cleared; #1142 requires it survive a head-modified merge failure")
+	}
+
+	req := fh.waitForDispatch(t, 2*time.Second)
+	if req.Chat.LocalID != sessionID {
+		t.Errorf("re-review dispatched for session %q, want %q", req.Chat.LocalID, sessionID)
+	}
+	if req.Run.Setup == nil || req.Run.Setup.Repo != "https://github.com/acme/widgets.git" {
+		t.Errorf("re-review dispatch missing the repo clone URL: %+v", req.Run.Setup)
+	}
+
+	select {
+	case body := <-posted:
+		if !strings.Contains(body, "head moved; re-reviewing "+newHeadSHA) {
+			t.Errorf("comment body = %q, want it to name the new head %q", body, newHeadSHA)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no comment posted")
+	}
+
+	select {
+	case body := <-posted:
+		t.Fatalf("a second comment was posted: %q; want exactly one", body)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 // mergeStub serves the REST endpoints mergeIfApproved/tryMergeStandingIntent
 // touch: reviewsJSON seeds GET .../reviews, commentsJSON seeds GET
 // .../comments (own-PR verdict-marker comments), merged fires on the PUT

@@ -592,6 +592,13 @@ func mergeAPIErrorMessage(err error) string {
 // actionable sentence naming the check and the self-heal label (the merge
 // flow itself never applies quack:fix; a human or the CI-failure auto-heal
 // does). Anything else collapses to "Merge failed: <message>".
+// isHeadBranchModified reports GitHub's "merge failed, the tip advanced
+// mid-review" error (#1142) - the one case where the standing intent should
+// trigger a re-review instead of just standing by for a human re-label.
+func isHeadBranchModified(err error) bool {
+	return strings.Contains(mergeAPIErrorMessage(err), "Head branch was modified")
+}
+
 func mergeFailureComment(err error, fixLabel string) string {
 	msg := mergeAPIErrorMessage(err)
 	if m := requiredCheckFailingRe.FindStringSubmatch(msg); m != nil {
@@ -740,7 +747,7 @@ func (e *Extension) latestQuackVerdict(ctx context.Context, owner, repo string, 
 // the live verdict, and act on it, which used to lean on Postgres's shared
 // connection for incidental ordering; SQLite gives this extension no such
 // guarantee, so the lock closes the gap explicitly (design doc Risk 2).
-func (e *Extension) tryMergeStandingIntent(ctx context.Context, owner, repo string, number int, chatID, headSHA string) {
+func (e *Extension) tryMergeStandingIntent(ctx context.Context, owner, repo string, number int, chatID, headSHA, cloneURL string) {
 	unlock := e.mergeMu.Lock(chatID)
 	defer unlock()
 
@@ -767,6 +774,14 @@ func (e *Extension) tryMergeStandingIntent(ctx context.Context, owner, repo stri
 		}
 	}
 	if err := e.app.mergePR(ctx, owner, repo, number, headSHA); err != nil {
+		if isHeadBranchModified(err) {
+			// #1142: the tip moved under the approved review. The standing
+			// intent (never cleared here) still authorizes a merge once a
+			// fresh review of the NEW head approves - so re-review it instead
+			// of stalling until a human re-labels.
+			e.reReviewMovedHead(ctx, owner, repo, number, cloneURL, comment)
+			return
+		}
 		slog.Error("github: standing-intent merge failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", err)
 		comment(fmt.Sprintf("%s @%s's standing `%s` authorization still stands - I'll retry the next time a review from me approves.",
 			mergeFailureComment(err, e.labels.Fix), intent.RequestedBy, e.labels.Merge))
@@ -784,6 +799,46 @@ func (e *Extension) tryMergeStandingIntent(ctx context.Context, owner, repo stri
 		slog.Warn("github: merge-intent cleanup failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", derr)
 	}
 	comment(fmt.Sprintf("Merged - my review approved this PR, on the standing authorization @%s gave via the `%s` label.", intent.RequestedBy, e.labels.Merge))
+}
+
+// reReviewMovedHead handles the #1142 "Head branch was modified" merge
+// failure: fetches the actual current head, posts the single re-review
+// comment, and dispatches a fresh auto-review of it - same run a
+// label-trigger would produce. The standing intent is left untouched by the
+// caller; once THIS review approves, tryMergeStandingIntent fires again for
+// the new head.
+func (e *Extension) reReviewMovedHead(ctx context.Context, owner, repo string, number int, cloneURL string, comment func(string)) {
+	title := ""
+	newHead := "the new head"
+	if meta, err := e.app.pullMeta(ctx, owner, repo, number); err != nil {
+		slog.Warn("github: head-moved re-review PR lookup failed; re-reviewing without a sha in the comment",
+			"component", "github", "repo", owner+"/"+repo, "pr", number, "err", err)
+	} else {
+		title = meta.Title
+		if meta.HeadSHA != "" {
+			newHead = meta.HeadSHA
+		}
+	}
+	comment(fmt.Sprintf("head moved; re-reviewing %s", newHead))
+	go e.dispatch(reReviewPayload(owner, repo, number, title, cloneURL), autoReviewTask)
+}
+
+// reReviewPayload synthesizes an issueCommentPayload for a re-review that
+// quack itself triggers (no webhook event backs it) - same auto-review path
+// a label trigger dispatches.
+func reReviewPayload(owner, repo string, number int, title, cloneURL string) issueCommentPayload {
+	synthetic := issueCommentPayload{Action: "created"}
+	synthetic.Issue.Number = number
+	synthetic.Issue.Title = title
+	synthetic.Issue.PullRequest = &struct{}{}
+	synthetic.Comment.User.Login = autoReviewUser
+	synthetic.Repository.Name = repo
+	synthetic.Repository.Owner.Login = owner
+	synthetic.Repository.CloneURL = cloneURL
+	synthetic.isLabelTrigger = true // auto-review, never a mention (T4)
+	synthetic.rawEvent = json.RawMessage(`{}`)
+	synthetic.eventName = "github.head_branch_modified_rereview"
+	return synthetic
 }
 
 // ackReaction posts a 👀 reaction on the mentioning comment — instant code-level acknowledgment, best effort.
