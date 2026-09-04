@@ -397,7 +397,7 @@ func (e *Extension) deliverableText(ctx context.Context, p issueCommentPayload, 
 		}
 		return replyDeliverable
 	}
-	if mentionIsWork && !e.isWorkRequest(ctx, task) {
+	if mentionIsWork && !e.isWorkRequest(ctx, p, task) {
 		return replyDeliverable
 	}
 

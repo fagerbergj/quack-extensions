@@ -17,6 +17,15 @@ type IntentClassifier interface {
 // Bounds classification (runs inline in webhook dispatch).
 const intentClassifierTimeout = 5 * time.Second
 
+// intentClassifierRetryTimeout: one retry with a longer deadline before
+// falling back (#1172) - a cold worker model on llm-swap can take longer
+// than intentClassifierTimeout to swap in right after a restart.
+const intentClassifierRetryTimeout = 30 * time.Second
+
+// bareReReviewRe: only a mention that is NOTHING but the re-run phrase is unambiguous
+// enough to hardcode; anything with extra wording still goes through the model (#1172).
+var bareReReviewRe = regexp.MustCompile(`(?i)^\s*(re-review|review again)[.!]?\s*$`)
+
 // intentClassifierPrompt: replaces regex classifier; handles quoted code, declines, corrections.
 const intentClassifierPrompt = `You classify a single GitHub comment as WORK or CONVERSATIONAL.
 
@@ -32,28 +41,63 @@ Reply with exactly one word: WORK or CONVERSATIONAL. No punctuation, no explanat
 Message:
 %s`
 
-// isWorkRequest: PR mention → work or conversational. Fails safe to conversational.
-func (e *Extension) isWorkRequest(ctx context.Context, task string) bool {
+// isWorkRequest: PR mention → work or conversational. When the classifier fails, a PR
+// already carrying the review label or a bare re-run phrase defaults to review, not
+// conversational (#1172), and the fallback is announced on the PR instead of log-only.
+func (e *Extension) isWorkRequest(ctx context.Context, p issueCommentPayload, task string) bool {
+	toReview := e.prHasReviewLabel(p) || bareReReviewRe.MatchString(task)
 	if e.intentClassifier == nil {
-		return false
+		return toReview // no classifier configured is not a failure worth a PR comment
 	}
-	ctx, cancel := context.WithTimeout(ctx, intentClassifierTimeout)
+	prompt := fmt.Sprintf(intentClassifierPrompt, task)
+	var lastErr error
+	for _, timeout := range []time.Duration{intentClassifierTimeout, intentClassifierRetryTimeout} {
+		cctx, cancel := context.WithTimeout(ctx, timeout)
+		answer, err := e.intentClassifier.Classify(cctx, prompt)
+		cancel()
+		if err != nil {
+			lastErr = err
+			continue // retry once with a longer deadline before falling back
+		}
+		// Substring match (small models often wrap output in ** or punctuation).
+		switch up := strings.ToUpper(strings.TrimSpace(answer)); {
+		case strings.Contains(up, "CONVERSATIONAL"):
+			return false
+		case strings.Contains(up, "WORK"):
+			return true
+		default:
+			return e.fallbackWorkRequest(p, toReview, fmt.Sprintf("unparseable classifier answer %q", answer))
+		}
+	}
+	return e.fallbackWorkRequest(p, toReview, fmt.Sprintf("classifier failed twice: %v", lastErr))
+}
+
+// fallbackWorkRequest announces a failed classification on the PR (best effort) and
+// returns the review-vs-conversational default the caller already resolved (#1172).
+func (e *Extension) fallbackWorkRequest(p issueCommentPayload, toReview bool, reason string) bool {
+	msg := "couldn't classify; treating as conversational"
+	if toReview {
+		msg = "couldn't classify; treating as review"
+	}
+	e.host.Log.Warn("github: intent classifier fallback", "reason", reason, "as_review", toReview)
+	ctx, cancel := context.WithTimeout(context.Background(), reactionTimeout)
 	defer cancel()
-	answer, err := e.intentClassifier.Classify(ctx, fmt.Sprintf(intentClassifierPrompt, task))
-	if err != nil {
-		e.host.Log.Warn("github: intent classifier failed; treating mention as conversational", "err", err)
-		return false
+	owner, repo := p.Repository.Owner.Login, p.Repository.Name
+	if err := e.app.postIssueComment(ctx, owner, repo, p.Issue.Number, msg); err != nil {
+		e.host.Log.Warn("github: intent classifier fallback comment failed", "repo", owner+"/"+repo, "issue", p.Issue.Number, "err", err)
 	}
-	// Substring match (small models often wrap output in ** or punctuation).
-	switch up := strings.ToUpper(strings.TrimSpace(answer)); {
-	case strings.Contains(up, "CONVERSATIONAL"):
-		return false
-	case strings.Contains(up, "WORK"):
-		return true
-	default:
-		e.host.Log.Warn("github: intent classifier returned an unparseable answer; treating mention as conversational", "answer", answer)
-		return false
+	return toReview
+}
+
+// prHasReviewLabel reports whether the PR being commented on already carries
+// the configured review label (#1172) - mirrors isReviewCommand's label scan.
+func (e *Extension) prHasReviewLabel(p issueCommentPayload) bool {
+	for _, l := range p.Issue.Labels {
+		if l.Name == e.labels.Review {
+			return true
+		}
 	}
+	return false
 }
 
 // classifyPRDeliverable resolves review-vs-nothing for a PR mention when the grant does NOT
