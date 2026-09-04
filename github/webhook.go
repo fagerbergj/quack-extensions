@@ -1063,10 +1063,31 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 	}
 
 	setup := &sdk.Setup{Repo: p.Repository.CloneURL, BaseRef: setupBaseRef(p, gh), WorkBranch: fmt.Sprintf("quack/issue-%d", number)}
-	if isPR && gh.snap.HeadRef != "" {
+	if isPR {
+		headRef := gh.snap.HeadRef
+		if headRef == "" {
+			// The snapshot's pullMeta call can transiently fail or race a
+			// stale cache without tripping contextUnavailable (only checked
+			// on label triggers) - refetch once before giving up, since a
+			// blank ref only quack's own fallback can rescue (#55).
+			if m, merr := e.app.pullMeta(ctx, owner, repo, number); merr == nil && m.HeadRef != "" {
+				headRef = m.HeadRef
+			} else {
+				slog.Error("github: PR dispatch has no head ref even after refetch; refusing to send a blank ExistingHeadRef",
+					"component", "github", "repo", owner+"/"+repo, "issue", number, "err", merr)
+				abortCtx, abortCancel := context.WithTimeout(context.Background(), reactionTimeout)
+				abortMsg := "Couldn't determine this PR's head branch (GitHub fetch failed) - not dispatching a review with a blank head ref. Retry the command."
+				if perr := e.app.postIssueComment(abortCtx, owner, repo, number, abortMsg); perr != nil {
+					slog.Warn("github: abort comment failed", "component", "github", "repo", owner+"/"+repo, "issue", number, "err", perr)
+				}
+				abortCancel()
+				clearInflight()
+				return
+			}
+		}
 		// The PR's real head branch, not the deterministic default - dag.
 		// OverrideExistingPRHead's job in the old ctx-stamped world.
-		setup.ExistingHeadRef = gh.snap.HeadRef
+		setup.ExistingHeadRef = headRef
 	}
 
 	badge := gh.snap.State
