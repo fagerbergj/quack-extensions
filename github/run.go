@@ -163,6 +163,8 @@ func (e *Extension) finalize(chatID string, pr *pendingRun, outcome sdk.RunOutco
 	switch {
 	case outcome.TimedOut:
 		answer = fmt.Sprintf("⚠️ quack hit its run deadline before finishing; nothing was delivered. Re-apply the label to retry.\n\nLast progress:\n\n%s", answer)
+	case outcome.Status == sdk.RunFailed && outcome.Error != "":
+		answer = fmt.Sprintf("⚠️ quack's run failed: %s\n\nRe-apply the label to retry.", outcome.Error)
 	case answer == "":
 		// Silent-gap (#568) — run finished (or failed) with nothing to say.
 		e.host.Log.Warn("github: run completed with no final answer", "repo", owner+"/"+repo, "issue", number, "status", outcome.Status)
