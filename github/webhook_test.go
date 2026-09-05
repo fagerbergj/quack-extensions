@@ -4281,3 +4281,124 @@ func TestHandleWebhookSynchronizeInvalidatesOnlyARunningPR(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 }
+
+// stubGitHubPullSequence is like stubGitHub but serves a caller-controlled
+// sequence of /pulls/<n> responses - dispatch's snapshot fetch is the first
+// call, the head-ref refetch (when the snapshot came back blank) is the
+// second (#55).
+func stubGitHubPullSequence(t *testing.T, pulls ...string) *httptest.Server {
+	t.Helper()
+	var n atomic.Int32
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			fmt.Fprint(w, `{"id":5}`)
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		case strings.HasSuffix(r.URL.Path, "/app"):
+			fmt.Fprint(w, `{"slug":"quack"}`)
+		case strings.HasSuffix(r.URL.Path, "/files"):
+			fmt.Fprint(w, `[]`)
+		case strings.HasSuffix(r.URL.Path, "/reviews"):
+			fmt.Fprint(w, `[]`)
+		case strings.HasSuffix(r.URL.Path, "/commits"):
+			fmt.Fprint(w, `[]`)
+		case strings.Contains(r.URL.Path, "/check-runs"):
+			fmt.Fprint(w, `{"check_runs":[]}`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+			body, _ := io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{}`)
+			postedComments <- string(body)
+		case strings.HasSuffix(r.URL.Path, "/comments"):
+			fmt.Fprint(w, `[]`)
+		case strings.Contains(r.URL.Path, "/pulls/"):
+			i := int(n.Add(1)) - 1
+			if i >= len(pulls) {
+				i = len(pulls) - 1 // retries past the configured sequence repeat the last response
+			}
+			resp := pulls[i]
+			if resp == "" {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			fmt.Fprint(w, resp)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+}
+
+// prPayload is issueCommentPayloadFor with Issue.PullRequest set, so
+// dispatch() takes the isPR branch.
+func prPayload(owner, repo string, number int, login, body string) issueCommentPayload {
+	p := issueCommentPayloadFor(owner, repo, number, login, body, "")
+	p.Issue.PullRequest = &struct{}{}
+	return p
+}
+
+const prMetaWithHead = `{"title":"Test PR","body":"A test PR.","state":"open","head":{"ref":"feature-branch","sha":"headsha1"},"base":{"ref":"main"}}`
+const prMetaNoHead = `{"title":"Test PR","body":"A test PR.","state":"open","head":{"ref":"","sha":""},"base":{"ref":"main"}}`
+
+var postedComments = make(chan string, 8)
+
+// TestDispatchPRHeadRef covers #55: dispatch() must never send a PR Setup
+// with a blank ExistingHeadRef.
+func TestDispatchPRHeadRef(t *testing.T) {
+	// Every case's /pulls/ sequence is: fetchSnapshot's pullMeta, then
+	// authoredByQuack's prAuthor call (both real calls dispatch() makes
+	// before the Setup is built), then - only if the snapshot came back
+	// without a head ref - the fix's own refetch.
+
+	t.Run("snapshot has ref: passthrough, no refetch", func(t *testing.T) {
+		srv := stubGitHubPullSequence(t, prMetaWithHead, prMetaWithHead)
+		defer srv.Close()
+		e, fh := newTestExtension(t, srv.URL, nil)
+
+		e.dispatch(prPayload("acme", "widgets", 7, "alice", "/review"), "review")
+
+		calls := fh.calls()
+		if len(calls) != 1 {
+			t.Fatalf("Dispatch calls = %d, want 1", len(calls))
+		}
+		if got := calls[0].Run.Setup.ExistingHeadRef; got != "feature-branch" {
+			t.Errorf("ExistingHeadRef = %q, want feature-branch", got)
+		}
+	})
+
+	t.Run("snapshot missing ref but API refetch succeeds", func(t *testing.T) {
+		srv := stubGitHubPullSequence(t, prMetaNoHead, prMetaNoHead, prMetaWithHead)
+		defer srv.Close()
+		e, fh := newTestExtension(t, srv.URL, nil)
+
+		e.dispatch(prPayload("acme", "widgets", 7, "alice", "/review"), "review")
+
+		calls := fh.calls()
+		if len(calls) != 1 {
+			t.Fatalf("Dispatch calls = %d, want 1", len(calls))
+		}
+		if got := calls[0].Run.Setup.ExistingHeadRef; got != "feature-branch" {
+			t.Errorf("ExistingHeadRef = %q, want feature-branch (fixed via refetch)", got)
+		}
+	})
+
+	t.Run("snapshot missing ref and API refetch fails: abort, no dispatch", func(t *testing.T) {
+		srv := stubGitHubPullSequence(t, prMetaNoHead, prMetaNoHead, "")
+		defer srv.Close()
+		e, fh := newTestExtension(t, srv.URL, nil)
+
+		e.dispatch(prPayload("acme", "widgets", 7, "alice", "/review"), "review")
+
+		if calls := fh.calls(); len(calls) != 0 {
+			t.Fatalf("Dispatch calls = %d, want 0 (must not dispatch with a blank head ref)", len(calls))
+		}
+		select {
+		case body := <-postedComments:
+			if !strings.Contains(body, "head branch") {
+				t.Errorf("abort comment = %q, missing explanation", body)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("no abort comment posted")
+		}
+	})
+}
