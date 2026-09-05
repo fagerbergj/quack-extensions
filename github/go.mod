@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3
-	github.com/fagerbergj/quack-extensions/sdk v0.9.0
+	github.com/fagerbergj/quack-extensions/sdk v0.10.0
 	github.com/glebarez/go-sqlite v1.23.0
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -55,4 +55,3 @@ require (
 )
 
 // Dev-only: strip before tagging a release.
-replace github.com/fagerbergj/quack-extensions/sdk => ../sdk
