@@ -747,25 +747,29 @@ func (e *Extension) latestQuackVerdict(ctx context.Context, owner, repo string, 
 // the live verdict, and act on it, which used to lean on Postgres's shared
 // connection for incidental ordering; SQLite gives this extension no such
 // guarantee, so the lock closes the gap explicitly (design doc Risk 2).
-func (e *Extension) tryMergeStandingIntent(ctx context.Context, owner, repo string, number int, chatID, headSHA, cloneURL string) {
+// Returns a re-review payload when the merge failed because the head moved
+// (#1142); the CALLER dispatches it after releasing its inflight claim, or
+// dispatch's dedup would drop it.
+func (e *Extension) tryMergeStandingIntent(ctx context.Context, pr *pendingRun, chatID string) *issueCommentPayload {
+	owner, repo, number, headSHA := pr.owner, pr.repo, pr.number, pr.gh.snap.HeadSHA
 	unlock := e.mergeMu.Lock(chatID)
 	defer unlock()
 
 	intent, err := e.store.GetMergeIntent(ctx, chatID)
 	if err != nil {
 		slog.Warn("github: merge-intent lookup failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", err)
-		return
+		return nil
 	}
 	if intent == nil {
-		return // no standing authorization on this PR
+		return nil // no standing authorization on this PR
 	}
 	verdict, err := e.latestQuackVerdict(ctx, owner, repo, number)
 	if err != nil {
 		slog.Warn("github: merge-intent verdict lookup failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", err)
-		return
+		return nil
 	}
 	if verdict != "approve" {
-		return // still not approved; the intent stands for a later review
+		return nil // still not approved; the intent stands for a later review
 	}
 
 	comment := func(text string) {
@@ -779,13 +783,12 @@ func (e *Extension) tryMergeStandingIntent(ctx context.Context, owner, repo stri
 			// intent (never cleared here) still authorizes a merge once a
 			// fresh review of the NEW head approves - so re-review it instead
 			// of stalling until a human re-labels.
-			e.reReviewMovedHead(ctx, owner, repo, number, cloneURL, comment)
-			return
+			return e.reReviewMovedHead(ctx, pr, comment)
 		}
 		slog.Error("github: standing-intent merge failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", err)
 		comment(fmt.Sprintf("%s @%s's standing `%s` authorization still stands - I'll retry the next time a review from me approves.",
 			mergeFailureComment(err, e.labels.Fix), intent.RequestedBy, e.labels.Merge))
-		return
+		return nil
 	}
 	slog.Info("github pr merged", "component", "github", "repo", owner+"/"+repo, "pr", number, "user", intent.RequestedBy)
 	if e.autoArchiveOnMerge && e.host.ArchiveChat != nil {
@@ -799,15 +802,16 @@ func (e *Extension) tryMergeStandingIntent(ctx context.Context, owner, repo stri
 		slog.Warn("github: merge-intent cleanup failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", derr)
 	}
 	comment(fmt.Sprintf("Merged - my review approved this PR, on the standing authorization @%s gave via the `%s` label.", intent.RequestedBy, e.labels.Merge))
+	return nil
 }
 
 // reReviewMovedHead handles the #1142 "Head branch was modified" merge
 // failure: fetches the actual current head, posts the single re-review
-// comment, and dispatches a fresh auto-review of it - same run a
-// label-trigger would produce. The standing intent is left untouched by the
-// caller; once THIS review approves, tryMergeStandingIntent fires again for
-// the new head.
-func (e *Extension) reReviewMovedHead(ctx context.Context, owner, repo string, number int, cloneURL string, comment func(string)) {
+// comment, and returns the auto-review payload for it - same run a
+// label-trigger would produce. The standing intent is left untouched; once
+// THIS review approves, tryMergeStandingIntent fires again for the new head.
+func (e *Extension) reReviewMovedHead(ctx context.Context, pr *pendingRun, comment func(string)) *issueCommentPayload {
+	owner, repo, number := pr.owner, pr.repo, pr.number
 	title := ""
 	newHead := "the new head"
 	if meta, err := e.app.pullMeta(ctx, owner, repo, number); err != nil {
@@ -820,13 +824,18 @@ func (e *Extension) reReviewMovedHead(ctx context.Context, owner, repo string, n
 		}
 	}
 	comment(fmt.Sprintf("head moved; re-reviewing %s", newHead))
-	go e.dispatch(reReviewPayload(owner, repo, number, title, cloneURL), autoReviewTask)
+	cloneURL := ""
+	if pr.dispatched.Run.Setup != nil {
+		cloneURL = pr.dispatched.Run.Setup.Repo
+	}
+	p := reReviewPayload(owner, repo, number, title, cloneURL, pr.defaultBranch, pr.installationID)
+	return &p
 }
 
 // reReviewPayload synthesizes an issueCommentPayload for a re-review that
 // quack itself triggers (no webhook event backs it) - same auto-review path
 // a label trigger dispatches.
-func reReviewPayload(owner, repo string, number int, title, cloneURL string) issueCommentPayload {
+func reReviewPayload(owner, repo string, number int, title, cloneURL, defaultBranch string, installationID int64) issueCommentPayload {
 	synthetic := issueCommentPayload{Action: "created"}
 	synthetic.Issue.Number = number
 	synthetic.Issue.Title = title
@@ -835,6 +844,8 @@ func reReviewPayload(owner, repo string, number int, title, cloneURL string) iss
 	synthetic.Repository.Name = repo
 	synthetic.Repository.Owner.Login = owner
 	synthetic.Repository.CloneURL = cloneURL
+	synthetic.Repository.DefaultBranch = defaultBranch
+	synthetic.Installation.ID = installationID
 	synthetic.isLabelTrigger = true // auto-review, never a mention (T4)
 	synthetic.rawEvent = json.RawMessage(`{}`)
 	synthetic.eventName = "github.head_branch_modified_rereview"
@@ -1162,7 +1173,7 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 	e.pending.Store(chatID, &pendingRun{
 		sessionID: sessionID, claimedAt: claimedAt, owner: owner, repo: repo, number: number,
 		isPR: isPR, login: login, gh: gh, isPlan: isPlan, isLabelTrigger: p.isLabelTrigger,
-		dispatched: req,
+		dispatched: req, defaultBranch: p.Repository.DefaultBranch, installationID: p.Installation.ID,
 	})
 
 	slog.Info("github run dispatched", "component", "github", "repo", owner+"/"+repo, "issue", number)

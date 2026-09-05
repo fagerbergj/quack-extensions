@@ -46,6 +46,14 @@ type pendingRun struct {
 	// anything" retry has fired, so finalize is never re-entered as a nudge
 	// twice for the same primary dispatch.
 	nudged bool
+
+	// defaultBranch/installationID let a re-review dispatched from finalize
+	// (#1142) rebuild the same payload the label trigger had.
+	defaultBranch  string
+	installationID int64
+	// reReview is set by finalize when the merge found the head moved; RunEnded
+	// dispatches it only AFTER finalize's inflight/pending cleanup has run.
+	reReview *issueCommentPayload
 }
 
 // RunEnded correlates a dispatched run's outcome back to the pendingRun
@@ -89,11 +97,22 @@ func (e *Extension) RunEnded(chatID string, outcome sdk.RunOutcome) {
 		if err := e.host.Dispatch(context.Background(), nudgeReq); err != nil {
 			e.host.Log.Error("github: nudge dispatch failed; finalizing with what we have",
 				"repo", pr.owner+"/"+pr.repo, "issue", pr.number, "err", err)
-			e.finalize(chatID, pr, outcome)
+			e.finish(chatID, pr, outcome)
 		}
 		return // wait for the nudge's own RunEnded
 	}
+	e.finish(chatID, pr, outcome)
+}
+
+// finish runs finalize, then dispatches any re-review it asked for. The
+// dispatch must come after finalize returns: its deferred inflight release
+// and pending delete would otherwise dedup-drop the new run or delete its
+// pendingRun (#1142).
+func (e *Extension) finish(chatID string, pr *pendingRun, outcome sdk.RunOutcome) {
 	e.finalize(chatID, pr, outcome)
+	if pr.reReview != nil {
+		e.dispatch(*pr.reReview, autoReviewTask)
+	}
 }
 
 // finalize does everything the old synchronous dispatch()'s tail did once a
@@ -126,11 +145,7 @@ func (e *Extension) finalize(chatID string, pr *pendingRun, outcome sdk.RunOutco
 				baselineCancel()
 
 				mergeCtx, mergeCancel := context.WithTimeout(context.Background(), mergeTimeout)
-				cloneURL := ""
-				if pr.dispatched.Run.Setup != nil {
-					cloneURL = pr.dispatched.Run.Setup.Repo
-				}
-				e.tryMergeStandingIntent(mergeCtx, owner, repo, number, chatID, pr.gh.snap.HeadSHA, cloneURL)
+				pr.reReview = e.tryMergeStandingIntent(mergeCtx, pr, chatID)
 				mergeCancel()
 			}
 			e.persistGithubSnapshot(chatID, pr.gh)

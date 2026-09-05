@@ -3233,88 +3233,144 @@ func newTestExtensionWithStore(t *testing.T, apiBase string, triggers []string, 
 	return e, fh
 }
 
-// TestTryMergeStandingIntentReReviewsOnHeadModified pins #1142: when the
-// PUT .../merge call fails with GitHub's "Head branch was modified" error,
-// tryMergeStandingIntent must keep the standing intent (never clear it),
-// dispatch a fresh auto-review of the new head, and post exactly one comment.
-func TestTryMergeStandingIntentReReviewsOnHeadModified(t *testing.T) {
-	posted := make(chan string, 8)
-	newHeadSHA := "newhead2"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.HasSuffix(r.URL.Path, "/installation"):
-			fmt.Fprint(w, `{"id":5}`)
-		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
-			fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
-		case strings.HasSuffix(r.URL.Path, "/app"):
-			fmt.Fprint(w, `{"slug":"quack"}`)
-		case strings.HasSuffix(r.URL.Path, "/reviews"):
-			fmt.Fprint(w, `[{"state":"APPROVED","user":{"login":"quack[bot]"}}]`)
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
-			fmt.Fprint(w, `[]`)
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
-			body, _ := io.ReadAll(r.Body)
-			w.WriteHeader(http.StatusCreated)
-			fmt.Fprint(w, `{}`)
-			posted <- string(body)
-		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/merge"):
-			w.WriteHeader(http.StatusConflict)
-			fmt.Fprint(w, `{"message":"Head branch was modified. Review and try the merge again."}`)
-		case strings.HasSuffix(r.URL.Path, "/files"):
-			fmt.Fprint(w, `[]`)
-		case strings.HasSuffix(r.URL.Path, "/commits"):
-			fmt.Fprint(w, `[]`)
-		case strings.Contains(r.URL.Path, "/check-runs"):
-			fmt.Fprint(w, `{"check_runs":[]}`)
-		case strings.Contains(r.URL.Path, "/pulls/"):
-			fmt.Fprintf(w, `{"title":"Test PR","body":"","state":"open","head":{"ref":"feature-branch","sha":%q},"base":{"ref":"main"}}`, newHeadSHA)
-		default:
-			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
-		}
-	}))
-	defer srv.Close()
+// TestFinalizeReReviewsOnHeadModified pins #1142 through the production
+// sequence (RunEnded -> finalize -> tryMergeStandingIntent, inflight claim
+// still held): when PUT .../merge fails with "Head branch was modified",
+// the standing intent survives, exactly one comment is posted, and the
+// auto-review re-dispatch is NOT dedup-dropped by the claim finalize only
+// releases on return. a failing metaStatus covers the pullMeta failure branch.
+func TestFinalizeReReviewsOnHeadModified(t *testing.T) {
+	const newHeadSHA = "newhead2"
+	for _, tc := range []struct {
+		name       string
+		metaStatus int
+		wantSHA    string
+	}{
+		{"pull meta ok: comment names the new sha", http.StatusOK, newHeadSHA},
+		// 404 not 500: the GET transport retries 5xx, which would mask the failure.
+		{"pull meta fails: still re-reviews, comment has no sha", http.StatusNotFound, "the new head"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			posted := make(chan string, 8)
+			var metaCalls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/installation"):
+					fmt.Fprint(w, `{"id":5}`)
+				case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+					fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+				case strings.HasSuffix(r.URL.Path, "/app"):
+					fmt.Fprint(w, `{"slug":"quack"}`)
+				case strings.HasSuffix(r.URL.Path, "/reviews"):
+					fmt.Fprint(w, `[{"state":"APPROVED","user":{"login":"quack[bot]"}}]`)
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+					fmt.Fprint(w, `[]`)
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+					body, _ := io.ReadAll(r.Body)
+					w.WriteHeader(http.StatusCreated)
+					fmt.Fprint(w, `{}`)
+					posted <- string(body)
+				case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/merge"):
+					w.WriteHeader(http.StatusConflict)
+					fmt.Fprint(w, `{"message":"Head branch was modified. Review and try the merge again."}`)
+				case strings.HasSuffix(r.URL.Path, "/files"):
+					fmt.Fprint(w, `[]`)
+				case strings.HasSuffix(r.URL.Path, "/commits"):
+					fmt.Fprint(w, `[]`)
+				case strings.Contains(r.URL.Path, "/check-runs"):
+					fmt.Fprint(w, `{"check_runs":[]}`)
+				case strings.Contains(r.URL.Path, "/pulls/"):
+					// Only the FIRST pull lookup is reReviewMovedHead's; the
+					// re-dispatch's own snapshot fetch must see a healthy PR or
+					// the label-trigger path aborts "not running blind".
+					if metaCalls.Add(1) == 1 {
+						w.WriteHeader(tc.metaStatus)
+					}
+					fmt.Fprintf(w, `{"title":"Test PR","body":"","state":"open","head":{"ref":"feature-branch","sha":%q},"base":{"ref":"main"}}`, newHeadSHA)
+				default:
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+			}))
+			defer srv.Close()
 
-	e, fh := newTestExtension(t, srv.URL, []string{"merge"})
-	owner, repo, number := "acme", "widgets", 7
-	sessionID := fmt.Sprintf("github-%s-%s-%d", owner, repo, number)
-	chatID := globalChatID(sessionID)
+			e, fh := newTestExtension(t, srv.URL, []string{"merge"})
+			sessionID := "github-acme-widgets-7"
+			chatID := globalChatID(sessionID)
+			pr := &pendingRun{
+				sessionID: sessionID, owner: "acme", repo: "widgets", number: 7, login: autoReviewUser, isPR: true,
+				gh:            githubContext{snap: Snapshot{IsPR: true, HeadSHA: "oldhead1", BaseRef: "main"}},
+				dispatched:    sdk.DispatchRequest{Run: sdk.RunConfig{Setup: &sdk.Setup{Repo: "https://github.com/acme/widgets.git"}}},
+				defaultBranch: "main", installationID: 5,
+			}
+			e.pending.Store(chatID, pr)
+			claimInflightFor(t, e, chatID, sessionID) // the state finalize always runs in
+			if err := e.store.SetMergeIntent(context.Background(), chatID, "alice"); err != nil {
+				t.Fatalf("SetMergeIntent: %v", err)
+			}
+			recordDelivery(chatID, deliveryOutcome{reviewDelivered: true})
 
-	if err := e.store.SetMergeIntent(context.Background(), chatID, "alice"); err != nil {
-		t.Fatalf("SetMergeIntent: %v", err)
+			e.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true})
+
+			intent, err := e.store.GetMergeIntent(context.Background(), chatID)
+			if err != nil {
+				t.Fatalf("GetMergeIntent: %v", err)
+			}
+			if intent == nil {
+				t.Fatal("standing intent was cleared; #1142 requires it survive a head-modified merge failure")
+			}
+
+			req := fh.waitForDispatch(t, 2*time.Second)
+			if req.Chat.LocalID != sessionID {
+				t.Errorf("re-review dispatched for session %q, want %q", req.Chat.LocalID, sessionID)
+			}
+			// The task string is compiled into the envelope's <deliverable>;
+			// every review variant of reviewDeliverableText opens "a review".
+			if !strings.Contains(req.Ask.Message, "<deliverable>a review") {
+				t.Errorf("re-review envelope is not the auto-review deliverable:\n%s", req.Ask.Message)
+			}
+			if req.Run.Setup == nil || req.Run.Setup.Repo != "https://github.com/acme/widgets.git" {
+				t.Errorf("re-review dispatch missing the repo clone URL: %+v", req.Run.Setup)
+			}
+			if len(fh.calls()) != 1 {
+				t.Errorf("dispatch calls = %d, want exactly 1", len(fh.calls()))
+			}
+
+			select {
+			case body := <-posted:
+				if !strings.Contains(body, "head moved; re-reviewing "+tc.wantSHA) {
+					t.Errorf("comment body = %q, want it to say re-reviewing %q", body, tc.wantSHA)
+				}
+				if tc.metaStatus != http.StatusOK && strings.Contains(body, newHeadSHA) {
+					t.Errorf("comment body = %q carries a sha the failed lookup could not have produced", body)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("no comment posted")
+			}
+			select {
+			case body := <-posted:
+				t.Fatalf("a second comment was posted: %q; want exactly one", body)
+			case <-time.After(100 * time.Millisecond):
+			}
+		})
 	}
+}
 
-	e.tryMergeStandingIntent(context.Background(), owner, repo, number, chatID, "oldhead1", "https://github.com/acme/widgets.git")
-
-	// Standing intent must survive this specific failure.
-	intent, err := e.store.GetMergeIntent(context.Background(), chatID)
-	if err != nil {
-		t.Fatalf("GetMergeIntent: %v", err)
-	}
-	if intent == nil {
-		t.Fatal("standing intent was cleared; #1142 requires it survive a head-modified merge failure")
-	}
-
-	req := fh.waitForDispatch(t, 2*time.Second)
-	if req.Chat.LocalID != sessionID {
-		t.Errorf("re-review dispatched for session %q, want %q", req.Chat.LocalID, sessionID)
-	}
-	if req.Run.Setup == nil || req.Run.Setup.Repo != "https://github.com/acme/widgets.git" {
-		t.Errorf("re-review dispatch missing the repo clone URL: %+v", req.Run.Setup)
-	}
-
-	select {
-	case body := <-posted:
-		if !strings.Contains(body, "head moved; re-reviewing "+newHeadSHA) {
-			t.Errorf("comment body = %q, want it to name the new head %q", body, newHeadSHA)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("no comment posted")
-	}
-
-	select {
-	case body := <-posted:
-		t.Fatalf("a second comment was posted: %q; want exactly one", body)
-	case <-time.After(100 * time.Millisecond):
+// TestReReviewPayloadMatchesAutoReviewPayload pins that the two synthetic
+// builders produce the same shape for the same PR, so a re-review is the
+// label-trigger run and not a subtly different one.
+func TestReReviewPayloadMatchesAutoReviewPayload(t *testing.T) {
+	var p pullRequestPayload
+	p.Action = "labeled"
+	p.Number = 7
+	p.PullRequest.Title = "Test PR"
+	p.Repository.Name, p.Repository.Owner.Login = "widgets", "acme"
+	p.Repository.CloneURL, p.Repository.DefaultBranch = "https://github.com/acme/widgets.git", "main"
+	p.Installation.ID = 5
+	want := autoReviewPayload(p, []byte(`{}`))
+	got := reReviewPayload("acme", "widgets", 7, "Test PR", "https://github.com/acme/widgets.git", "main", 5)
+	want.eventName, got.eventName = "", ""
+	if fmt.Sprintf("%+v", got) != fmt.Sprintf("%+v", want) {
+		t.Errorf("reReviewPayload = %+v\nwant %+v", got, want)
 	}
 }
 
