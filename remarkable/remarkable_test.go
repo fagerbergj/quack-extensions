@@ -87,9 +87,6 @@ func TestExtensionImplementsInterfaces(t *testing.T) {
 	if ui := ext.UI(); ui.Title == "" || ui.Href != documentsPath {
 		t.Errorf("UI() = %+v, want the documents page as the nav entry", ui)
 	}
-	if _, ok := extVal.(sdk.Stopper); ok {
-		t.Error("extension implements Stopper, but there is nothing to stop")
-	}
 }
 
 func TestStartFailsLoudOnUnreachableCloud(t *testing.T) {
@@ -97,7 +94,7 @@ func TestStartFailsLoudOnUnreachableCloud(t *testing.T) {
 	fc.Close()
 	fh := &fakeDispatchHost{}
 	host := testHost(t, fh)
-	e := &extension{host: host, client: newRMClient(fc.Server.URL, "user@example.com", "pw", nil), statePath: statePath(host.DataDir)}
+	e := &extension{host: host, client: newRMClient(fc.Server.URL, "user@example.com", "pw"), statePath: statePath(host.DataDir)}
 
 	err := e.Start(context.Background())
 	if err == nil {
@@ -121,7 +118,7 @@ func TestStartClearsStaleInFlight(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 
-	e := &extension{host: host, client: newRMClient(fc.Server.URL, fc.email, fc.password, nil), statePath: path}
+	e := &extension{host: host, client: newRMClient(fc.Server.URL, fc.email, fc.password), statePath: path}
 	if err := e.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

@@ -19,21 +19,13 @@ import (
 )
 
 // Bounded, conservative defaults: a dead upstream gives up in ~1s of total
-// backoff, not minutes. Override per client with WithBaseDelay/WithMaxDelay.
+// backoff, not minutes. Tests shrink baseDelay/maxDelay via NewTransport's
+// params; production always passes zero to take these.
 const (
 	DefaultMaxAttempts = uint(4)
 	DefaultBaseDelay   = 200 * time.Millisecond
 	DefaultMaxDelay    = 5 * time.Second
 )
-
-// Option configures a resilient Transport.
-type Option func(*transport)
-
-// WithBaseDelay sets the initial exponential-backoff interval.
-func WithBaseDelay(d time.Duration) Option { return func(t *transport) { t.baseDelay = d } }
-
-// WithMaxDelay caps the exponential-backoff interval.
-func WithMaxDelay(d time.Duration) Option { return func(t *transport) { t.maxDelay = d } }
 
 type transport struct {
 	next        http.RoundTripper
@@ -51,21 +43,25 @@ type transport struct {
 //     mid-flight timeout or a 5xx response, since either could mean the
 //     server already processed it.
 //
-// Retry-After is honoured when present. Attempts are bounded.
-func NewTransport(next http.RoundTripper, opts ...Option) http.RoundTripper {
+// Retry-After is honoured when present. Attempts are bounded. Pass 0 for
+// baseDelay/maxDelay to take the Default* constants (only tests override
+// these, to avoid waiting out a real backoff).
+func NewTransport(next http.RoundTripper, baseDelay, maxDelay time.Duration) http.RoundTripper {
 	if next == nil {
 		next = http.DefaultTransport
 	}
-	t := &transport{
+	if baseDelay == 0 {
+		baseDelay = DefaultBaseDelay
+	}
+	if maxDelay == 0 {
+		maxDelay = DefaultMaxDelay
+	}
+	return &transport{
 		next:        next,
 		maxAttempts: DefaultMaxAttempts,
-		baseDelay:   DefaultBaseDelay,
-		maxDelay:    DefaultMaxDelay,
+		baseDelay:   baseDelay,
+		maxDelay:    maxDelay,
 	}
-	for _, opt := range opts {
-		opt(t)
-	}
-	return t
 }
 
 func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {

@@ -54,15 +54,12 @@ type rmClient struct {
 	token string
 }
 
-func newRMClient(baseURL, email, password string, httpClient *http.Client) *rmClient {
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
-	}
+func newRMClient(baseURL, email, password string) *rmClient {
 	return &rmClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		email:      email,
 		password:   password,
-		httpClient: httpClient,
+		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 

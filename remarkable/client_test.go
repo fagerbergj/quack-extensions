@@ -16,7 +16,7 @@ func TestClientLoginAndListDocuments(t *testing.T) {
 		{ID: "doc-2", Name: "Scan", Folder: "Inbox/Scans", LastModified: mod, PDF: []byte("%PDF-2")},
 	})
 
-	c := newRMClient(fc.Server.URL, "user@example.com", "hunter2", nil)
+	c := newRMClient(fc.Server.URL, "user@example.com", "hunter2")
 	ctx := context.Background()
 
 	if err := c.login(ctx); err != nil {
@@ -50,7 +50,7 @@ func TestClientLoginRejectsBadCredentials(t *testing.T) {
 	fc := newFakeRMCloud("user@example.com", "hunter2")
 	defer fc.Close()
 
-	c := newRMClient(fc.Server.URL, "user@example.com", "wrong", nil)
+	c := newRMClient(fc.Server.URL, "user@example.com", "wrong")
 	if err := c.login(context.Background()); err == nil {
 		t.Fatal("expected an error for bad credentials, got nil")
 	}
@@ -61,7 +61,7 @@ func TestClientDownloadPDF(t *testing.T) {
 	defer fc.Close()
 	fc.setDocs([]fixtureDoc{{ID: "doc-1", Name: "Notes", PDF: []byte("%PDF-hello")}})
 
-	c := newRMClient(fc.Server.URL, "user@example.com", "hunter2", nil)
+	c := newRMClient(fc.Server.URL, "user@example.com", "hunter2")
 	ctx := context.Background()
 	if err := c.login(ctx); err != nil {
 		t.Fatalf("login: %v", err)
@@ -81,7 +81,7 @@ func TestClientReLoginsOnExpiredToken(t *testing.T) {
 	defer fc.Close()
 	fc.setDocs([]fixtureDoc{{ID: "doc-1", Name: "Notes"}})
 
-	c := newRMClient(fc.Server.URL, "user@example.com", "hunter2", nil)
+	c := newRMClient(fc.Server.URL, "user@example.com", "hunter2")
 	ctx := context.Background()
 
 	// simulate an expired/never-obtained token: authedRequest should

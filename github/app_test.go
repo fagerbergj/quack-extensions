@@ -216,7 +216,7 @@ func TestPullMetaDetectsFork(t *testing.T) {
 // method-aware policy as production (internal/httpx), just without the real
 // backoff delay.
 func fastResilientClient() *http.Client {
-	return &http.Client{Transport: httpx.NewTransport(nil, httpx.WithBaseDelay(time.Millisecond), httpx.WithMaxDelay(5*time.Millisecond))}
+	return &http.Client{Transport: httpx.NewTransport(nil, time.Millisecond, 5*time.Millisecond)}
 }
 
 // TestDoJSONRetriesGETOn503 pins #467's fix: a GET that hits a transient 503

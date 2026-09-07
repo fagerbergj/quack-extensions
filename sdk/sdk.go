@@ -43,7 +43,7 @@ type Extension interface {
 
 	// RegisterRoutes mounts the extension's inbound routes. authed sits
 	// behind quack's session auth (UI pages, extension APIs); public does
-	// not (webhooks, which own their own verification - see Starter/Stopper
+	// not (webhooks, which own their own verification - see Starter
 	// doc for the shared precedent). Either router may be left unused.
 	RegisterRoutes(authed chi.Router, public chi.Router)
 }
@@ -55,13 +55,6 @@ type Extension interface {
 // Factory.
 type Starter interface {
 	Start(ctx context.Context) error
-}
-
-// Stopper is the Starter counterpart. Stop must be idempotent: quack may
-// call it during shutdown paths that don't guarantee Start ran, or don't
-// guarantee Stop runs exactly once.
-type Stopper interface {
-	Stop(ctx context.Context) error
 }
 
 // UIDescriptor names an extension's entry point in the host's navigation.
@@ -406,7 +399,7 @@ type DeliveryAuthority struct {
 // Deliverer is an optional interface an extension implements to receive
 // staged delivery items quack has already gated and pushed. Detected via
 // type assertion on the registered Extension, the same pattern as
-// Starter/Stopper.
+// Starter.
 type Deliverer interface {
 	Deliver(ctx context.Context, dc DeliveryContext) ([]DeliveryItemOutcome, error)
 }

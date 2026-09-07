@@ -60,7 +60,7 @@ func newTestExtension(t *testing.T) (*extension, *fakeRMCloud, *fakeDispatchHost
 			Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 			DataDir:  dir,
 		},
-		client:    newRMClient(fc.Server.URL, fc.email, fc.password, nil),
+		client:    newRMClient(fc.Server.URL, fc.email, fc.password),
 		statePath: statePath(dir),
 	}
 	st, err := loadState(e.statePath)
