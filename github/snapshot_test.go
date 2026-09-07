@@ -82,8 +82,7 @@ func TestGitPatchIDStableAcrossRebase(t *testing.T) {
 	// Simulate "rebased onto a newer base": amend committer date/env so the
 	// SHA changes while the diff content is identical (a real `git rebase`
 	// does the same thing to every replayed commit).
-	os.Setenv("GIT_COMMITTER_DATE", "2030-01-01T00:00:00")
-	defer os.Unsetenv("GIT_COMMITTER_DATE")
+	t.Setenv("GIT_COMMITTER_DATE", "2030-01-01T00:00:00")
 	runGitSnapshotTest(t, dir, "commit", "--amend", "--quiet", "--no-edit")
 	sha1Rebased := runGitSnapshotTest(t, dir, "rev-parse", "HEAD")
 	if sha1Rebased == sha1 {
