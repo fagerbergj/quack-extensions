@@ -110,8 +110,8 @@ func TestUIDescriptor(t *testing.T) {
 	if ui.Href != "/usage/" {
 		t.Errorf("Href = %q, want /usage/", ui.Href)
 	}
-	if ui.Icon != "📊" {
-		t.Errorf("Icon = %q, want 📊", ui.Icon)
+	if ui.Icon != "monitoring" {
+		t.Errorf("Icon = %q, want monitoring", ui.Icon)
 	}
 }
 
