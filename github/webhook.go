@@ -1102,10 +1102,10 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 	// entirely (no fetches) when Host has no artifact capability wired.
 	var manifest []artifactEntry
 	if e.host.WriteArtifact != nil {
-		manifest = e.writeInputArtifacts(ctx, chatID, ContextRequest{
+		manifest = e.writeInputArtifacts(ctx, chatID, login, ContextRequest{
 			Owner: owner, Repo: repo, Number: number, IsPR: isPR, CheckSHA: p.checkSHA,
 		})
-		if entry := writeArtifact(e.host, chatID, "event", "application/json", p.rawEvent, eventNote(p)); entry != nil {
+		if entry := writeArtifact(e.host, chatID, login, "event", "application/json", p.rawEvent, eventNote(p)); entry != nil {
 			manifest = append(manifest, *entry)
 		}
 		sort.Slice(manifest, func(i, j int) bool { return manifest[i].Name < manifest[j].Name })
