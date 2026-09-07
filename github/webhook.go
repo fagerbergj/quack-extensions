@@ -777,6 +777,17 @@ func (e *Extension) tryMergeStandingIntent(ctx context.Context, pr *pendingRun, 
 			slog.Error("github: merge-intent comment failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", err)
 		}
 	}
+	if headSHA == "" {
+		// A resume whose re-fetch failed (#65): an empty sha makes mergePR
+		// omit the pin and merge the current tip, bypassing #1142's guard.
+		m, merr := e.app.pullMeta(ctx, owner, repo, number)
+		if merr != nil {
+			slog.Warn("github: standing-intent merge cannot pin the head; not merging",
+				"component", "github", "repo", owner+"/"+repo, "pr", number, "err", merr)
+			return nil
+		}
+		headSHA = m.HeadSHA
+	}
 	if err := e.app.mergePR(ctx, owner, repo, number, headSHA); err != nil {
 		if isHeadBranchModified(err) {
 			// #1142: the tip moved under the approved review. The standing
@@ -1213,6 +1224,12 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 		slog.Error("github: dispatch failed", "component", "github", "repo", owner+"/"+repo, "issue", number, "err", err)
 		e.pending.Delete(chatID)
 		clearInflight()
+		// SetPendingRun above wrote a durable row for this dispatch; keep the
+		// in-memory and durable records in lockstep on every exit (finalize's
+		// two defers already do this on the success paths).
+		if derr := e.store.DeletePendingRun(ctx, chatID); derr != nil {
+			slog.Warn("github: DeletePendingRun after failed dispatch", "component", "github", "repo", owner+"/"+repo, "issue", number, "err", derr)
+		}
 	}
 }
 

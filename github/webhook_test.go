@@ -4071,6 +4071,68 @@ func TestRunEndedAfterRestartStillFinalizesAndMerges(t *testing.T) {
 	}
 }
 
+// TestRunEndedWithNoPendingDispatchDropsOutcome pins the restart fix's other
+// branch: a RunEnded for a chat with neither an in-memory entry nor a durable
+// row must log-and-drop, not merge or panic (#66 review nit).
+func TestRunEndedWithNoPendingDispatchDropsOutcome(t *testing.T) {
+	st, err := openStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	chatID := globalChatID("github-acme-widgets-7")
+
+	ext, _ := newTestExtensionWithStore(t, "http://127.0.0.1:0", []string{"mention"}, st)
+	// No dispatch happened: e.pending is empty and no row exists, so
+	// RunEnded must take the original dropping-the-outcome branch.
+	ext.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "done"})
+
+	if row, err := st.GetPendingRun(context.Background(), chatID); err != nil || row != nil {
+		t.Errorf("row = %+v, %v; want none", row, err)
+	}
+}
+
+// TestDispatchFailureDeletesPendingRunRow pins the durable-twin invariant on
+// its one asymmetric exit: a Dispatch failure must remove the row
+// SetPendingRun just wrote, exactly like finalize's two success-path defers.
+func TestDispatchFailureDeletesPendingRunRow(t *testing.T) {
+	st, err := openStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	approved := `[{"state":"APPROVED","user":{"login":"quack[bot]"}}]`
+	posted := make(chan string, 2)
+	srv := mergeStub(t, approved, "", posted, make(chan struct{}, 1))
+	defer srv.Close()
+
+	ext, fh := newTestExtensionWithStore(t, srv.URL, []string{"mention"}, st)
+	fh.dispatchErr = errors.New("dispatch failed")
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("issue_comment", pullCommentBody("@quack review this")))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d", rec.Code)
+	}
+
+	chatID := globalChatID("github-acme-widgets-7")
+	deadline := time.After(2 * time.Second)
+	for {
+		row, err := st.GetPendingRun(context.Background(), chatID)
+		if err != nil {
+			t.Fatalf("GetPendingRun: %v", err)
+		}
+		if row == nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("pending run row survived a failed dispatch, want it deleted")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
 // TestHandleWebhookMergeLabelRespectsAllowlist pins the merge-label
 // enforcement point: a sender outside allowed_users can never authorize a
 // merge, even with an APPROVED review already on the PR.
