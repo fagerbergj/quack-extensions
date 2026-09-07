@@ -4007,6 +4007,70 @@ func TestHandleWebhookMergeLabelRestartSurvival(t *testing.T) {
 	}
 }
 
+// TestRunEndedAfterRestartStillFinalizesAndMerges pins #65: a run's
+// pendingRun lives only in e.pending, an in-memory sync.Map, so a quack
+// restart between dispatch and RunEnded used to leave the outcome (and
+// tryMergeStandingIntent) never run. This dispatches on one Extension, then
+// delivers RunEnded to a SECOND Extension instance over the SAME store - a
+// process restart, not just a fresh in-memory map - and expects the merge to
+// still happen off the durable pendingRun row.
+func TestRunEndedAfterRestartStillFinalizesAndMerges(t *testing.T) {
+	st, err := openStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	chatID := globalChatID("github-acme-widgets-7")
+	if err := st.SetMergeIntent(context.Background(), chatID, "alice"); err != nil {
+		t.Fatalf("seed merge intent: %v", err)
+	}
+
+	posted := make(chan string, 4)
+	merged := make(chan struct{}, 1)
+	approved := `[{"state":"APPROVED","user":{"login":"quack[bot]"},"submitted_at":"2026-01-01T00:00:00Z"}]`
+	srv := mergeStub(t, approved, "", posted, merged)
+	defer srv.Close()
+
+	ext, fh := newTestExtensionWithStore(t, srv.URL, []string{"mention"}, st)
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("issue_comment", pullCommentBody("@quack review this")))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	fh.waitForDispatch(t, 2*time.Second)
+
+	if row, err := st.GetPendingRun(context.Background(), chatID); err != nil || row == nil {
+		t.Fatalf("GetPendingRun = %+v, %v; want the dispatch to have persisted a row", row, err)
+	}
+
+	// Simulate a quack restart: a brand new Extension, with an empty
+	// e.pending, over the same durable store.
+	restarted, _ := newTestExtensionWithStore(t, srv.URL, []string{"mention"}, st)
+	recordDelivery(chatID, deliveryOutcome{reviewDelivered: true})
+	restarted.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "reviewed"})
+
+	select {
+	case <-merged:
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunEnded on the restarted Extension did not merge on approval")
+	}
+	select {
+	case c := <-posted:
+		if !strings.Contains(c, "Merged") || !strings.Contains(c, "@alice") {
+			t.Errorf("comment = %q; want it to name the original authorizer", c)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no merge comment posted")
+	}
+
+	if intent, err := st.GetMergeIntent(context.Background(), chatID); err != nil || intent != nil {
+		t.Errorf("intent = %+v, %v; want it cleared after the merge", intent, err)
+	}
+	if row, err := st.GetPendingRun(context.Background(), chatID); err != nil || row != nil {
+		t.Errorf("pending run row = %+v, %v; want it deleted by finalize", row, err)
+	}
+}
+
 // TestHandleWebhookMergeLabelRespectsAllowlist pins the merge-label
 // enforcement point: a sender outside allowed_users can never authorize a
 // merge, even with an APPROVED review already on the PR.
