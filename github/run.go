@@ -63,15 +63,22 @@ type pendingRun struct {
 // the old dispatch()'s tail did once a chat's chain of dispatches is done.
 func (e *Extension) RunEnded(chatID string, outcome sdk.RunOutcome) {
 	v, ok := e.pending.Load(chatID)
-	if !ok {
-		// Not one of ours, or already finalized. Log it: this is where a run's
-		// whole outcome is dropped, and doing it silently is what made #29 take
-		// an hour to diagnose.
-		e.host.Log.Warn("github: RunEnded for a chat with no pending dispatch; dropping the outcome",
-			"chat", chatID, "status", outcome.Status)
-		return
+	var pr *pendingRun
+	if ok {
+		pr = v.(*pendingRun)
+	} else {
+		// e.pending is in-memory only; a restart between dispatch and this
+		// run's outcome empties it (#65). Rebuild from the durable row dispatch
+		// wrote instead of dropping the outcome — this is the normal path for
+		// any run resumed at boot, not the exceptional one.
+		rebuilt, rerr := e.rebuildPendingRun(chatID)
+		if rerr != nil {
+			e.host.Log.Warn("github: RunEnded for a chat with no pending dispatch; dropping the outcome",
+				"chat", chatID, "status", outcome.Status, "err", rerr)
+			return
+		}
+		pr = rebuilt
 	}
-	pr := v.(*pendingRun)
 
 	if !pr.nudged && !outcome.PlanRan && pr.isLabelTrigger && outcome.Status != sdk.RunCancelled {
 		pr.nudged = true
@@ -104,6 +111,35 @@ func (e *Extension) RunEnded(chatID string, outcome sdk.RunOutcome) {
 	e.finish(chatID, pr, outcome)
 }
 
+// rebuildPendingRun reconstructs a pendingRun from the durable row (#65) when
+// e.pending has nothing for this chat — a restart between dispatch and
+// RunEnded. gh is re-fetched fresh rather than persisted: it's the same
+// snapshot dispatch() itself loads, and serializing that whole struct isn't
+// worth it for a restart-only path.
+// ponytail: nudged is forced true, so a rebuilt run skips the no-plan nudge
+// retry (it needs pr.dispatched, which isn't persisted) — add nudge support
+// here if a resumed run without a plan turns out to matter in practice.
+func (e *Extension) rebuildPendingRun(chatID string) (*pendingRun, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), reactionTimeout)
+	defer cancel()
+	row, err := e.store.GetPendingRun(ctx, chatID)
+	if err != nil {
+		return nil, fmt.Errorf("GetPendingRun: %w", err)
+	}
+	if row == nil {
+		return nil, fmt.Errorf("no persisted pending run")
+	}
+	gh := e.loadGithubContext(ctx, chatID, row.Owner, row.Repo, row.Number, row.IsPR, row.CommentID, false)
+	return &pendingRun{
+		sessionID: row.SessionID, claimedAt: time.Now(), owner: row.Owner, repo: row.Repo, number: row.Number,
+		isPR: row.IsPR, login: row.Login, gh: gh, isPlan: row.IsPlan, isLabelTrigger: row.IsLabelTrigger,
+		nudged:         true,
+		defaultBranch:  row.DefaultBranch,
+		installationID: row.InstallationID,
+		dispatched:     sdk.DispatchRequest{Run: sdk.RunConfig{Setup: &sdk.Setup{Repo: row.CloneURL}}},
+	}, nil
+}
+
 // finish runs finalize, then dispatches any re-review it asked for. The
 // dispatch must come after finalize returns: its deferred inflight release
 // and pending delete would otherwise dedup-drop the new run or delete its
@@ -121,6 +157,11 @@ func (e *Extension) finish(chatID string, pr *pendingRun, outcome sdk.RunOutcome
 func (e *Extension) finalize(chatID string, pr *pendingRun, outcome sdk.RunOutcome) {
 	defer e.inflight.CompareAndDelete(pr.sessionID, pr.claimedAt)
 	defer e.pending.Delete(chatID)
+	defer func() {
+		if err := e.store.DeletePendingRun(context.Background(), chatID); err != nil {
+			e.host.Log.Warn("github: DeletePendingRun failed; a future restart may redundantly rebuild this run", "chat", chatID, "err", err)
+		}
+	}()
 	owner, repo, number := pr.owner, pr.repo, pr.number
 
 	// Only post a summary when nothing was delivered — commitDelivery already

@@ -53,6 +53,22 @@ CREATE TABLE IF NOT EXISTS github_merge_intent (
 	created_at TIMESTAMP NOT NULL,
 	updated_at TIMESTAMP NOT NULL
 );
+CREATE TABLE IF NOT EXISTS github_pending_run (
+	chat_id TEXT PRIMARY KEY,
+	session_id TEXT NOT NULL,
+	owner TEXT NOT NULL,
+	repo TEXT NOT NULL,
+	number INTEGER NOT NULL,
+	is_pr INTEGER NOT NULL,
+	login TEXT NOT NULL,
+	is_plan INTEGER NOT NULL,
+	is_label_trigger INTEGER NOT NULL,
+	comment_id INTEGER NOT NULL,
+	default_branch TEXT NOT NULL,
+	installation_id INTEGER NOT NULL,
+	clone_url TEXT NOT NULL,
+	created_at TIMESTAMP NOT NULL
+);
 `
 
 // openStore opens (creating and migrating if needed) the extension's
@@ -199,4 +215,65 @@ func (s *ghStore) SetMergeIntent(ctx context.Context, chatID, requestedBy string
 func (s *ghStore) DeleteMergeIntent(ctx context.Context, chatID string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM github_merge_intent WHERE chat_id = ?`, chatID)
 	return err
+}
+
+// PendingRunRow is the durable subset of pendingRun (#65): dispatch's
+// in-memory e.pending sync.Map does not survive a quack restart, so a run
+// resumed at boot has nothing for RunEnded to correlate against and its
+// outcome (including a standing-intent merge) is silently dropped. This row
+// lets RunEnded rebuild what finalize/tryMergeStandingIntent need.
+type PendingRunRow struct {
+	ChatID, SessionID, Owner, Repo, Login string
+	Number                                int
+	IsPR, IsPlan, IsLabelTrigger          bool
+	CommentID, InstallationID             int64
+	DefaultBranch, CloneURL               string
+}
+
+// SetPendingRun persists a dispatch's coordinates before Dispatch is called,
+// so RunEnded can rebuild them if this process restarts before it fires.
+func (s *ghStore) SetPendingRun(ctx context.Context, r PendingRunRow) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO github_pending_run (chat_id, session_id, owner, repo, number, is_pr, login, is_plan, is_label_trigger, comment_id, default_branch, installation_id, clone_url, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(chat_id) DO UPDATE SET session_id = excluded.session_id, owner = excluded.owner, repo = excluded.repo,
+			number = excluded.number, is_pr = excluded.is_pr, login = excluded.login, is_plan = excluded.is_plan,
+			is_label_trigger = excluded.is_label_trigger, comment_id = excluded.comment_id,
+			default_branch = excluded.default_branch, installation_id = excluded.installation_id,
+			clone_url = excluded.clone_url, created_at = excluded.created_at`,
+		r.ChatID, r.SessionID, r.Owner, r.Repo, r.Number, boolToInt(r.IsPR), r.Login, boolToInt(r.IsPlan),
+		boolToInt(r.IsLabelTrigger), r.CommentID, r.DefaultBranch, r.InstallationID, r.CloneURL, time.Now().UTC())
+	return err
+}
+
+// GetPendingRun returns the persisted dispatch coordinates, or (nil, nil) when none exist.
+func (s *ghStore) GetPendingRun(ctx context.Context, chatID string) (*PendingRunRow, error) {
+	var r PendingRunRow
+	var isPR, isPlan, isLabelTrigger int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT chat_id, session_id, owner, repo, number, is_pr, login, is_plan, is_label_trigger, comment_id, default_branch, installation_id, clone_url
+		FROM github_pending_run WHERE chat_id = ?`, chatID).
+		Scan(&r.ChatID, &r.SessionID, &r.Owner, &r.Repo, &r.Number, &isPR, &r.Login, &isPlan, &isLabelTrigger,
+			&r.CommentID, &r.DefaultBranch, &r.InstallationID, &r.CloneURL)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	r.IsPR, r.IsPlan, r.IsLabelTrigger = isPR != 0, isPlan != 0, isLabelTrigger != 0
+	return &r, nil
+}
+
+// DeletePendingRun clears a dispatch's persisted coordinates (consumed by finalize).
+func (s *ghStore) DeletePendingRun(ctx context.Context, chatID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM github_pending_run WHERE chat_id = ?`, chatID)
+	return err
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

@@ -1196,6 +1196,17 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 		isPR: isPR, login: login, gh: gh, isPlan: isPlan, isLabelTrigger: p.isLabelTrigger,
 		dispatched: req, defaultBranch: p.Repository.DefaultBranch, installationID: p.Installation.ID,
 	})
+	// Durable twin of the above (#65): e.pending is in-memory only, so a run
+	// resumed at boot after a restart has nothing for RunEnded to find it by.
+	if err := e.store.SetPendingRun(ctx, PendingRunRow{
+		ChatID: chatID, SessionID: sessionID, Owner: owner, Repo: repo, Number: number,
+		IsPR: isPR, Login: login, IsPlan: isPlan, IsLabelTrigger: p.isLabelTrigger,
+		CommentID: p.Comment.ID, DefaultBranch: p.Repository.DefaultBranch,
+		InstallationID: p.Installation.ID, CloneURL: p.Repository.CloneURL,
+	}); err != nil {
+		slog.Warn("github: SetPendingRun failed; a restart before this run ends will drop its outcome",
+			"component", "github", "repo", owner+"/"+repo, "issue", number, "err", err)
+	}
 
 	slog.Info("github run dispatched", "component", "github", "repo", owner+"/"+repo, "issue", number)
 	if err := e.host.Dispatch(ctx, req); err != nil {
