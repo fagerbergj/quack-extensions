@@ -48,11 +48,12 @@ func (e artifactEntry) ID() string { return inputArtifactKind + ":" + e.Name }
 // writeArtifact stores data under name via host.WriteArtifact and returns
 // the resulting manifest entry, nil when the capability is unavailable or
 // the write fails (fail-soft, matching the deleted mechanism's convention).
-func writeArtifact(host sdk.Host, chatID, name, mime string, data []byte, note string) *artifactEntry {
+// user must be the same value passed as this dispatch's ChatRef.User (#1225).
+func writeArtifact(host sdk.Host, chatID, user, name, mime string, data []byte, note string) *artifactEntry {
 	if host.WriteArtifact == nil {
 		return nil
 	}
-	rev, changed, err := host.WriteArtifact(chatID, name, mime, data)
+	rev, changed, err := host.WriteArtifact(chatID, user, name, mime, data)
 	if err != nil {
 		slog.Warn("github: write input artifact failed; skipping", "component", "github", "artifact", name, "err", err)
 		return nil
@@ -72,7 +73,7 @@ type ContextRequest struct {
 // stores each as a named input artifact, returning a manifest sorted the
 // same way WriteContextDir's file listing was: fixed endpoint order, then
 // per-check annotations. Best-effort per artifact.
-func (e *Extension) writeInputArtifacts(ctx context.Context, chatID string, req ContextRequest) []artifactEntry {
+func (e *Extension) writeInputArtifacts(ctx context.Context, chatID, user string, req ContextRequest) []artifactEntry {
 	tok, err := e.app.tokenForRepo(ctx, req.Owner, req.Repo)
 	if err != nil {
 		slog.Warn("github: input artifacts: could not authenticate; nothing written", "component", "github",
@@ -88,12 +89,12 @@ func (e *Extension) writeInputArtifacts(ctx context.Context, chatID string, req 
 		}
 	}
 
-	add(e.fetchAndWriteObject(ctx, chatID, "issue", authz, fmt.Sprintf("/repos/%s/%s/issues/%d", req.Owner, req.Repo, req.Number)))
-	add(e.fetchAndWriteList(ctx, chatID, "comments", authz,
+	add(e.fetchAndWriteObject(ctx, chatID, user, "issue", authz, fmt.Sprintf("/repos/%s/%s/issues/%d", req.Owner, req.Repo, req.Number)))
+	add(e.fetchAndWriteList(ctx, chatID, user, "comments", authz,
 		fmt.Sprintf("/repos/%s/%s/issues/%d/comments?per_page=100", req.Owner, req.Repo, req.Number), 0, ""))
 
 	if !req.IsPR {
-		add(e.fetchAndWriteList(ctx, chatID, "timeline", authz,
+		add(e.fetchAndWriteList(ctx, chatID, user, "timeline", authz,
 			fmt.Sprintf("/repos/%s/%s/issues/%d/timeline?per_page=100", req.Owner, req.Repo, req.Number), 0, ""))
 		return out
 	}
@@ -102,34 +103,34 @@ func (e *Extension) writeInputArtifacts(ctx context.Context, chatID string, req 
 	if err := e.app.doJSON(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/pulls/%d", req.Owner, req.Repo, req.Number), authz, nil, &pullRaw); err != nil {
 		slog.Warn("github: input artifacts: fetch failed; skipping", "component", "github", "artifact", "pull", "err", err)
 	} else {
-		add(writeArtifact(e.host, chatID, "pull", "application/json", pullRaw, "1 object"))
+		add(writeArtifact(e.host, chatID, user, "pull", "application/json", pullRaw, "1 object"))
 	}
-	add(e.fetchAndWriteList(ctx, chatID, "files", authz,
+	add(e.fetchAndWriteList(ctx, chatID, user, "files", authz,
 		fmt.Sprintf("/repos/%s/%s/pulls/%d/files?per_page=100", req.Owner, req.Repo, req.Number),
 		maxPRFiles, fmt.Sprintf("GitHub caps GET /pulls/%d/files at %d files; this PR's file list was cut off there.", req.Number, maxPRFiles)))
-	add(e.fetchAndWriteList(ctx, chatID, "commits", authz,
+	add(e.fetchAndWriteList(ctx, chatID, user, "commits", authz,
 		fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=100", req.Owner, req.Repo, req.Number),
 		maxPRCommits, fmt.Sprintf("GitHub caps GET /pulls/%d/commits at %d commits; this PR's commit list was cut off there.", req.Number, maxPRCommits)))
-	add(e.fetchAndWriteList(ctx, chatID, "reviews", authz,
+	add(e.fetchAndWriteList(ctx, chatID, user, "reviews", authz,
 		fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews?per_page=100", req.Owner, req.Repo, req.Number), 0, ""))
-	add(e.fetchAndWriteList(ctx, chatID, "review-comments", authz,
+	add(e.fetchAndWriteList(ctx, chatID, user, "review-comments", authz,
 		fmt.Sprintf("/repos/%s/%s/pulls/%d/comments?per_page=100", req.Owner, req.Repo, req.Number), 0, ""))
 
 	if req.CheckSHA != "" {
-		runs, entry := e.fetchAndWriteCheckRuns(ctx, chatID, authz, req.Owner, req.Repo, req.CheckSHA)
+		runs, entry := e.fetchAndWriteCheckRuns(ctx, chatID, user, authz, req.Owner, req.Repo, req.CheckSHA)
 		add(entry)
 		for _, r := range runs {
 			if !r.failed {
 				continue
 			}
-			add(e.fetchAndWriteList(ctx, chatID, "annotations-"+sanitizeCheckName(r.name), authz,
+			add(e.fetchAndWriteList(ctx, chatID, user, "annotations-"+sanitizeCheckName(r.name), authz,
 				fmt.Sprintf("/repos/%s/%s/check-runs/%d/annotations?per_page=100", req.Owner, req.Repo, r.id), 0, ""))
 		}
 	}
 
 	for _, n := range linkedIssueNumbers(pullRaw) {
-		add(e.fetchAndWriteObject(ctx, chatID, fmt.Sprintf("linked-issue-%d", n), authz, fmt.Sprintf("/repos/%s/%s/issues/%d", req.Owner, req.Repo, n)))
-		add(e.fetchAndWriteList(ctx, chatID, fmt.Sprintf("linked-issue-%d-comments", n), authz,
+		add(e.fetchAndWriteObject(ctx, chatID, user, fmt.Sprintf("linked-issue-%d", n), authz, fmt.Sprintf("/repos/%s/%s/issues/%d", req.Owner, req.Repo, n)))
+		add(e.fetchAndWriteList(ctx, chatID, user, fmt.Sprintf("linked-issue-%d-comments", n), authz,
 			fmt.Sprintf("/repos/%s/%s/issues/%d/comments?per_page=100", req.Owner, req.Repo, n), 0, ""))
 	}
 	return out
@@ -137,17 +138,17 @@ func (e *Extension) writeInputArtifacts(ctx context.Context, chatID string, req 
 
 // fetchAndWriteObject fetches one object endpoint and stores it verbatim as
 // a blob artifact. nil + WARN on failure (fail-soft).
-func (e *Extension) fetchAndWriteObject(ctx context.Context, chatID, name, authz, path string) *artifactEntry {
+func (e *Extension) fetchAndWriteObject(ctx context.Context, chatID, user, name, authz, path string) *artifactEntry {
 	var raw json.RawMessage
 	if err := e.app.doJSON(ctx, http.MethodGet, path, authz, nil, &raw); err != nil {
 		slog.Warn("github: input artifacts: fetch failed; skipping", "component", "github", "artifact", name, "err", err)
 		return nil
 	}
-	return writeArtifact(e.host, chatID, name, "application/json", raw, "1 object")
+	return writeArtifact(e.host, chatID, user, name, "application/json", raw, "1 object")
 }
 
 // fetchAndWriteList fetches a list endpoint to exhaustion and stores it as a blob artifact.
-func (e *Extension) fetchAndWriteList(ctx context.Context, chatID, name, authz, firstPath string, cap int, capNote string) *artifactEntry {
+func (e *Extension) fetchAndWriteList(ctx context.Context, chatID, user, name, authz, firstPath string, cap int, capNote string) *artifactEntry {
 	items, truncated, err := e.app.fetchAllPages(ctx, firstPath, authz, cap)
 	if err != nil {
 		slog.Warn("github: input artifacts: fetch failed; skipping", "component", "github", "artifact", name, "err", err)
@@ -167,11 +168,11 @@ func (e *Extension) fetchAndWriteList(ctx context.Context, chatID, name, authz, 
 		slog.Warn("github: input artifacts: marshal failed; skipping", "component", "github", "artifact", name, "err", err)
 		return nil
 	}
-	return writeArtifact(e.host, chatID, name, "application/json", b, note)
+	return writeArtifact(e.host, chatID, user, name, "application/json", b, note)
 }
 
 // fetchAndWriteCheckRuns fetches and stores the "check-runs" artifact (wrapped-array endpoint, can't reuse fetchAndWriteList).
-func (e *Extension) fetchAndWriteCheckRuns(ctx context.Context, chatID, authz, owner, repo, sha string) ([]checkRunSummary, *artifactEntry) {
+func (e *Extension) fetchAndWriteCheckRuns(ctx context.Context, chatID, user, authz, owner, repo, sha string) ([]checkRunSummary, *artifactEntry) {
 	items, err := e.app.fetchCheckRuns(ctx, authz, owner, repo, sha)
 	if err != nil {
 		slog.Warn("github: input artifacts: fetch failed; skipping", "component", "github", "artifact", "check-runs", "err", err)
@@ -204,7 +205,7 @@ func (e *Extension) fetchAndWriteCheckRuns(ctx context.Context, chatID, authz, o
 		return out, nil
 	}
 	note := fmt.Sprintf("%d checks, %d failed", len(items), failed)
-	return out, writeArtifact(e.host, chatID, "check-runs", "application/json", b, note)
+	return out, writeArtifact(e.host, chatID, user, "check-runs", "application/json", b, note)
 }
 
 type checkRunSummary struct {

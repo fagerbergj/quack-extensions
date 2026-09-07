@@ -170,14 +170,20 @@ type Host struct {
 	// ReadArtifact returns the latest bytes for a named input artifact in
 	// this chat, or ok=false when it does not exist yet (e.g. first
 	// dispatch - no baseline to diff against). nil = host predates this
-	// capability; callers treat that the same as "no baseline".
-	ReadArtifact func(chatID, name string) (data []byte, ok bool)
+	// capability; callers treat that the same as "no baseline". user is
+	// the same value the extension puts in ChatRef.User for this chat;
+	// quack keeps a chat's first user stable, so the host may substitute
+	// the stored user for an existing chat.
+	ReadArtifact func(chatID, user, name string) (data []byte, ok bool)
 
 	// WriteArtifact persists (or re-saves) a named input artifact for this
 	// chat and returns the resulting revision (1-based, increasing per
 	// name) and whether the bytes changed versus the prior revision.
-	// nil = capability unavailable.
-	WriteArtifact func(chatID, name, mimeType string, data []byte) (revision int64, changed bool, err error)
+	// nil = capability unavailable. user is the same value the extension
+	// puts in ChatRef.User for this chat; quack keeps a chat's first user
+	// stable, so the host may substitute the stored user for an existing
+	// chat.
+	WriteArtifact func(chatID, user, name, mimeType string, data []byte) (revision int64, changed bool, err error)
 
 	// ChatUser returns the ADK session identity a chat is running as -
 	// e.g. recovering the acting user when an extension re-engages a chat
