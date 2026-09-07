@@ -4491,7 +4491,7 @@ func TestHandleWebhookSynchronizeInvalidatesOnlyARunningPR(t *testing.T) {
 // sequence of /pulls/<n> responses - dispatch's snapshot fetch is the first
 // call, the head-ref refetch (when the snapshot came back blank) is the
 // second (#55).
-func stubGitHubPullSequence(t *testing.T, pulls ...string) *httptest.Server {
+func stubGitHubPullSequence(t *testing.T, comments chan string, pulls ...string) *httptest.Server {
 	t.Helper()
 	var n atomic.Int32
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4514,7 +4514,7 @@ func stubGitHubPullSequence(t *testing.T, pulls ...string) *httptest.Server {
 			body, _ := io.ReadAll(r.Body)
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprint(w, `{}`)
-			postedComments <- string(body)
+			comments <- string(body)
 		case strings.HasSuffix(r.URL.Path, "/comments"):
 			fmt.Fprint(w, `[]`)
 		case strings.Contains(r.URL.Path, "/pulls/"):
@@ -4545,8 +4545,6 @@ func prPayload(owner, repo string, number int, login, body string) issueCommentP
 const prMetaWithHead = `{"title":"Test PR","body":"A test PR.","state":"open","head":{"ref":"feature-branch","sha":"headsha1"},"base":{"ref":"main"}}`
 const prMetaNoHead = `{"title":"Test PR","body":"A test PR.","state":"open","head":{"ref":"","sha":""},"base":{"ref":"main"}}`
 
-var postedComments = make(chan string, 8)
-
 // TestDispatchPRHeadRef covers #55: dispatch() must never send a PR Setup
 // with a blank ExistingHeadRef.
 func TestDispatchPRHeadRef(t *testing.T) {
@@ -4556,7 +4554,7 @@ func TestDispatchPRHeadRef(t *testing.T) {
 	// without a head ref - the fix's own refetch.
 
 	t.Run("snapshot has ref: passthrough, no refetch", func(t *testing.T) {
-		srv := stubGitHubPullSequence(t, prMetaWithHead, prMetaWithHead)
+		srv := stubGitHubPullSequence(t, make(chan string, 8), prMetaWithHead, prMetaWithHead)
 		defer srv.Close()
 		e, fh := newTestExtension(t, srv.URL, nil)
 
@@ -4572,7 +4570,7 @@ func TestDispatchPRHeadRef(t *testing.T) {
 	})
 
 	t.Run("snapshot missing ref but API refetch succeeds", func(t *testing.T) {
-		srv := stubGitHubPullSequence(t, prMetaNoHead, prMetaNoHead, prMetaWithHead)
+		srv := stubGitHubPullSequence(t, make(chan string, 8), prMetaNoHead, prMetaNoHead, prMetaWithHead)
 		defer srv.Close()
 		e, fh := newTestExtension(t, srv.URL, nil)
 
@@ -4588,7 +4586,8 @@ func TestDispatchPRHeadRef(t *testing.T) {
 	})
 
 	t.Run("snapshot missing ref and API refetch fails: abort, no dispatch", func(t *testing.T) {
-		srv := stubGitHubPullSequence(t, prMetaNoHead, prMetaNoHead, "")
+		postedComments := make(chan string, 8)
+		srv := stubGitHubPullSequence(t, postedComments, prMetaNoHead, prMetaNoHead, "")
 		defer srv.Close()
 		e, fh := newTestExtension(t, srv.URL, nil)
 
