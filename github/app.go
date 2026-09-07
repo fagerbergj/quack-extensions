@@ -67,7 +67,7 @@ func NewApp(issuer, pemKey string) (*App, error) {
 		issuer:          issuer,
 		key:             key,
 		apiBase:         defaultAPIBase,
-		http:            &http.Client{Timeout: 20 * time.Second, Transport: httpx.NewTransport(nil)},
+		http:            &http.Client{Timeout: 20 * time.Second, Transport: httpx.NewTransport(nil, 0, 0)},
 		tokens:          map[int64]cachedToken{},
 		installs:        map[string]int64{},
 		noInstall:       map[string]struct{}{},

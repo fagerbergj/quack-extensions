@@ -60,7 +60,7 @@ func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
 
 	return &extension{
 		host:      host,
-		client:    newRMClient(cfg.BaseURL, cfg.Email, cfg.Password, nil),
+		client:    newRMClient(cfg.BaseURL, cfg.Email, cfg.Password),
 		statePath: statePath(host.DataDir),
 	}, nil
 }
