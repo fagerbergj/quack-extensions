@@ -51,19 +51,21 @@ func TestRegisteredReturnsCopyNotLiveMap(t *testing.T) {
 // interface, exercised only through the public API. ---
 
 type fakeExtension struct {
-	started  bool
-	runEnded []string
+	started, stopped bool
+	runEnded         []string
 }
 
 var (
 	_ sdk.Extension   = (*fakeExtension)(nil)
 	_ sdk.Starter     = (*fakeExtension)(nil)
+	_ sdk.Stopper     = (*fakeExtension)(nil)
 	_ sdk.RunObserver = (*fakeExtension)(nil)
 )
 
 func (f *fakeExtension) Tools() []tool.Tool                       { return nil }
 func (f *fakeExtension) RegisterRoutes(authed, public chi.Router) {}
 func (f *fakeExtension) Start(ctx context.Context) error          { f.started = true; return nil }
+func (f *fakeExtension) Stop(ctx context.Context) error           { f.stopped = true; return nil }
 func (f *fakeExtension) RunEnded(chatID string, outcome sdk.RunOutcome) {
 	f.runEnded = append(f.runEnded, chatID)
 }
@@ -82,13 +84,21 @@ func TestFakeExtensionSatisfiesOptionalInterfaces(t *testing.T) {
 		t.Fatal("fakeExtension does not satisfy sdk.Starter")
 	}
 
+	if s, ok := ext.(sdk.Stopper); ok {
+		if err := s.Stop(context.Background()); err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+	} else {
+		t.Fatal("fakeExtension does not satisfy sdk.Stopper")
+	}
+
 	if o, ok := ext.(sdk.RunObserver); ok {
 		o.RunEnded("chat-1", sdk.RunOutcome{Status: sdk.RunDone})
 	} else {
 		t.Fatal("fakeExtension does not satisfy sdk.RunObserver")
 	}
 
-	if !f.started || len(f.runEnded) != 1 || f.runEnded[0] != "chat-1" {
+	if !f.started || !f.stopped || len(f.runEnded) != 1 || f.runEnded[0] != "chat-1" {
 		t.Fatalf("unexpected fake state: %+v", f)
 	}
 }
