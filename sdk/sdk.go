@@ -71,8 +71,8 @@ type UIDescriptor struct {
 	Title string
 	Href  string
 
-	// Icon is an optional single emoji shown beside Title in the host's
-	// navigation; hosts fall back to a generic icon when empty.
+	// Icon is a Material Symbols name (preferred) or inline SVG; emoji fall
+	// back to the generic extension glyph.
 	Icon string
 }
 
