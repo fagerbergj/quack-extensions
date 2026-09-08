@@ -687,19 +687,30 @@ var formalReviewVerdicts = map[string]string{
 
 // latestQuackVerdict returns quack's most recent review verdict — reads both formal reviews and own-PR comment markers.
 func (e *Extension) latestQuackVerdict(ctx context.Context, owner, repo string, number int) (string, error) {
+	verdict, _, err := e.latestQuackVerdictCommit(ctx, owner, repo, number)
+	return verdict, err
+}
+
+// latestQuackVerdictCommit is latestQuackVerdict plus the commit_id the
+// winning verdict was submitted against (empty for a marker found in an
+// issue comment, which carries no commit_id) - the SHA a merge must be
+// pinned to, per #71: the review's own commit_id, not a dispatch-time
+// snapshot that can go stale relative to it.
+func (e *Extension) latestQuackVerdictCommit(ctx context.Context, owner, repo string, number int) (string, string, error) {
 	bot, err := e.app.botLogin(ctx)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	type dated struct {
-		at      time.Time
-		verdict string
+		at       time.Time
+		verdict  string
+		commitID string
 	}
 	var verdicts []dated
 
 	reviews, err := e.app.listReviews(ctx, owner, repo, number)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	for _, r := range reviews {
 		if r.User.Login != bot {
@@ -710,17 +721,17 @@ func (e *Extension) latestQuackVerdict(ctx context.Context, owner, repo string, 
 		// (GitHub disallows approve/request_changes on your own PR) but carries
 		// the REAL verdict in the marker - the state alone would read as "comment".
 		if m := reviewVerdictMarkerRe.FindStringSubmatch(r.Body); m != nil {
-			verdicts = append(verdicts, dated{at, m[1]})
+			verdicts = append(verdicts, dated{at, m[1], r.CommitID})
 			continue
 		}
 		if v := formalReviewVerdicts[r.State]; v != "" {
-			verdicts = append(verdicts, dated{at, v})
+			verdicts = append(verdicts, dated{at, v, r.CommitID})
 		}
 	}
 
 	comments, err := e.app.listIssueComments(ctx, owner, repo, number)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	for _, c := range comments {
 		if c.User != bot {
@@ -731,14 +742,15 @@ func (e *Extension) latestQuackVerdict(ctx context.Context, owner, repo string, 
 			continue
 		}
 		at, _ := time.Parse(time.RFC3339, c.CreatedAt)
-		verdicts = append(verdicts, dated{at, m[1]})
+		verdicts = append(verdicts, dated{at, m[1], ""})
 	}
 
 	if len(verdicts) == 0 {
-		return "", nil
+		return "", "", nil
 	}
 	sort.Slice(verdicts, func(i, j int) bool { return verdicts[i].at.Before(verdicts[j].at) })
-	return verdicts[len(verdicts)-1].verdict, nil
+	latest := verdicts[len(verdicts)-1]
+	return latest.verdict, latest.commitID, nil
 }
 
 // tryMergeStandingIntent consumes a merge intent after a review is actually posted.
@@ -751,7 +763,7 @@ func (e *Extension) latestQuackVerdict(ctx context.Context, owner, repo string, 
 // (#1142); the CALLER dispatches it after releasing its inflight claim, or
 // dispatch's dedup would drop it.
 func (e *Extension) tryMergeStandingIntent(ctx context.Context, pr *pendingRun, chatID string) *issueCommentPayload {
-	owner, repo, number, headSHA := pr.owner, pr.repo, pr.number, pr.gh.snap.HeadSHA
+	owner, repo, number := pr.owner, pr.repo, pr.number
 	unlock := e.mergeMu.Lock(chatID)
 	defer unlock()
 
@@ -763,7 +775,7 @@ func (e *Extension) tryMergeStandingIntent(ctx context.Context, pr *pendingRun, 
 	if intent == nil {
 		return nil // no standing authorization on this PR
 	}
-	verdict, err := e.latestQuackVerdict(ctx, owner, repo, number)
+	verdict, reviewedSHA, err := e.latestQuackVerdictCommit(ctx, owner, repo, number)
 	if err != nil {
 		slog.Warn("github: merge-intent verdict lookup failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", err)
 		return nil
@@ -777,23 +789,29 @@ func (e *Extension) tryMergeStandingIntent(ctx context.Context, pr *pendingRun, 
 			slog.Error("github: merge-intent comment failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", err)
 		}
 	}
-	if headSHA == "" {
-		// A resume whose re-fetch failed (#65): an empty sha makes mergePR
-		// omit the pin and merge the current tip, bypassing #1142's guard.
-		m, merr := e.app.pullMeta(ctx, owner, repo, number)
-		if merr != nil {
-			slog.Warn("github: standing-intent merge cannot pin the head; not merging",
-				"component", "github", "repo", owner+"/"+repo, "pr", number, "err", merr)
-			return nil
-		}
-		headSHA = m.HeadSHA
+	// #71: pin against the PR's actual current head, and decide "moved" by
+	// comparing it to the commit_id the approving review was submitted
+	// against - never a dispatch-time snapshot, which goes stale relative to
+	// the review whenever anything (including this run's own delivery) landed
+	// after the snapshot was taken.
+	m, merr := e.app.pullMeta(ctx, owner, repo, number)
+	if merr != nil {
+		slog.Warn("github: standing-intent merge cannot pin the head; not merging",
+			"component", "github", "repo", owner+"/"+repo, "pr", number, "err", merr)
+		return nil
+	}
+	headSHA := m.HeadSHA
+	if reviewedSHA != "" && reviewedSHA != headSHA {
+		// The tip moved under the approved review. The standing intent (never
+		// cleared here) still authorizes a merge once a fresh review of the
+		// NEW head approves - so re-review it instead of stalling until a
+		// human re-labels.
+		return e.reReviewMovedHead(ctx, pr, comment)
 	}
 	if err := e.app.mergePR(ctx, owner, repo, number, headSHA); err != nil {
 		if isHeadBranchModified(err) {
-			// #1142: the tip moved under the approved review. The standing
-			// intent (never cleared here) still authorizes a merge once a
-			// fresh review of the NEW head approves - so re-review it instead
-			// of stalling until a human re-labels.
+			// Genuine race: the tip moved between our compare above and the
+			// merge call itself.
 			return e.reReviewMovedHead(ctx, pr, comment)
 		}
 		slog.Error("github: standing-intent merge failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", err)

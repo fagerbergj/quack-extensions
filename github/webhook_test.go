@@ -3448,7 +3448,10 @@ func TestFinalizeReReviewsOnHeadModified(t *testing.T) {
 				case strings.HasSuffix(r.URL.Path, "/app"):
 					fmt.Fprint(w, `{"slug":"quack"}`)
 				case strings.HasSuffix(r.URL.Path, "/reviews"):
-					fmt.Fprint(w, `[{"state":"APPROVED","user":{"login":"quack[bot]"}}]`)
+					// commit_id "oldhead1" != the PR's actual current head
+					// (newHeadSHA below) - #71: the compare that decides "moved"
+					// must be this mismatch, not a stale dispatch-time snapshot.
+					fmt.Fprint(w, `[{"state":"APPROVED","user":{"login":"quack[bot]"},"commit_id":"oldhead1"}]`)
 				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
 					fmt.Fprint(w, `[]`)
 				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
@@ -3457,8 +3460,7 @@ func TestFinalizeReReviewsOnHeadModified(t *testing.T) {
 					fmt.Fprint(w, `{}`)
 					posted <- string(body)
 				case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/merge"):
-					w.WriteHeader(http.StatusConflict)
-					fmt.Fprint(w, `{"message":"Head branch was modified. Review and try the merge again."}`)
+					t.Errorf("mergePR called; the commit_id/head mismatch must be caught before ever attempting a merge")
 				case strings.HasSuffix(r.URL.Path, "/files"):
 					fmt.Fprint(w, `[]`)
 				case strings.HasSuffix(r.URL.Path, "/commits"):
@@ -3466,10 +3468,12 @@ func TestFinalizeReReviewsOnHeadModified(t *testing.T) {
 				case strings.Contains(r.URL.Path, "/check-runs"):
 					fmt.Fprint(w, `{"check_runs":[]}`)
 				case strings.Contains(r.URL.Path, "/pulls/"):
-					// Only the FIRST pull lookup is reReviewMovedHead's; the
-					// re-dispatch's own snapshot fetch must see a healthy PR or
-					// the label-trigger path aborts "not running blind".
-					if metaCalls.Add(1) == 1 {
+					// The FIRST pull lookup is tryMergeStandingIntent's own
+					// current-head fetch (always succeeds here); the SECOND is
+					// reReviewMovedHead's - the re-dispatch's own snapshot fetch
+					// must still see a healthy PR or the label-trigger path
+					// aborts "not running blind".
+					if metaCalls.Add(1) == 2 {
 						w.WriteHeader(tc.metaStatus)
 					}
 					fmt.Fprintf(w, `{"title":"Test PR","body":"","state":"open","head":{"ref":"feature-branch","sha":%q},"base":{"ref":"main"}}`, newHeadSHA)
@@ -3538,6 +3542,59 @@ func TestFinalizeReReviewsOnHeadModified(t *testing.T) {
 			case <-time.After(100 * time.Millisecond):
 			}
 		})
+	}
+}
+
+// TestTryMergeStandingIntentEmptySnapshotMergesOnMatchingHead pins #71 case
+// (a): an approving review's commit_id equals the PR's actual current head,
+// and the pendingRun's own dispatch-time snapshot is empty (a resume whose
+// re-fetch failed, #65) - tryMergeStandingIntent must still merge, and must
+// NOT post "head moved" or dispatch a spurious re-review.
+func TestTryMergeStandingIntentEmptySnapshotMergesOnMatchingHead(t *testing.T) {
+	// mergeStub's fixed pull response reports head "headsha1" - the review's
+	// commit_id matches it exactly, so the compare must see no movement.
+	approved := `[{"state":"APPROVED","user":{"login":"quack[bot]"},"commit_id":"headsha1"}]`
+	posted := make(chan string, 4)
+	merged := make(chan struct{}, 1)
+	srv := mergeStub(t, approved, "", posted, merged)
+	defer srv.Close()
+
+	e, fh := newTestExtension(t, srv.URL, []string{"merge"})
+	sessionID := "github-acme-widgets-7"
+	chatID := globalChatID(sessionID)
+	pr := &pendingRun{
+		sessionID: sessionID, owner: "acme", repo: "widgets", number: 7, login: autoReviewUser, isPR: true,
+		gh:            githubContext{snap: Snapshot{IsPR: true, HeadSHA: "", BaseRef: "main"}},
+		dispatched:    sdk.DispatchRequest{Run: sdk.RunConfig{Setup: &sdk.Setup{Repo: "https://github.com/acme/widgets.git"}}},
+		defaultBranch: "main", installationID: 5,
+	}
+	e.pending.Store(chatID, pr)
+	claimInflightFor(t, e, chatID, sessionID)
+	if err := e.store.SetMergeIntent(context.Background(), chatID, "alice"); err != nil {
+		t.Fatalf("SetMergeIntent: %v", err)
+	}
+	recordDelivery(chatID, deliveryOutcome{reviewDelivered: true})
+
+	e.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true})
+
+	select {
+	case <-merged:
+	case <-time.After(2 * time.Second):
+		t.Fatal("merge was not attempted; an unchanged head with an empty snapshot must still merge")
+	}
+	select {
+	case c := <-posted:
+		if strings.Contains(c, "head moved") {
+			t.Errorf("comment = %q; the head did not move, must not claim it did", c)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no merge comment posted")
+	}
+	if calls := fh.calls(); len(calls) != 0 {
+		t.Errorf("dispatch calls = %d, want 0 - no re-review should have been dispatched", len(calls))
+	}
+	if intent, err := e.store.GetMergeIntent(context.Background(), chatID); err != nil || intent != nil {
+		t.Errorf("intent = %+v, %v; want it cleared after the merge", intent, err)
 	}
 }
 
