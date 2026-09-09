@@ -114,7 +114,7 @@ func TestAppendLineOnce(t *testing.T) {
 // test flips reviews / check runs / head sha between webhook events and
 // counts every outbound write by kind.
 type mergeSim struct {
-	mu       sync.Mutex
+	mu            sync.Mutex
 	reviews       string // GET .../reviews; BODY is replaced by body
 	body          string // the quack review's current body - PUT edits persist here
 	checks        string // GET .../check-runs
@@ -215,6 +215,8 @@ const (
 	checksGreen     = `{"check_runs":[{"id":1,"name":"go-test","status":"completed","conclusion":"success"}]}`
 	suitesNone      = `{"check_suites":[]}`
 	suitesQueued    = `{"check_suites":[{"id":1,"status":"queued","app":{"slug":"github-actions"}}]}`
+	suitesCompleted = `{"check_suites":[{"id":1,"status":"completed","conclusion":"success","app":{"slug":"github-actions"}}]}`
+	suitesFailed    = `{"check_suites":[{"id":1,"status":"completed","conclusion":"failure","app":{"slug":"github-actions"}}]}`
 
 	// approvedOnHead1PlusHumanChanges adds bob's standing CHANGES_REQUESTED
 	// on the same head quack approved.
@@ -588,6 +590,47 @@ func TestMergeQueuedSuiteWaitsThenRunsCompleteMerges(t *testing.T) {
 	sim.set(func(m *mergeSim) { m.checks = checksGreen })
 	ext.handleWebhook(httptest.NewRecorder(), signedRequest("check_run", checkEventBody("check_run")))
 	waitFor(t, "the merge", func() bool { return sim.merges.Load() == 1 })
+}
+
+// TestMergeCompletedSuiteNoRunsMergesImmediately pins the terminal-suite
+// half of the merge.go:103 fix: a suite that already reached "completed"
+// (success, no runs ever posted) emits no further event, so treating it as
+// pending would stall the merge forever. It must fall through and attempt
+// the merge like the no-suite-at-all case.
+func TestMergeCompletedSuiteNoRunsMergesImmediately(t *testing.T) {
+	sim := &mergeSim{reviews: approvedOnHead1, body: "LGTM", checks: checksEmpty, suites: suitesCompleted, headSHA: "head1"}
+	srv := sim.server(t)
+	ext, _ := newTestExtension(t, srv.URL, []string{"merge"})
+
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request", mergeLabelBody("alice")))
+	waitFor(t, "the merge", func() bool { return sim.merges.Load() == 1 })
+}
+
+// TestMergeCompletedFailedSuiteNoRunsDoesNotMerge pins the other half of the
+// merge.go:103 fix: a suite that completed with a failing conclusion but
+// posted no check run is terminal too - GitHub's merge API would only read
+// the missing named check as "expected" (mergePendingRe), which would stall
+// forever the same way. tryMerge must recognize the failure itself, skip
+// the merge attempt, and append the reason to the review exactly once.
+func TestMergeCompletedFailedSuiteNoRunsDoesNotMerge(t *testing.T) {
+	sim := &mergeSim{reviews: approvedOnHead1, body: "LGTM", checks: checksEmpty, suites: suitesFailed, headSHA: "head1"}
+	srv := sim.server(t)
+	ext, _ := newTestExtension(t, srv.URL, []string{"merge"})
+	if err := ext.store.SetMergeIntent(context.Background(), globalChatID("github-acme-widgets-7"), "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 3; i++ {
+		ext.handleWebhook(httptest.NewRecorder(), signedRequest("check_run", checkEventBody("check_run")))
+	}
+	waitFor(t, "the failure edit", func() bool { return sim.edits.Load() >= 1 })
+	settle()
+	if sim.merges.Load() != 0 || sim.comments.Load() != 0 {
+		t.Errorf("merges=%d comments=%d; want 0/0", sim.merges.Load(), sim.comments.Load())
+	}
+	if sim.edits.Load() != 1 || sim.lastEdit.Load().(string) != "LGTM\n\nMerge blocked: CI failed on this head and posted no check run to retry." {
+		t.Errorf("edits=%d last=%q; want the failure appended to the review exactly once", sim.edits.Load(), sim.lastEdit.Load())
+	}
 }
 
 // TestMergeBlockedByHumanRequestChangesThenReapprovalMerges pins design

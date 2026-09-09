@@ -90,21 +90,42 @@ func allChecksGreen(checks []checkRunView) bool {
 	return true
 }
 
-// headHasPendingCI reports whether the head has a check suite expected to
-// post runs but hasn't yet. Called only when listCheckRuns came back empty,
-// to tell "CI queued, no run reported yet" (wait) from "no CI on this head
-// at all" (nothing to wait for).
-func (e *Extension) headHasPendingCI(ctx context.Context, owner, repo, sha string) (bool, error) {
+// ciSuiteState is what headHasPendingCI found among the head's check
+// suites, beyond the empty check-run list that triggered the lookup.
+type ciSuiteState int
+
+const (
+	ciClear   ciSuiteState = iota // nothing left that could ever post a run: attempt the merge
+	ciWaiting                     // a suite that can still produce a run hasn't finished
+	ciFailed                      // a suite finished with a non-green conclusion and posted no runs
+)
+
+// headHasPendingCI classifies the head's check suites. Called only when
+// listCheckRuns came back empty, to tell apart "CI queued, no run reported
+// yet" (wait), "a suite already failed without ever posting a run" (stop -
+// GitHub's own required-check refusal would read as merely "expected" and
+// never resolve), and "no CI on this head at all" (nothing to wait for). A
+// suite is only pending while it hasn't reached "completed": a terminal
+// suite - success or failure - will never fire another event, so treating
+// it as pending would stall the merge forever with no re-evaluation.
+func (e *Extension) headHasPendingCI(ctx context.Context, owner, repo, sha string) (ciSuiteState, error) {
 	suites, err := e.app.listCheckSuites(ctx, owner, repo, sha)
 	if err != nil {
-		return false, err
+		return ciClear, err
 	}
+	state := ciClear
 	for _, s := range suites {
-		if s.producesRuns() {
-			return true, nil
+		if !s.producesRuns() {
+			continue
+		}
+		if s.Status != "completed" {
+			return ciWaiting, nil
+		}
+		if !greenConclusions[s.Conclusion] {
+			state = ciFailed
 		}
 	}
-	return false, nil
+	return state, nil
 }
 
 // blockingHumanReviewer reports the first reviewer (any login, quack's own
@@ -314,19 +335,23 @@ func (e *Extension) tryMerge(ctx context.Context, owner, repo string, number int
 		slog.Warn("github: check-runs lookup failed before merge; letting GitHub decide", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", cerr)
 	} else if len(checks) == 0 {
 		// Zero runs is ambiguous: pull_request_review.submitted can beat every
-		// workflow's queue (event ordering), or this head may never get a run
-		// at all (docs-only PR under path filters, no CI). GitHub creates a
-		// check suite for every workflow a push triggers before any run
-		// exists, so consult that to tell the two apart - no CI ever waits
-		// forever for an event that never arrives.
-		if pending, serr := e.headHasPendingCI(ctx, owner, repo, m.HeadSHA); serr != nil {
+		// workflow's queue (event ordering), this head may never get a run at
+		// all (docs-only PR under path filters, no CI), or a suite already
+		// failed without posting one. GitHub creates a check suite for every
+		// workflow a push triggers before any run exists, so consult that to
+		// tell the three apart - no CI ever waits forever for an event that
+		// never arrives.
+		if state, serr := e.headHasPendingCI(ctx, owner, repo, m.HeadSHA); serr != nil {
 			slog.Warn("github: check-suites lookup failed before merge; letting GitHub decide", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", serr)
-		} else if pending {
+		} else if state == ciWaiting {
 			return mergePending, nil
+		} else if state == ciFailed {
+			e.appendToVerdict(ctx, owner, repo, number, ref, "Merge blocked: CI failed on this head and posted no check run to retry.")
+			return mergeFailed, nil
 		}
-		// No relevant suite: attempt the merge and let GitHub's own required-
-		// check refusal (mergePendingRe) be the guard wherever branch
-		// protection is actually configured.
+		// ciClear (or the lookup failed): no relevant suite - attempt the
+		// merge and let GitHub's own required-check refusal (mergePendingRe)
+		// be the guard wherever branch protection is actually configured.
 	} else if !allChecksGreen(checks) {
 		return mergePending, nil
 	}

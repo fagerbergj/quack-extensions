@@ -895,9 +895,10 @@ func (a *App) deliverOne(ctx context.Context, owner, repo string, dc sdk.Deliver
 				}
 				body := fmt.Sprintf("_Own PR: GitHub allows no self-review verdict. Verdict: %s. A maintainer decides._\n\n", verdict) + StripVerdictTail(item.Body)
 				body += "\n\n" + deliveryMarker("review:"+verdict) + deliveryKeyMarker(dc.IdempotencyKey)
-				// Pin the verdict to the head it was actually reviewed against
-				// (best-effort - no head means tryMerge falls back to trusting
-				// the marker as-is, same as before this SHA existed).
+				// This is the head at DELIVERY time, not necessarily the head
+				// reviewed: sdk.DeliveryContext carries no reviewed-head field to
+				// thread through. Still strictly better than trusting the marker
+				// for any head; the synchronize re-review is the backstop.
 				if m, merr := a.pullMeta(ctx, owner, repo, dc.IssueNumber); merr == nil && m.HeadSHA != "" {
 					body += "\n" + deliveryMarker("head:"+m.HeadSHA)
 				}
