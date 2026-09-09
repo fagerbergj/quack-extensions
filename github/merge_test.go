@@ -40,6 +40,57 @@ func TestStripMentions(t *testing.T) {
 	}
 }
 
+func TestAllChecksGreen(t *testing.T) {
+	tests := []struct {
+		name  string
+		runs  []checkRunView
+		green bool
+	}{
+		{"empty is not green", nil, false},
+		{"one success", []checkRunView{{Status: "completed", Conclusion: "success"}}, true},
+		{"neutral and skipped both count", []checkRunView{{Status: "completed", Conclusion: "neutral"}, {Status: "completed", Conclusion: "skipped"}}, true},
+		{"still running", []checkRunView{{Status: "in_progress"}}, false},
+		{"one failed among passing", []checkRunView{{Status: "completed", Conclusion: "success"}, {Status: "completed", Conclusion: "failure"}}, false},
+	}
+	for _, tt := range tests {
+		if got := allChecksGreen(tt.runs); got != tt.green {
+			t.Errorf("%s: allChecksGreen(...) = %v, want %v", tt.name, got, tt.green)
+		}
+	}
+}
+
+func TestBlockingHumanReviewer(t *testing.T) {
+	tests := []struct {
+		name    string
+		reviews []prReview
+		blocked bool
+	}{
+		{"no reviews", nil, false},
+		{"approve only", []prReview{{User: ghUserRef{"bob"}, State: "APPROVED", CommitID: "h1"}}, false},
+		{"standing request_changes", []prReview{{User: ghUserRef{"bob"}, State: "CHANGES_REQUESTED", CommitID: "h1"}}, true},
+		{
+			"later approval from the same reviewer clears it",
+			[]prReview{
+				{User: ghUserRef{"bob"}, State: "CHANGES_REQUESTED", CommitID: "h1", SubmittedAt: "2026-01-01T00:00:00Z"},
+				{User: ghUserRef{"bob"}, State: "APPROVED", CommitID: "h1", SubmittedAt: "2026-01-02T00:00:00Z"},
+			}, false,
+		},
+		{
+			"dismissal clears it",
+			[]prReview{{User: ghUserRef{"bob"}, State: "DISMISSED", CommitID: "h1"}}, false,
+		},
+		{
+			"request_changes on a stale (pre-push) head does not block the new head",
+			[]prReview{{User: ghUserRef{"bob"}, State: "CHANGES_REQUESTED", CommitID: "oldhead"}}, false,
+		},
+	}
+	for _, tt := range tests {
+		if _, blocked := blockingHumanReviewer(tt.reviews, "h1"); blocked != tt.blocked {
+			t.Errorf("%s: blockingHumanReviewer(...) blocked = %v, want %v", tt.name, blocked, tt.blocked)
+		}
+	}
+}
+
 func TestAppendLineOnce(t *testing.T) {
 	body, ok := appendLine("LGTM\n", "Merged as abc1234.")
 	if !ok || body != "LGTM\n\nMerged as abc1234." {
@@ -142,8 +193,22 @@ func (m *mergeSim) server(t *testing.T) *httptest.Server {
 
 const (
 	approvedOnHead1 = `[{"id":11,"state":"APPROVED","commit_id":"head1","body":"BODY","user":{"login":"quack[bot]"},"submitted_at":"2026-01-01T00:00:00Z"}]`
+	checksEmpty     = `{"check_runs":[]}`
 	checksPending   = `{"check_runs":[{"id":1,"name":"go-test","status":"in_progress"}]}`
 	checksGreen     = `{"check_runs":[{"id":1,"name":"go-test","status":"completed","conclusion":"success"}]}`
+
+	// approvedOnHead1PlusHumanChanges adds bob's standing CHANGES_REQUESTED
+	// on the same head quack approved.
+	approvedOnHead1PlusHumanChanges = `[
+		{"id":11,"state":"APPROVED","commit_id":"head1","body":"LGTM","user":{"login":"quack[bot]"},"submitted_at":"2026-01-01T00:00:00Z"},
+		{"id":12,"state":"CHANGES_REQUESTED","commit_id":"head1","body":"","user":{"login":"bob"},"submitted_at":"2026-01-02T00:00:00Z"}
+	]`
+	// approvedOnHead1PlusHumanReapproved is the same history with bob's later approval.
+	approvedOnHead1PlusHumanReapproved = `[
+		{"id":11,"state":"APPROVED","commit_id":"head1","body":"LGTM","user":{"login":"quack[bot]"},"submitted_at":"2026-01-01T00:00:00Z"},
+		{"id":12,"state":"CHANGES_REQUESTED","commit_id":"head1","body":"","user":{"login":"bob"},"submitted_at":"2026-01-02T00:00:00Z"},
+		{"id":13,"state":"APPROVED","commit_id":"head1","body":"","user":{"login":"bob"},"submitted_at":"2026-01-03T00:00:00Z"}
+	]`
 )
 
 func checkEventBody(kind string) []byte {
@@ -412,4 +477,53 @@ func TestSynchronizeSameHeadTwiceDispatchesOnce(t *testing.T) {
 	if calls := fh.calls(); len(calls) != 1 {
 		t.Errorf("dispatches = %d; want exactly 1 across two synchronize events for the same head", len(calls))
 	}
+}
+
+// TestMergeWaitsWhenNoChecksRegisteredYetThenMerges pins design decision (4):
+// an empty check-run list is NOT green - pull_request_review.submitted can
+// arrive before any workflow has even queued. No merge until at least one
+// check exists and is green; the next completion event re-evaluates, with no
+// timer and no polling.
+func TestMergeWaitsWhenNoChecksRegisteredYetThenMerges(t *testing.T) {
+	sim := &mergeSim{reviews: "[]", body: "LGTM", checks: checksEmpty, headSHA: "head1"}
+	srv := sim.server(t)
+	ext, _ := newTestExtension(t, srv.URL, []string{"merge"})
+	if err := ext.store.SetMergeIntent(context.Background(), globalChatID("github-acme-widgets-7"), "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	sim.set(func(m *mergeSim) { m.reviews = approvedOnHead1 })
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request_review", pullRequestReviewBody("approved", "quack[bot]", 7)))
+	settle()
+	if sim.merges.Load() != 0 {
+		t.Fatalf("merged with zero check runs registered on the head: merges=%d", sim.merges.Load())
+	}
+
+	sim.set(func(m *mergeSim) { m.checks = checksGreen })
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest("check_run", checkEventBody("check_run")))
+	waitFor(t, "the merge", func() bool { return sim.merges.Load() == 1 })
+}
+
+// TestMergeBlockedByHumanRequestChangesThenReapprovalMerges pins design
+// decision (5): a human's standing CHANGES_REQUESTED on the current head
+// blocks an otherwise green, quack-approved, quack:merge-labeled PR; the
+// SAME reviewer approving again on that head clears it.
+func TestMergeBlockedByHumanRequestChangesThenReapprovalMerges(t *testing.T) {
+	sim := &mergeSim{reviews: approvedOnHead1, body: "LGTM", checks: checksGreen, headSHA: "head1"}
+	srv := sim.server(t)
+	ext, _ := newTestExtension(t, srv.URL, []string{"merge"})
+	if err := ext.store.SetMergeIntent(context.Background(), globalChatID("github-acme-widgets-7"), "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	sim.set(func(m *mergeSim) { m.reviews = approvedOnHead1PlusHumanChanges })
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request_review", pullRequestReviewBody("changes_requested", "bob", 7)))
+	settle()
+	if sim.merges.Load() != 0 {
+		t.Fatalf("merged despite bob's standing request_changes: merges=%d", sim.merges.Load())
+	}
+
+	sim.set(func(m *mergeSim) { m.reviews = approvedOnHead1PlusHumanReapproved })
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request_review", pullRequestReviewBody("approved", "bob", 7)))
+	waitFor(t, "the merge", func() bool { return sim.merges.Load() == 1 })
 }

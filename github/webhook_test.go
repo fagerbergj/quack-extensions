@@ -3649,7 +3649,7 @@ func mergeStub(t *testing.T, reviewsJSON, commentsJSON string, posted chan<- str
 		case strings.HasSuffix(r.URL.Path, "/commits"):
 			fmt.Fprint(w, `[]`)
 		case strings.Contains(r.URL.Path, "/check-runs"):
-			fmt.Fprint(w, `{"check_runs":[]}`)
+			fmt.Fprint(w, `{"check_runs":[{"id":1,"name":"go-test","status":"completed","conclusion":"success"}]}`)
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
 			fmt.Fprint(w, commentsJSON)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
@@ -3704,7 +3704,7 @@ func mergeStubDynamic(t *testing.T, posted chan<- string, merged chan<- string) 
 		case strings.HasSuffix(r.URL.Path, "/commits"):
 			fmt.Fprint(w, `[]`)
 		case strings.Contains(r.URL.Path, "/check-runs"):
-			fmt.Fprint(w, `{"check_runs":[]}`)
+			fmt.Fprint(w, `{"check_runs":[{"id":1,"name":"go-test","status":"completed","conclusion":"success"}]}`)
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
 			fmt.Fprint(w, `[]`)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):

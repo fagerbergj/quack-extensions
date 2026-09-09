@@ -61,14 +61,65 @@ func mergeFailureLine(err error, fixLabel string) string {
 type mergeOutcome int
 
 const (
-	mergeNoIntent    mergeOutcome = iota // no standing authorization, or the PR is already closed
-	mergeUnreviewed                      // quack has no verdict on this PR yet
-	mergeNotApproved                     // latest verdict is request_changes/comment
-	mergeStale                           // approval is for an older head
-	mergePending                         // a check on the head is still running
-	mergeFailed                          // GitHub refused for a real reason (conflict, protection)
+	mergeNoIntent     mergeOutcome = iota // no standing authorization, or the PR is already closed
+	mergeUnreviewed                       // quack has no verdict on this PR yet
+	mergeNotApproved                      // latest verdict is request_changes/comment
+	mergeStale                            // approval is for an older head
+	mergePending                          // no check runs yet, or one on the head isn't green
+	mergeHumanBlocked                     // a non-dismissed CHANGES_REQUESTED from another reviewer stands on the current head
+	mergeFailed                           // GitHub refused for a real reason (conflict, protection)
 	mergeDone
 )
+
+// greenConclusions are check-run conclusions that count as passing.
+var greenConclusions = map[string]bool{"success": true, "neutral": true, "skipped": true}
+
+// allChecksGreen reports whether the head has actually finished CI clean. An
+// EMPTY list is not green: pull_request_review.submitted can arrive before
+// any workflow has even queued (event ordering), and treating "nothing
+// reported yet" as "nothing to wait for" merges a PR CI hasn't touched.
+func allChecksGreen(checks []checkRunView) bool {
+	if len(checks) == 0 {
+		return false
+	}
+	for _, c := range checks {
+		if c.Status != "completed" || !greenConclusions[c.Conclusion] {
+			return false
+		}
+	}
+	return true
+}
+
+// blockingHumanReviewer reports the first reviewer (any login, quack's own
+// included) whose latest review AGAINST THE CURRENT HEAD is a standing
+// CHANGES_REQUESTED (5): the quack:merge label authorizes merging a green,
+// approved PR, never overriding a live human objection. A review against an
+// older head is stale the same way an old approval is (#71) - a push clears
+// it; only a later approval or an explicit dismissal (both show up as a
+// newer, or state-changed, review from that same login) clears it otherwise.
+func blockingHumanReviewer(reviews []prReview, headSHA string) (login string, blocked bool) {
+	type latest struct {
+		state string
+		at    time.Time
+	}
+	byUser := make(map[string]latest, len(reviews))
+	for _, r := range reviews {
+		if r.CommitID != headSHA {
+			continue
+		}
+		at, _ := time.Parse(time.RFC3339, r.SubmittedAt)
+		if prev, ok := byUser[r.User.Login]; ok && !at.After(prev.at) {
+			continue
+		}
+		byUser[r.User.Login] = latest{state: r.State, at: at}
+	}
+	for user, l := range byUser {
+		if l.state == "CHANGES_REQUESTED" {
+			return user, true
+		}
+	}
+	return "", false
+}
 
 // reviewVerdictMarkerRe extracts quack's verdict from the hidden marker in an own-PR review comment (GitHub forbids self-review).
 var reviewVerdictMarkerRe = regexp.MustCompile(`<!-- quack:delivery:review:(approve|request_changes|comment) -->`)
@@ -173,10 +224,12 @@ func (e *Extension) appendToVerdict(ctx context.Context, owner, repo string, num
 
 // tryMerge is the one merge decision, re-run on every event that can change
 // its inputs: merge iff a standing intent (the label) exists, quack's latest
-// verdict approves the CURRENT head, and no check on that head is still
-// running. Anything short of that is silent - the next event re-evaluates.
-// A non-nil error is an infrastructure failure (GitHub/store unreadable),
-// never a merge refusal. Serialized per PR (e.mergeMu).
+// verdict approves the CURRENT head, every check run on that head is green
+// (at least one exists, and none is missing/running/failed), and no other
+// reviewer has a standing CHANGES_REQUESTED on that head. Anything short of
+// that is silent - the next event re-evaluates, with no timer and no
+// polling. A non-nil error is an infrastructure failure (GitHub/store
+// unreadable), never a merge refusal. Serialized per PR (e.mergeMu).
 func (e *Extension) tryMerge(ctx context.Context, owner, repo string, number int) (mergeOutcome, error) {
 	sessionID := fmt.Sprintf("github-%s-%s-%d", owner, repo, number)
 	chatID := globalChatID(sessionID)
@@ -215,14 +268,18 @@ func (e *Extension) tryMerge(ctx context.Context, owner, repo string, number int
 	if ref.commitID != "" && ref.commitID != m.HeadSHA {
 		return mergeStale, nil
 	}
+	allReviews, rerr := e.app.listReviews(ctx, owner, repo, number)
+	if rerr != nil {
+		return mergeNoIntent, fmt.Errorf("review lookup: %w", rerr)
+	}
+	if login, blocked := blockingHumanReviewer(allReviews, m.HeadSHA); blocked {
+		slog.Debug("github: merge blocked by a standing human objection", "component", "github", "repo", owner+"/"+repo, "pr", number, "reviewer", login)
+		return mergeHumanBlocked, nil
+	}
 	if checks, cerr := e.app.listCheckRuns(ctx, owner, repo, m.HeadSHA); cerr != nil {
 		slog.Warn("github: check-runs lookup failed before merge; letting GitHub decide", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", cerr)
-	} else {
-		for _, c := range checks {
-			if c.Status != "completed" {
-				return mergePending, nil
-			}
-		}
+	} else if !allChecksGreen(checks) {
+		return mergePending, nil
 	}
 	sha, err := e.app.mergePR(ctx, owner, repo, number, m.HeadSHA)
 	if err != nil {
