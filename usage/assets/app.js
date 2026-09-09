@@ -32,6 +32,7 @@ const METRICS = {
   },
   tokenTypeCached: "cached",
   tokenTypeInput: "input",
+  tokenTypeOutput: "output",
 };
 
 // TOKEN_TYPES is the canonical display order for the headline stacked chart
@@ -978,27 +979,37 @@ function cacheRateFor(cached, input) {
 }
 
 // aggregateCacheByDim folds an instant query's series (one per
-// dimension-value x token-type) into one {cached, input} pair per
-// dimension-value label.
+// dimension-value x token-type) into one {cached, input, output} triple per
+// dimension-value label. output rides along only to let cacheRowsFromTotals
+// tell an embeddings-only label from a chat model with a real 0% cache rate -
+// it never enters the rate math itself.
 function aggregateCacheByDim(series, dimLabel) {
   const totals = new Map();
   for (const s of series) {
     const t = s.metric[METRICS.labels.tokenType] || s.metric[METRICS.labels.tokenTypeFallback];
-    if (t !== METRICS.tokenTypeCached && t !== METRICS.tokenTypeInput) continue;
+    if (t !== METRICS.tokenTypeCached && t !== METRICS.tokenTypeInput && t !== METRICS.tokenTypeOutput) continue;
     const label = dimValue(s.metric, dimLabel);
-    const entry = totals.get(label) || { cached: 0, input: 0 };
+    const entry = totals.get(label) || { cached: 0, input: 0, output: 0 };
     entry[t] += Number(s.value[1]);
     totals.set(label, entry);
   }
   return totals;
 }
 
-// cacheRowsFromTotals drops zero-traffic rows (cacheRateFor returning null)
-// and ranks what's left by volume, busiest first - a 100% rate on 3 tokens
-// isn't worth leading the table.
+// cacheRowsFromTotals drops zero-traffic rows (no cached+input at all) and
+// ranks what's left by volume, busiest first - a 100% rate on 3 tokens isn't
+// worth leading the table. A label with prompt traffic but zero output
+// tokens never went through chat completion - embeddings, which have no
+// cache concept, are the only traffic shaped like that - so it renders with
+// rate: null (n/a) instead of a fake 0%, rather than being dropped.
 function cacheRowsFromTotals(totals) {
   const rows = [];
-  for (const [label, { cached, input }] of totals) {
+  for (const [label, { cached, input, output }] of totals) {
+    if (cached <= 0 && input <= 0) continue;
+    if (cached === 0 && output === 0) {
+      rows.push({ label, cached, input, volume: input, rate: null });
+      continue;
+    }
     const rate = cacheRateFor(cached, input);
     if (rate === null) continue;
     rows.push({ label, cached, input, volume: cached + input, rate });
@@ -1041,7 +1052,9 @@ function renderCacheRows(el, rows) {
     label.title = row.label;
     const rate = document.createElement("span");
     rate.className = "cache-row-rate";
-    rate.textContent = formatPercent(row.rate);
+    // row.rate is null for embeddings-shaped traffic (see cacheRowsFromTotals)
+    // - the cache concept doesn't apply, so it reads "n/a" rather than 0.0%.
+    rate.textContent = row.rate === null ? "n/a" : formatPercent(row.rate);
     const vol = document.createElement("span");
     vol.className = "cache-row-volume";
     vol.textContent = formatNumber(row.volume) + " prompt";
