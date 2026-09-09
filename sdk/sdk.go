@@ -16,7 +16,7 @@
 //     and fires only after the run's outcome is final.
 //   - Factories must be side-effect free: validate config and construct,
 //     nothing more - they also run in contexts that never serve, such as
-//     config checks. Background resources belong in Start/Stop.
+//     config checks. Background resources belong in Start.
 package sdk
 
 import (
