@@ -2,11 +2,13 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -292,6 +294,103 @@ func TestAutoHealAuthoredPRFirstFailureGetsAFix(t *testing.T) {
 		t.Fatalf("status = %d; want 202", rec.Code)
 	}
 	fh.waitForDispatch(t, 2*time.Second)
+}
+
+// stubFixGitHubDelayed is stubFixGitHubFull trimmed to what autoHeal needs,
+// with an artificial delay before answering the check-runs fetch - widens
+// the window between autoHeal's GetFixState read and its SetFixState claim
+// deterministically, instead of relying on goroutine-scheduling luck to hit
+// the race.
+func stubFixGitHubDelayed(t *testing.T, posted chan<- string, prLabels []string, delay time.Duration) *httptest.Server {
+	t.Helper()
+	labelsJSON := make([]string, 0, len(prLabels))
+	for _, l := range prLabels {
+		labelsJSON = append(labelsJSON, fmt.Sprintf(`{"name":%q}`, l))
+	}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			fmt.Fprint(w, `{"id":5}`)
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		case strings.HasSuffix(r.URL.Path, "/reactions"):
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":1}`)
+		case strings.HasSuffix(r.URL.Path, "/app"):
+			fmt.Fprint(w, `{"slug":"quack"}`)
+		case strings.HasSuffix(r.URL.Path, "/check-runs"):
+			time.Sleep(delay)
+			fmt.Fprint(w, `{"check_runs":[{"id":42,"name":"go-test","conclusion":"failure","html_url":"https://ci/42","output":{"title":"tests failed","summary":"1 test failed"}}]}`)
+		case strings.HasSuffix(r.URL.Path, "/annotations"):
+			fmt.Fprint(w, `[]`)
+		case strings.HasSuffix(r.URL.Path, "/files"):
+			fmt.Fprint(w, `[]`)
+		case strings.HasSuffix(r.URL.Path, "/reviews"):
+			fmt.Fprint(w, `[]`)
+		case strings.Contains(r.URL.Path, "/commits/"):
+			fmt.Fprint(w, `{"commit":{"author":{"email":""}}}`)
+		case strings.HasSuffix(r.URL.Path, "/commits"):
+			fmt.Fprint(w, `[]`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+			body, _ := io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{}`)
+			posted <- string(body)
+		case strings.HasSuffix(r.URL.Path, "/comments"):
+			fmt.Fprint(w, `[]`)
+		case strings.Contains(r.URL.Path, "/pulls/"):
+			fmt.Fprint(w, `{"title":"Test PR","body":"A test PR.","state":"open","head":{"ref":"feature-branch","sha":"headsha1"},"base":{"ref":"main"},"user":{"login":"someone-else"}}`)
+		case isIssueMetaPath(r.URL.Path):
+			fmt.Fprintf(w, `{"title":"Test PR","body":"A test PR.","state":"open","labels":[%s]}`, strings.Join(labelsJSON, ","))
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+}
+
+// TestAutoHealConcurrentSameHeadPostsOnce is the "below the cut" audit item:
+// autoHeal's GetFixState-then-SetFixState claim straddles GitHub round-trips
+// with no lock. Two workflow_run.completed deliveries for the same head SHA
+// (CI usually runs several checks, each firing its own event) both pass the
+// GetFixState check before either's claim lands, so both post "attempting an
+// automatic fix" for one commit.
+func TestAutoHealConcurrentSameHeadPostsOnce(t *testing.T) {
+	posted := make(chan string, 8)
+	srv := stubFixGitHubDelayed(t, posted, []string{"quack:fix"}, 50*time.Millisecond)
+	defer srv.Close()
+	ext, _ := newTestExtension(t, srv.URL, []string{"ci_fix"})
+
+	body := workflowRunBody("completed", "failure", "sha1", 7)
+	var p workflowRunPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	var start, wg sync.WaitGroup
+	start.Add(1)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			start.Wait()
+			ext.autoHeal(p, 7, body)
+		}()
+	}
+	start.Done()
+	wg.Wait()
+	close(posted)
+
+	var attempts int
+	var comments []string
+	for c := range posted {
+		comments = append(comments, c)
+		if strings.Contains(c, "attempting an automatic fix") {
+			attempts++
+		}
+	}
+	if attempts != 1 {
+		t.Fatalf("got %d \"attempting an automatic fix\" comments for one head commit; want 1: %v", attempts, comments)
+	}
 }
 
 // Re-applying quack:fix is the retry convention: it re-arms auto-heal (clears

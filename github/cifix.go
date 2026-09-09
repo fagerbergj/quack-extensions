@@ -124,6 +124,13 @@ func (e *Extension) autoHeal(p workflowRunPayload, number int, rawBody []byte) {
 		return // no quack:fix label and not quack's own PR - never auto-heal
 	}
 
+	// The read below and every SetFixState this call can reach (here and in
+	// beginFix) must be one atomic claim: two workflow_run deliveries for the
+	// same head SHA (CI usually runs several) otherwise both pass GetFixState
+	// before either's write lands, and both post the "attempting a fix" comment.
+	unlock := e.mergeMu.Lock(chatID)
+	defer unlock()
+
 	st, err := e.store.GetFixState(ctx, chatID)
 	if err != nil {
 		e.host.Log.Warn("github: auto-heal state read failed; skipping", "repo", ri.Owner+"/"+ri.Name, "pr", number, "err", err)

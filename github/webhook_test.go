@@ -2387,6 +2387,63 @@ func TestIsWorkRequestTimeoutFailsSafe(t *testing.T) {
 	}
 }
 
+// delayedIntentClassifier simulates a real (ctx-aware) model call that takes
+// delay to answer: it races the deadline instead of ignoring it, like an
+// actual HTTP round-trip to a cold llm-swap model would.
+type delayedIntentClassifier struct {
+	calls   int32
+	delay   time.Duration
+	verdict string
+}
+
+func (d *delayedIntentClassifier) Classify(ctx context.Context, _ string) (string, error) {
+	atomic.AddInt32(&d.calls, 1)
+	select {
+	case <-time.After(d.delay):
+		return d.verdict, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+// TestDispatchGivesClassifierRetryItsFullBudget is finding 9: dispatch used
+// to wrap loadGithubContext/writeInputArtifacts/failingChecks/SetPendingRun
+// AND both intent-classifier attempts in one 10s reactionTimeout, so
+// intentClassifierRetryTimeout's 30s retry (added for exactly a cold
+// llm-swap model, #1172) was clamped to whatever was left of that 10s and
+// could never be granted. A classifier that takes 15s - past the first 5s
+// attempt, comfortably inside the 30s retry - must still get to answer.
+func TestDispatchGivesClassifierRetryItsFullBudget(t *testing.T) {
+	posted := make(chan string, 1)
+	srv := stubGitHub(t, posted)
+	defer srv.Close()
+	e, fh := newTestExtension(t, srv.URL, nil)
+
+	classifier := &delayedIntentClassifier{delay: 15 * time.Second, verdict: "WORK"}
+	e.intentClassifier = classifier
+
+	task := "what do you think of this approach?"
+	var p issueCommentPayload
+	if err := json.Unmarshal(pullCommentBody(task), &p); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	e.dispatch(p, task)
+
+	calls := fh.calls()
+	if len(calls) != 1 {
+		t.Fatalf("Dispatch calls = %d, want 1", len(calls))
+	}
+	if strings.Contains(calls[0].Ask.Message, "<deliverable>a reply to their message") {
+		t.Errorf("classifier's WORK verdict was discarded; dispatch fell back to conversational:\n%s", calls[0].Ask.Message)
+	}
+	select {
+	case msg := <-posted:
+		t.Errorf("fallbackWorkRequest fired (retry budget was clamped): %q", msg)
+	default:
+	}
+}
+
 // TestBuildEnvelopeQuotedCodeCorrectionNotWorkRequest is the regression test
 // for the bug this classifier replaced: a naive verb regex read a method call
 // quoted inside code (it.migrate(connection)) as the imperative "migrate",

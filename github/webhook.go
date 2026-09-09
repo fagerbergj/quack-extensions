@@ -779,7 +779,10 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 	// so a straggler can't release the claim a takeover already re-took.
 	clearInflight := func() { e.inflight.CompareAndDelete(sessionID, claimedAt) }
 
-	ctx, cancel := context.WithTimeout(context.Background(), reactionTimeout)
+	// The pre-dispatch pipeline below (GitHub fetches, both intent-classifier
+	// attempts) needs the 2min budget meant for API phases, not the 10s
+	// reaction-ack budget; reactionTimeout stays on ackReaction/ackLabelReaction/ackDedup.
+	ctx, cancel := context.WithTimeout(context.Background(), fixContextTimeout)
 	defer cancel()
 
 	isPR := p.Issue.PullRequest != nil
