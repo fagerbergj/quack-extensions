@@ -121,7 +121,10 @@ type mergeSim struct {
 	suites        string // GET .../check-suites; "" behaves as zero suites (no CI on this head at all)
 	issueComments string // GET .../comments; "" behaves as no own-PR comment markers
 	headSHA       string
+	labels        string // pullMeta's "labels" array, e.g. `[{"name":"quack:merge"}]`; "" behaves as no labels
 	mergeErr      string // non-empty: PUT .../merge returns 405 with this message
+	timeline      string // GET .../timeline; "" behaves as no matching events (known=false)
+	timelineErr   bool   // true: GET .../timeline returns 500
 
 	comments  atomic.Int32 // POST issue comments
 	edits     atomic.Int32 // PUT review body
@@ -144,7 +147,8 @@ func (m *mergeSim) server(t *testing.T) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
 		reviews, checks, head, mergeErr := strings.Replace(m.reviews, "BODY", m.body, 1), m.checks, m.headSHA, m.mergeErr
-		suites, issueComments := m.suites, m.issueComments
+		suites, issueComments, labels := m.suites, m.issueComments, m.labels
+		timeline, timelineErr := m.timeline, m.timelineErr
 		m.mu.Unlock()
 		if suites == "" {
 			suites = `{"check_suites":[]}`
@@ -152,7 +156,20 @@ func (m *mergeSim) server(t *testing.T) *httptest.Server {
 		if issueComments == "" {
 			issueComments = `[]`
 		}
+		if labels == "" {
+			labels = `[]`
+		}
+		if timeline == "" {
+			timeline = `[]`
+		}
 		switch {
+		case strings.Contains(r.URL.Path, "/timeline"):
+			if timelineErr {
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprint(w, `{"message":"boom"}`)
+				return
+			}
+			fmt.Fprint(w, timeline)
 		case strings.HasSuffix(r.URL.Path, "/installation"):
 			fmt.Fprint(w, `{"id":5}`)
 		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
@@ -197,7 +214,7 @@ func (m *mergeSim) server(t *testing.T) *httptest.Server {
 		case strings.HasSuffix(r.URL.Path, "/files"), strings.HasSuffix(r.URL.Path, "/commits"):
 			fmt.Fprint(w, `[]`)
 		case strings.Contains(r.URL.Path, "/pulls/"):
-			fmt.Fprintf(w, `{"title":"Test PR","body":"","state":"open","head":{"ref":"feature","sha":%q},"base":{"ref":"main"}}`, head)
+			fmt.Fprintf(w, `{"title":"Test PR","body":"","state":"open","head":{"ref":"feature","sha":%q},"base":{"ref":"main"},"labels":%s}`, head, labels)
 		case isIssueMetaPath(r.URL.Path):
 			fmt.Fprint(w, `{"title":"Test PR","body":"","state":"open"}`)
 		default:
@@ -460,6 +477,207 @@ func TestMergeLabelTwiceWhileReviewRunsPostsNothing(t *testing.T) {
 	}
 	if intent, _ := ext.store.GetMergeIntent(context.Background(), globalChatID("github-acme-widgets-7")); intent == nil || intent.RequestedBy != "alice" {
 		t.Errorf("intent = %+v; want alice's standing authorization recorded", intent)
+	}
+}
+
+// mergeLabelEvent builds one timeline event for mergeLabelActor's GET
+// .../timeline stub - actor + whether it was a "labeled" or "unlabeled" event.
+func mergeLabelEvent(actor string, labeled bool, createdAt string) string {
+	action := "unlabeled"
+	if labeled {
+		action = "labeled"
+	}
+	return fmt.Sprintf(`{"event":%q,"created_at":%q,"actor":{"login":%q},"label":{"name":"quack:merge"}}`, action, createdAt, actor)
+}
+
+// TestTryMergeAdoptsIntentFromLabelWhenNoneStored pins #1330: a PR carries
+// quack:merge on GitHub but has no stored intent (its "labeled" delivery was
+// missed) - tryMerge must adopt the label itself rather than staying blocked
+// on mergeNoIntent until someone re-applies it, but only once the timeline
+// confirms an authorized human actually applied it (#1332).
+func TestTryMergeAdoptsIntentFromLabelWhenNoneStored(t *testing.T) {
+	sim := &mergeSim{
+		reviews: "[]", checks: checksGreen, headSHA: "head1", labels: `[{"name":"quack:merge"}]`,
+		timeline: "[" + mergeLabelEvent("alice", true, "2026-01-01T00:00:00Z") + "]",
+	}
+	srv := sim.server(t)
+	ext, _ := newTestExtension(t, srv.URL, []string{"merge"})
+	chatID := globalChatID("github-acme-widgets-7")
+
+	if intent, _ := ext.store.GetMergeIntent(context.Background(), chatID); intent != nil {
+		t.Fatalf("intent = %+v; want none stored before the call", intent)
+	}
+	outcome, err := ext.tryMerge(context.Background(), "acme", "widgets", 7)
+	if err != nil {
+		t.Fatalf("tryMerge: %v", err)
+	}
+	if outcome != mergeUnreviewed {
+		t.Errorf("outcome = %v; want mergeUnreviewed once the label is adopted and evaluation proceeds", outcome)
+	}
+	intent, _ := ext.store.GetMergeIntent(context.Background(), chatID)
+	if intent == nil || intent.RequestedBy != "alice" {
+		t.Errorf("intent = %+v; want it persisted from the timeline's actor", intent)
+	}
+}
+
+// TestTryMergeAdoptionRefusedForBotActor: the timeline says the label's
+// actor is a bot login - the delivery path excludes bots via the same
+// suffix check, so adoption must too.
+func TestTryMergeAdoptionRefusedForBotActor(t *testing.T) {
+	sim := &mergeSim{
+		reviews: "[]", checks: checksGreen, headSHA: "head1", labels: `[{"name":"quack:merge"}]`,
+		timeline: "[" + mergeLabelEvent("some-app[bot]", true, "2026-01-01T00:00:00Z") + "]",
+	}
+	srv := sim.server(t)
+	ext, _ := newTestExtension(t, srv.URL, []string{"merge"})
+	chatID := globalChatID("github-acme-widgets-7")
+
+	outcome, err := ext.tryMerge(context.Background(), "acme", "widgets", 7)
+	if err != nil {
+		t.Fatalf("tryMerge: %v", err)
+	}
+	if outcome != mergeNoIntent {
+		t.Errorf("outcome = %v; want mergeNoIntent, refused for a bot actor", outcome)
+	}
+	if intent, _ := ext.store.GetMergeIntent(context.Background(), chatID); intent != nil {
+		t.Errorf("intent = %+v; want nothing persisted for a bot actor", intent)
+	}
+}
+
+// TestTryMergeAdoptionRefusedForDisallowedActor: the timeline's actor is a
+// real human but not in allowed_users - same access check the labeled
+// delivery enforces.
+func TestTryMergeAdoptionRefusedForDisallowedActor(t *testing.T) {
+	sim := &mergeSim{
+		reviews: "[]", checks: checksGreen, headSHA: "head1", labels: `[{"name":"quack:merge"}]`,
+		timeline: "[" + mergeLabelEvent("mallory", true, "2026-01-01T00:00:00Z") + "]",
+	}
+	srv := sim.server(t)
+	ext, _ := newTestExtension(t, srv.URL, []string{"merge"})
+	chatID := globalChatID("github-acme-widgets-7")
+
+	outcome, err := ext.tryMerge(context.Background(), "acme", "widgets", 7)
+	if err != nil {
+		t.Fatalf("tryMerge: %v", err)
+	}
+	if outcome != mergeNoIntent {
+		t.Errorf("outcome = %v; want mergeNoIntent, refused for an actor outside allowed_users", outcome)
+	}
+	if intent, _ := ext.store.GetMergeIntent(context.Background(), chatID); intent != nil {
+		t.Errorf("intent = %+v; want nothing persisted for a disallowed actor", intent)
+	}
+}
+
+// TestTryMergeAdoptionRefusedWhenLatestEventIsUnlabeled: the label is back on
+// the PR (pullMeta says so) but the timeline's latest labeled/unlabeled event
+// for it is "unlabeled" - a stale read, a second relabel not yet reflected in
+// pullMeta, or similar skew. Adoption must not trust presence over the
+// timeline's own most-recent verdict.
+func TestTryMergeAdoptionRefusedWhenLatestEventIsUnlabeled(t *testing.T) {
+	sim := &mergeSim{
+		reviews: "[]", checks: checksGreen, headSHA: "head1", labels: `[{"name":"quack:merge"}]`,
+		timeline: "[" +
+			mergeLabelEvent("alice", true, "2026-01-01T00:00:00Z") + "," +
+			mergeLabelEvent("alice", false, "2026-01-02T00:00:00Z") +
+			"]",
+	}
+	srv := sim.server(t)
+	ext, _ := newTestExtension(t, srv.URL, []string{"merge"})
+	chatID := globalChatID("github-acme-widgets-7")
+
+	outcome, err := ext.tryMerge(context.Background(), "acme", "widgets", 7)
+	if err != nil {
+		t.Fatalf("tryMerge: %v", err)
+	}
+	if outcome != mergeNoIntent {
+		t.Errorf("outcome = %v; want mergeNoIntent, refused when the latest timeline event is unlabeled", outcome)
+	}
+	if intent, _ := ext.store.GetMergeIntent(context.Background(), chatID); intent != nil {
+		t.Errorf("intent = %+v; want nothing persisted when the latest event is unlabeled", intent)
+	}
+}
+
+// TestTryMergeAdoptionRefusedWhenTimelineErrors: the timeline lookup itself
+// fails - fail closed, same as any other infra error, but as mergeNoIntent
+// rather than surfacing an error (the label check that led here is
+// best-effort; a GitHub hiccup should not read as a hard tryMerge failure).
+func TestTryMergeAdoptionRefusedWhenTimelineErrors(t *testing.T) {
+	sim := &mergeSim{
+		reviews: "[]", checks: checksGreen, headSHA: "head1", labels: `[{"name":"quack:merge"}]`,
+		timelineErr: true,
+	}
+	srv := sim.server(t)
+	ext, _ := newTestExtension(t, srv.URL, []string{"merge"})
+	chatID := globalChatID("github-acme-widgets-7")
+
+	outcome, err := ext.tryMerge(context.Background(), "acme", "widgets", 7)
+	if err != nil {
+		t.Fatalf("tryMerge: %v", err)
+	}
+	if outcome != mergeNoIntent {
+		t.Errorf("outcome = %v; want mergeNoIntent, refused when the timeline call errors", outcome)
+	}
+	if intent, _ := ext.store.GetMergeIntent(context.Background(), chatID); intent != nil {
+		t.Errorf("intent = %+v; want nothing persisted when the timeline lookup fails", intent)
+	}
+}
+
+// TestTryMergeNoIntentNoLabelStaysNoIntent: no stored intent and the label is
+// absent from GitHub too - mergeNoIntent, and nothing gets persisted.
+func TestTryMergeNoIntentNoLabelStaysNoIntent(t *testing.T) {
+	sim := &mergeSim{reviews: "[]", checks: checksGreen, headSHA: "head1"}
+	srv := sim.server(t)
+	ext, _ := newTestExtension(t, srv.URL, []string{"merge"})
+	chatID := globalChatID("github-acme-widgets-7")
+
+	outcome, err := ext.tryMerge(context.Background(), "acme", "widgets", 7)
+	if err != nil {
+		t.Fatalf("tryMerge: %v", err)
+	}
+	if outcome != mergeNoIntent {
+		t.Errorf("outcome = %v; want mergeNoIntent", outcome)
+	}
+	if intent, _ := ext.store.GetMergeIntent(context.Background(), chatID); intent != nil {
+		t.Errorf("intent = %+v; want nothing persisted with no label and no prior intent", intent)
+	}
+}
+
+// TestConcurrentReviewAndMergeLabelDeliveriesBothHandled pins #1330's other
+// half: GitHub can deliver quack:review and quack:merge as two
+// near-simultaneous "labeled" events for one PR. Both deliveries must be
+// handled - the merge-intent write must not wait on, or be dropped by, the
+// review dispatch racing it in the same window.
+func TestConcurrentReviewAndMergeLabelDeliveriesBothHandled(t *testing.T) {
+	sim := &mergeSim{reviews: "[]", checks: checksPending, headSHA: "head1"}
+	srv := sim.server(t)
+	ext, fh := newTestExtension(t, srv.URL, []string{"label", "merge"})
+
+	review := strings.Replace(string(mergeLabelBody("alice")), "quack:merge", "quack-auto-review", 1)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request", []byte(review)))
+	}()
+	go func() {
+		defer wg.Done()
+		ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request", mergeLabelBody("alice")))
+	}()
+	wg.Wait()
+
+	fh.waitForDispatch(t, 2*time.Second)
+	chatID := globalChatID("github-acme-widgets-7")
+	waitFor(t, "the merge intent", func() bool {
+		intent, _ := ext.store.GetMergeIntent(context.Background(), chatID)
+		return intent != nil
+	})
+	settle()
+
+	if intent, _ := ext.store.GetMergeIntent(context.Background(), chatID); intent == nil || intent.RequestedBy != "alice" {
+		t.Errorf("intent = %+v; want alice's standing authorization recorded", intent)
+	}
+	if calls := fh.calls(); len(calls) != 1 {
+		t.Errorf("dispatches = %d; want exactly one review dispatched", len(calls))
 	}
 }
 
