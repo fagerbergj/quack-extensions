@@ -153,6 +153,17 @@ type Host struct {
 	// alone.
 	DataDir string
 
+	// Version is the running quack build stamp (e.g. "0.51.26"), for an
+	// extension that wants to name it somewhere inconspicuous (a comment
+	// footer). "" when unknown - callers must degrade to omitting it.
+	Version string
+
+	// PublicURL is the server's externally reachable base URL (e.g.
+	// "https://quack.example.com"), for an extension that wants to link
+	// posted content back to the run that produced it. "" when unset -
+	// callers must degrade to omitting the link.
+	PublicURL string
+
 	// Deprecated: EnsureContextDir is superseded by ReadArtifact/
 	// WriteArtifact (quack issue #1010) - a workspace-dir sibling to a
 	// dispatched run's clone, for evidence files too large or too raw for

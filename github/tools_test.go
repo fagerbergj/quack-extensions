@@ -438,7 +438,7 @@ func TestDeliverStagedCommentSanitizesBody(t *testing.T) {
 		}
 	})
 	raw := "```markdown\nI've read the repo. Here is the plan.\n\n## Plan\n\nDo the thing.\n```"
-	if err := app.deliverStagedComment(context.Background(), "acme", "widgets", 7, "plan", raw); err != nil {
+	if err := app.deliverStagedComment(context.Background(), "acme", "widgets", 7, "plan", raw, "chat1"); err != nil {
 		t.Fatalf("deliverStagedComment: %v", err)
 	}
 	if strings.Contains(posted, "```markdown") {

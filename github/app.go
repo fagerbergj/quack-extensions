@@ -30,6 +30,8 @@ type App struct {
 	apiBase         string
 	http            *http.Client
 	partialFixLabel string
+	version         string // quack build stamp; "" = omit from posted footers
+	publicURL       string // externally reachable base URL; "" = footers carry no run link
 
 	mu        sync.Mutex
 	tokens    map[int64]cachedToken
@@ -88,6 +90,14 @@ func (a *App) SetAPIBase(base string) {
 	if base != "" {
 		a.apiBase = strings.TrimRight(base, "/")
 	}
+}
+
+// SetFooter records what withFooter stamps on posted bodies: the quack
+// build stamp and the server's externally reachable base URL. Either may be
+// "" (host predates these Host fields, or the deployment has no public URL).
+func (a *App) SetFooter(version, publicURL string) {
+	a.version = version
+	a.publicURL = strings.TrimRight(publicURL, "/")
 }
 
 func LoadPrivateKey(inline, path string) (string, error) {
