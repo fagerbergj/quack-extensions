@@ -291,6 +291,24 @@ func TestAppJSCacheBreakdownRankedByVolume(t *testing.T) {
 	}
 }
 
+// TestAppJSCacheBreakdownShowsNAForEmbeddings pins the fix for embeddings
+// models (e.g. qwen3-embed) rendering a fake "0.0%" cache rate: a label whose
+// only token_type is "input" (no output - see traced.go's recordEmbedUsage,
+// which never records output/reasoning/cached for an /embeddings call) never
+// went through chat completion, so the cache concept doesn't apply to it.
+func TestAppJSCacheBreakdownShowsNAForEmbeddings(t *testing.T) {
+	for _, want := range []string{
+		`tokenTypeOutput: "output"`,
+		"if (cached === 0 && output === 0)",
+		"rate: null",
+		`row.rate === null ? "n/a" : formatPercent(row.rate)`,
+	} {
+		if !strings.Contains(appJS, want) {
+			t.Errorf("app.js embeddings n/a cache display missing %q", want)
+		}
+	}
+}
+
 // TestAppJSLatencyHasHonestPresenceProbe pins the "never fake it" latency
 // requirement: the panel must probe for the histogram's _bucket series
 // before rendering percentiles, and show a message naming what's missing
