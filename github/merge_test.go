@@ -32,6 +32,12 @@ func TestStripMentions(t *testing.T) {
 		// stripping for the rest of the body - a real mention past it would
 		// otherwise leak through untouched.
 		{"```go\n@decorator\nno closing fence\n@alice", "```go\ndecorator\nno closing fence\nalice"},
+		// An unterminated inline span (odd backtick count) must not read as
+		// "code" for its trailing segment either - same fail-safe as fences.
+		{"run `go test @alice", "run `go test alice"},
+		// A closed inline span still protects only its own segment; a mention
+		// outside it is stripped as usual.
+		{"see `code` and @alice", "see `code` and alice"},
 	}
 	for _, tt := range tests {
 		if got := stripMentions(tt.in); got != tt.want {
@@ -109,11 +115,13 @@ func TestAppendLineOnce(t *testing.T) {
 // counts every outbound write by kind.
 type mergeSim struct {
 	mu       sync.Mutex
-	reviews  string // GET .../reviews; BODY is replaced by body
-	body     string // the quack review's current body - PUT edits persist here
-	checks   string // GET .../check-runs
-	headSHA  string
-	mergeErr string // non-empty: PUT .../merge returns 405 with this message
+	reviews       string // GET .../reviews; BODY is replaced by body
+	body          string // the quack review's current body - PUT edits persist here
+	checks        string // GET .../check-runs
+	suites        string // GET .../check-suites; "" behaves as zero suites (no CI on this head at all)
+	issueComments string // GET .../comments; "" behaves as no own-PR comment markers
+	headSHA       string
+	mergeErr      string // non-empty: PUT .../merge returns 405 with this message
 
 	comments  atomic.Int32 // POST issue comments
 	edits     atomic.Int32 // PUT review body
@@ -136,7 +144,14 @@ func (m *mergeSim) server(t *testing.T) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
 		reviews, checks, head, mergeErr := strings.Replace(m.reviews, "BODY", m.body, 1), m.checks, m.headSHA, m.mergeErr
+		suites, issueComments := m.suites, m.issueComments
 		m.mu.Unlock()
+		if suites == "" {
+			suites = `{"check_suites":[]}`
+		}
+		if issueComments == "" {
+			issueComments = `[]`
+		}
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/installation"):
 			fmt.Fprint(w, `{"id":5}`)
@@ -169,6 +184,8 @@ func (m *mergeSim) server(t *testing.T) *httptest.Server {
 			}
 			m.merges.Add(1)
 			fmt.Fprint(w, `{"merged":true,"sha":"deadbeefcafe"}`)
+		case strings.Contains(r.URL.Path, "/check-suites"):
+			fmt.Fprint(w, suites)
 		case strings.Contains(r.URL.Path, "/check-runs"):
 			fmt.Fprint(w, checks)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
@@ -176,7 +193,7 @@ func (m *mergeSim) server(t *testing.T) *httptest.Server {
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprint(w, `{}`)
 		case strings.HasSuffix(r.URL.Path, "/comments"):
-			fmt.Fprint(w, `[]`)
+			fmt.Fprint(w, issueComments)
 		case strings.HasSuffix(r.URL.Path, "/files"), strings.HasSuffix(r.URL.Path, "/commits"):
 			fmt.Fprint(w, `[]`)
 		case strings.Contains(r.URL.Path, "/pulls/"):
@@ -196,6 +213,8 @@ const (
 	checksEmpty     = `{"check_runs":[]}`
 	checksPending   = `{"check_runs":[{"id":1,"name":"go-test","status":"in_progress"}]}`
 	checksGreen     = `{"check_runs":[{"id":1,"name":"go-test","status":"completed","conclusion":"success"}]}`
+	suitesNone      = `{"check_suites":[]}`
+	suitesQueued    = `{"check_suites":[{"id":1,"status":"queued","app":{"slug":"github-actions"}}]}`
 
 	// approvedOnHead1PlusHumanChanges adds bob's standing CHANGES_REQUESTED
 	// on the same head quack approved.
@@ -324,6 +343,38 @@ func TestMergeApprovalOnOldHeadDoesNotMerge(t *testing.T) {
 	}
 	if intent, _ := ext.store.GetMergeIntent(context.Background(), chatID); intent == nil {
 		t.Error("intent must survive a stale approval so a fresh approval on the new head can still merge")
+	}
+}
+
+// ownPRApprovalOnHead1 is an own-PR verdict living in a plain issue comment
+// (GitHub forbids self-review) - commit_id doesn't exist on that object, so
+// the head it was reviewed against is pinned via the embedded head marker.
+const ownPRApprovalOnHead1 = `[{"id":21,"body":"Own PR: verdict approve.\n\n<!-- quack:delivery:review:approve -->\n<!-- quack:delivery:head:head1 -->","user":{"login":"quack[bot]"},"created_at":"2026-01-01T00:00:00Z"}]`
+
+// TestMergeOwnPRApprovalStaleAfterPushDoesNotMerge: an own-PR verdict has no
+// commit_id of its own (issue comment, not a review) - the embedded head
+// marker must still catch a push that moved the head past what was reviewed.
+func TestMergeOwnPRApprovalStaleAfterPushDoesNotMerge(t *testing.T) {
+	sim := &mergeSim{reviews: "[]", issueComments: ownPRApprovalOnHead1, checks: checksGreen, headSHA: "head2"}
+	srv := sim.server(t)
+	ext, _ := newTestExtension(t, srv.URL, []string{"merge"})
+	chatID := globalChatID("github-acme-widgets-7")
+	if err := ext.store.SetMergeIntent(context.Background(), chatID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"action":"synchronize","number":7,"pull_request":{"head":{"sha":"head2"}},
+		"repository":{"name":"widgets","owner":{"login":"acme"}},"installation":{"id":5},"sender":{"login":"alice"}}`)
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request", body))
+	for _, kind := range []string{"check_run", "check_suite"} {
+		ext.handleWebhook(httptest.NewRecorder(), signedRequest(kind, checkEventBody(kind)))
+	}
+	settle()
+	if sim.merges.Load() != 0 {
+		t.Errorf("merged a head the own-PR verdict never reviewed: merges=%d", sim.merges.Load())
+	}
+	if intent, _ := ext.store.GetMergeIntent(context.Background(), chatID); intent == nil {
+		t.Error("intent must survive a stale own-PR approval so a fresh one on the new head can still merge")
 	}
 }
 
@@ -483,9 +534,10 @@ func TestSynchronizeSameHeadTwiceDispatchesOnce(t *testing.T) {
 // an empty check-run list is NOT green - pull_request_review.submitted can
 // arrive before any workflow has even queued. No merge until at least one
 // check exists and is green; the next completion event re-evaluates, with no
-// timer and no polling.
+// timer and no polling. A queued check suite is what makes this "wait" and
+// not "no CI at all" (see TestMergeNoCheckSuitesMergesImmediately).
 func TestMergeWaitsWhenNoChecksRegisteredYetThenMerges(t *testing.T) {
-	sim := &mergeSim{reviews: "[]", body: "LGTM", checks: checksEmpty, headSHA: "head1"}
+	sim := &mergeSim{reviews: "[]", body: "LGTM", checks: checksEmpty, suites: suitesQueued, headSHA: "head1"}
 	srv := sim.server(t)
 	ext, _ := newTestExtension(t, srv.URL, []string{"merge"})
 	if err := ext.store.SetMergeIntent(context.Background(), globalChatID("github-acme-widgets-7"), "alice"); err != nil {
@@ -497,6 +549,40 @@ func TestMergeWaitsWhenNoChecksRegisteredYetThenMerges(t *testing.T) {
 	settle()
 	if sim.merges.Load() != 0 {
 		t.Fatalf("merged with zero check runs registered on the head: merges=%d", sim.merges.Load())
+	}
+
+	sim.set(func(m *mergeSim) { m.checks = checksGreen })
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest("check_run", checkEventBody("check_run")))
+	waitFor(t, "the merge", func() bool { return sim.merges.Load() == 1 })
+}
+
+// TestMergeNoCheckSuitesMergesImmediately pins the fix for the permanent
+// silent stall: a head with zero check runs AND zero check suites (a
+// docs-only PR under path-filtered workflows, or a repo with no CI at all)
+// will never get a completion event to re-evaluate on, so tryMerge must
+// attempt the merge right away and let GitHub's own required-check refusal
+// be the last guard.
+func TestMergeNoCheckSuitesMergesImmediately(t *testing.T) {
+	sim := &mergeSim{reviews: approvedOnHead1, body: "LGTM", checks: checksEmpty, suites: suitesNone, headSHA: "head1"}
+	srv := sim.server(t)
+	ext, _ := newTestExtension(t, srv.URL, []string{"merge"})
+
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request", mergeLabelBody("alice")))
+	waitFor(t, "the merge", func() bool { return sim.merges.Load() == 1 })
+}
+
+// TestMergeQueuedSuiteWaitsThenRunsCompleteMerges: a check suite exists
+// (queued, no runs posted yet) - tryMerge must wait for the completion event
+// instead of attempting the merge, then merge once the run reports green.
+func TestMergeQueuedSuiteWaitsThenRunsCompleteMerges(t *testing.T) {
+	sim := &mergeSim{reviews: approvedOnHead1, body: "LGTM", checks: checksEmpty, suites: suitesQueued, headSHA: "head1"}
+	srv := sim.server(t)
+	ext, _ := newTestExtension(t, srv.URL, []string{"merge"})
+
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request", mergeLabelBody("alice")))
+	settle()
+	if sim.merges.Load() != 0 {
+		t.Fatalf("merged with a queued suite and no runs reported: merges=%d", sim.merges.Load())
 	}
 
 	sim.set(func(m *mergeSim) { m.checks = checksGreen })

@@ -6,7 +6,10 @@ import (
 )
 
 // mentionRe matches a GitHub @user or @org/team token; the leading class
-// keeps emails (a@b) and URL paths (/@x) from matching.
+// keeps emails (a@b) and URL paths (/@x) from matching. The team alternative
+// also matches an npm-style scoped package name (@angular/core) in prose -
+// GitHub pings @org/team identically, so there is no grammar-level way to
+// tell them apart; such tokens are deliberately stripped too.
 var mentionRe = regexp.MustCompile(`(^|[^\w/.:@])@([A-Za-z0-9][A-Za-z0-9-]*(?:/[A-Za-z0-9._-]+)?)`)
 
 // stripMentions drops the "@" from every mention outside fenced or inline
@@ -37,9 +40,16 @@ func stripMentions(s string) string {
 		if fenced {
 			continue
 		}
-		// Even segments are prose, odd ones are inline code.
+		// Even segments are prose, odd ones are inline code. With an odd
+		// backtick count the final segment is an unterminated span and the
+		// parity flips, so a trailing mention would survive; fail safe like
+		// the fence block above and strip it too.
 		parts := strings.Split(ln, "`")
-		for j := 0; j < len(parts); j += 2 {
+		allProse := len(parts)%2 == 0
+		for j := 0; j < len(parts); j++ {
+			if !allProse && j%2 != 0 {
+				continue
+			}
 			parts[j] = mentionRe.ReplaceAllString(parts[j], "${1}${2}")
 		}
 		lines[i] = strings.Join(parts, "`")

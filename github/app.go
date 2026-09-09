@@ -603,6 +603,40 @@ func (a *App) listCheckRuns(ctx context.Context, owner, repo, sha string) ([]che
 	return out.CheckRuns, nil
 }
 
+// checkSuiteView is one check-suite: created for a head at push time, before
+// any check run exists, for every workflow the push triggers.
+type checkSuiteView struct {
+	ID                   int64  `json:"id"`
+	Status               string `json:"status"`
+	Conclusion           string `json:"conclusion"`
+	LatestCheckRunsCount int    `json:"latest_check_runs_count"`
+	App                  struct {
+		Slug string `json:"slug"`
+	} `json:"app"`
+}
+
+// producesRuns reports whether this suite is ever expected to post check
+// runs: GitHub Actions always does; any other app only counts once it has -
+// some apps register a suite purely informational and never populate one.
+func (s checkSuiteView) producesRuns() bool {
+	return s.App.Slug == "github-actions" || s.LatestCheckRunsCount > 0
+}
+
+func (a *App) listCheckSuites(ctx context.Context, owner, repo, sha string) ([]checkSuiteView, error) {
+	tok, err := a.tokenForRepo(ctx, owner, repo)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		CheckSuites []checkSuiteView `json:"check_suites"`
+	}
+	path := fmt.Sprintf("/repos/%s/%s/commits/%s/check-suites?per_page=100", owner, repo, sha)
+	if err := a.doJSON(ctx, http.MethodGet, path, "token "+tok, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.CheckSuites, nil
+}
+
 type checkAnnotation struct {
 	Path      string `json:"path"`
 	StartLine int    `json:"start_line"`

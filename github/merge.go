@@ -90,6 +90,23 @@ func allChecksGreen(checks []checkRunView) bool {
 	return true
 }
 
+// headHasPendingCI reports whether the head has a check suite expected to
+// post runs but hasn't yet. Called only when listCheckRuns came back empty,
+// to tell "CI queued, no run reported yet" (wait) from "no CI on this head
+// at all" (nothing to wait for).
+func (e *Extension) headHasPendingCI(ctx context.Context, owner, repo, sha string) (bool, error) {
+	suites, err := e.app.listCheckSuites(ctx, owner, repo, sha)
+	if err != nil {
+		return false, err
+	}
+	for _, s := range suites {
+		if s.producesRuns() {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // blockingHumanReviewer reports the first reviewer (any login, quack's own
 // included) whose latest review AGAINST THE CURRENT HEAD is a standing
 // CHANGES_REQUESTED (5): the quack:merge label authorizes merging a green,
@@ -124,6 +141,11 @@ func blockingHumanReviewer(reviews []prReview, headSHA string) (login string, bl
 // reviewVerdictMarkerRe extracts quack's verdict from the hidden marker in an own-PR review comment (GitHub forbids self-review).
 var reviewVerdictMarkerRe = regexp.MustCompile(`<!-- quack:delivery:review:(approve|request_changes|comment) -->`)
 
+// reviewHeadMarkerRe extracts the head SHA an own-PR verdict was pinned
+// against - embedded alongside the verdict marker since a plain issue
+// comment (unlike a formal review) has no commit_id of its own to compare.
+var reviewHeadMarkerRe = regexp.MustCompile(`<!-- quack:delivery:head:(\S+) -->`)
+
 // formalReviewVerdicts maps GitHub review states to the same vocabulary as reviewVerdictMarkerRe.
 var formalReviewVerdicts = map[string]string{
 	"APPROVED":          "approve",
@@ -132,8 +154,10 @@ var formalReviewVerdicts = map[string]string{
 }
 
 // verdictRef is quack's latest verdict on a PR plus where it lives, so a
-// merge outcome can be appended to that same body. commitID is empty for a
-// marker found in an issue comment (no commit_id there).
+// merge outcome can be appended to that same body. commitID is empty when no
+// head SHA is available: an issue-comment marker predating
+// quack:delivery:head, or a review whose GitHub-reported commit_id is
+// somehow empty and whose body has no head marker either.
 type verdictRef struct {
 	verdict   string
 	commitID  string
@@ -164,7 +188,13 @@ func (e *Extension) latestQuackVerdict(ctx context.Context, owner, repo string, 
 		// (GitHub disallows approve/request_changes on your own PR) but carries
 		// the REAL verdict in the marker - the state alone would read as "comment".
 		if m := reviewVerdictMarkerRe.FindStringSubmatch(r.Body); m != nil {
-			verdicts = append(verdicts, verdictRef{verdict: m[1], commitID: r.CommitID, reviewID: r.ID, body: r.Body, at: at})
+			commitID := r.CommitID
+			if commitID == "" {
+				if hm := reviewHeadMarkerRe.FindStringSubmatch(r.Body); hm != nil {
+					commitID = hm[1]
+				}
+			}
+			verdicts = append(verdicts, verdictRef{verdict: m[1], commitID: commitID, reviewID: r.ID, body: r.Body, at: at})
 			continue
 		}
 		if v := formalReviewVerdicts[r.State]; v != "" {
@@ -185,7 +215,11 @@ func (e *Extension) latestQuackVerdict(ctx context.Context, owner, repo string, 
 			continue
 		}
 		at, _ := time.Parse(time.RFC3339, c.CreatedAt)
-		verdicts = append(verdicts, verdictRef{verdict: m[1], commentID: c.ID, body: c.Body, at: at})
+		commitID := ""
+		if hm := reviewHeadMarkerRe.FindStringSubmatch(c.Body); hm != nil {
+			commitID = hm[1]
+		}
+		verdicts = append(verdicts, verdictRef{verdict: m[1], commitID: commitID, commentID: c.ID, body: c.Body, at: at})
 	}
 
 	if len(verdicts) == 0 {
@@ -278,6 +312,21 @@ func (e *Extension) tryMerge(ctx context.Context, owner, repo string, number int
 	}
 	if checks, cerr := e.app.listCheckRuns(ctx, owner, repo, m.HeadSHA); cerr != nil {
 		slog.Warn("github: check-runs lookup failed before merge; letting GitHub decide", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", cerr)
+	} else if len(checks) == 0 {
+		// Zero runs is ambiguous: pull_request_review.submitted can beat every
+		// workflow's queue (event ordering), or this head may never get a run
+		// at all (docs-only PR under path filters, no CI). GitHub creates a
+		// check suite for every workflow a push triggers before any run
+		// exists, so consult that to tell the two apart - no CI ever waits
+		// forever for an event that never arrives.
+		if pending, serr := e.headHasPendingCI(ctx, owner, repo, m.HeadSHA); serr != nil {
+			slog.Warn("github: check-suites lookup failed before merge; letting GitHub decide", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", serr)
+		} else if pending {
+			return mergePending, nil
+		}
+		// No relevant suite: attempt the merge and let GitHub's own required-
+		// check refusal (mergePendingRe) be the guard wherever branch
+		// protection is actually configured.
 	} else if !allChecksGreen(checks) {
 		return mergePending, nil
 	}
@@ -479,6 +528,14 @@ type ciHead struct {
 // mergeOnCheckEvent fans a completed CI event out to tryMerge for every PR it
 // belongs to. Cheap when nothing is labeled: tryMerge stops at the intent
 // lookup before any GitHub call.
+//
+// Required topology: pull_requests is populated only when the check's head
+// AND base both live in p.Repository (GitHub's own scoping) - so for a fork
+// PR whose CI runs in the fork's own Actions, this array (and this fan-out)
+// is already empty; there is no base-repo PR number here to resolve it
+// from. Checks must run where the base repo can see them (the app installed
+// on the fork, or a pull_request_target-style workflow) or the merge stalls
+// silently the same way an all-empty check-suite list would.
 func (e *Extension) mergeOnCheckEvent(event string, body []byte) {
 	var p checkEventPayload
 	if json.Unmarshal(body, &p) != nil || p.Action != "completed" {

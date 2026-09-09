@@ -120,6 +120,32 @@ func TestMigrationAddsDispatchedHeadColumn(t *testing.T) {
 	s2.Close()
 }
 
+// TestSetMergeIntentConflictLeavesDispatchedHeadUntouched pins the ON
+// CONFLICT clause's deliberate omission of dispatched_head: re-labeling a PR
+// that already has a push-triggered re-review dispatched must not forget
+// that head, or the next synchronize for the same head would dispatch again.
+func TestSetMergeIntentConflictLeavesDispatchedHeadUntouched(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	if err := s.SetMergeIntent(ctx, "c1", "alice"); err != nil {
+		t.Fatalf("SetMergeIntent: %v", err)
+	}
+	if err := s.SetMergeIntentDispatchedHead(ctx, "c1", "abc123"); err != nil {
+		t.Fatalf("SetMergeIntentDispatchedHead: %v", err)
+	}
+	if err := s.SetMergeIntent(ctx, "c1", "bob"); err != nil {
+		t.Fatalf("SetMergeIntent (re-label): %v", err)
+	}
+	mi, err := s.GetMergeIntent(ctx, "c1")
+	if err != nil || mi == nil || mi.DispatchedHead != "abc123" {
+		t.Fatalf("GetMergeIntent after re-label = %+v, err=%v; want dispatched_head still abc123", mi, err)
+	}
+	if mi.RequestedBy != "bob" {
+		t.Errorf("RequestedBy = %q; want the re-label to update it to bob", mi.RequestedBy)
+	}
+}
+
 // TestStoreConcurrentAccessNoErrors is Risk 2's baseline: many goroutines
 // hitting all four tables, many keys, concurrently. Run with -race. The
 // property under test is that MaxOpenConns(1) actually prevents SQLITE_BUSY
