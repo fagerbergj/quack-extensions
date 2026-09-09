@@ -352,13 +352,14 @@ func stubFixGitHubDelayed(t *testing.T, posted chan<- string, prLabels []string,
 // autoHeal's GetFixState-then-SetFixState claim straddles GitHub round-trips
 // with no lock. Two workflow_run.completed deliveries for the same head SHA
 // (CI usually runs several checks, each firing its own event) both pass the
-// GetFixState check before either's claim lands, so both post "attempting an
-// automatic fix" for one commit.
+// GetFixState check before either's claim lands, so both dispatch a fix run
+// for one commit. The success path never posts a GitHub comment itself - it
+// calls Host.Dispatch (fh) - so that's the observable to dedup on, not comments.
 func TestAutoHealConcurrentSameHeadPostsOnce(t *testing.T) {
 	posted := make(chan string, 8)
 	srv := stubFixGitHubDelayed(t, posted, []string{"quack:fix"}, 50*time.Millisecond)
 	defer srv.Close()
-	ext, _ := newTestExtension(t, srv.URL, []string{"ci_fix"})
+	ext, fh := newTestExtension(t, srv.URL, []string{"ci_fix"})
 
 	body := workflowRunBody("completed", "failure", "sha1", 7)
 	var p workflowRunPayload
@@ -378,18 +379,9 @@ func TestAutoHealConcurrentSameHeadPostsOnce(t *testing.T) {
 	}
 	start.Done()
 	wg.Wait()
-	close(posted)
 
-	var attempts int
-	var comments []string
-	for c := range posted {
-		comments = append(comments, c)
-		if strings.Contains(c, "attempting an automatic fix") {
-			attempts++
-		}
-	}
-	if attempts != 1 {
-		t.Fatalf("got %d \"attempting an automatic fix\" comments for one head commit; want 1: %v", attempts, comments)
+	if calls := fh.calls(); len(calls) != 1 {
+		t.Fatalf("got %d Host.Dispatch calls for one head commit; want 1: %v", len(calls), calls)
 	}
 }
 
