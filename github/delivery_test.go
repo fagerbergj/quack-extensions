@@ -506,7 +506,7 @@ func TestDeliverCommentCarriesGateCaveat(t *testing.T) {
 		if _, err := app.Deliver(context.Background(), dc); err != nil {
 			t.Fatalf("Deliver: %v", err)
 		}
-		if !strings.Contains(postedBody, "did NOT pass") {
+		if !strings.Contains(postedBody, "did not pass") {
 			t.Fatalf("gate-failed comment missing the caveat banner: %q", postedBody)
 		}
 	})
@@ -541,7 +541,7 @@ func TestDeliverCommentCarriesGateCaveat(t *testing.T) {
 		if _, err := app.Deliver(context.Background(), dc); err != nil {
 			t.Fatalf("Deliver: %v", err)
 		}
-		if strings.Contains(postedBody, "did NOT pass") {
+		if strings.Contains(postedBody, "did not pass") {
 			t.Fatalf("gate-passed comment must not carry the caveat banner: %q", postedBody)
 		}
 	})
@@ -651,6 +651,49 @@ func TestDeliverReviewOnOwnPRIsCommentNoVerdict(t *testing.T) {
 	}
 	if len(posted.Comments) != 1 || posted.Comments[0].Path != "main.go" || posted.Comments[0].Line != 42 {
 		t.Fatalf("finding did not land as an inline review comment (#513): %s", reviewBody)
+	}
+}
+
+// TestDeliverReviewOnOwnPREmbedsHeadMarker pins the fix for merge.go's
+// staleness guard on own-PR verdicts: since a plain issue-comment marker has
+// no commit_id to compare (GitHub forbids self-review formally too, on some
+// repos falling back to a comment), quack embeds the head SHA it reviewed
+// against directly in the posted body.
+func TestDeliverReviewOnOwnPREmbedsHeadMarker(t *testing.T) {
+	var reviewBody []byte
+	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/app"):
+			io.WriteString(w, `{"slug":"quack"}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls/7"):
+			io.WriteString(w, `{"user":{"login":"quack[bot]"},"head":{"ref":"feature","sha":"head1"},"base":{"ref":"main"}}`)
+		case strings.HasSuffix(r.URL.Path, "/pulls/7/files"):
+			io.WriteString(w, `[]`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/reviews"):
+			io.WriteString(w, `[]`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/pulls/7/reviews"):
+			reviewBody, _ = io.ReadAll(r.Body)
+			io.WriteString(w, `{"id":9,"html_url":"https://github.com/acme/widgets/pull/7#pullrequestreview-9"}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	})
+
+	dc := sdk.DeliveryContext{
+		GatePassed: true, ChatID: "chat-ownpr-head", CloneURL: "https://github.com/acme/widgets.git", IssueNumber: 7,
+		Items: []sdk.StagedDelivery{{Kind: "review", Event: "approve", Body: "clean change"}},
+	}
+	if _, err := app.Deliver(context.Background(), dc); err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	var posted struct {
+		Body string `json:"body"`
+	}
+	if err := json.Unmarshal(reviewBody, &posted); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(posted.Body, "<!-- quack:delivery:head:head1 -->") {
+		t.Fatalf("self-review body missing its head marker (needed to pin the merge staleness guard):\n%s", posted.Body)
 	}
 }
 
@@ -1016,7 +1059,7 @@ func TestDeliverFailedGateOpensDraftPR(t *testing.T) {
 	if !posted.Draft {
 		t.Fatalf("gate-failed PR must open as a draft: %s", prBody)
 	}
-	if !strings.Contains(posted.Body, "did NOT pass") {
+	if !strings.Contains(posted.Body, "did not pass") {
 		t.Fatalf("caveat banner missing from body: %s", posted.Body)
 	}
 	// #575: a fresh PR opened for a chat tied to issue #3 closes it deterministically.

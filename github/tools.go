@@ -494,9 +494,9 @@ func defaultReviewBody(event string, n int) string {
 	case 0:
 		return verdict + "."
 	case 1:
-		return verdict + " - 1 inline comment, see it for detail."
+		return verdict + " (1 inline comment)."
 	default:
-		return fmt.Sprintf("%s - %d inline comments, see them for detail.", verdict, n)
+		return fmt.Sprintf("%s (%d inline comments).", verdict, n)
 	}
 }
 
@@ -858,7 +858,7 @@ func gateCaveat(dc sdk.DeliveryContext, body string) string {
 		fb = "(no specific feedback was recorded - inspect the diff and tests carefully)"
 	}
 	banner := "> [!WARNING]\n" +
-		"> **quack's trust gate did NOT pass this change.** It is delivered anyway so a human can decide - review the concerns below before merging.\n" +
+		"> **Trust gate did not pass.** Delivered for a human decision; concerns:\n" +
 		">\n> " + strings.ReplaceAll(fb, "\n", "\n> ") + "\n\n---\n\n"
 	return banner + body
 }
@@ -893,8 +893,15 @@ func (a *App) deliverOne(ctx context.Context, owner, repo string, dc sdk.Deliver
 				if !reviewEvents[strings.ToUpper(verdict)] {
 					verdict = "comment"
 				}
-				body := "_quack authored this PR, so GitHub won't let it record an approve or request-changes verdict - this review is a comment. A maintainer decides._\n\n" + StripVerdictTail(item.Body)
+				body := fmt.Sprintf("_Own PR: GitHub allows no self-review verdict. Verdict: %s. A maintainer decides._\n\n", verdict) + StripVerdictTail(item.Body)
 				body += "\n\n" + deliveryMarker("review:"+verdict) + deliveryKeyMarker(dc.IdempotencyKey)
+				// This is the head at DELIVERY time, not necessarily the head
+				// reviewed: sdk.DeliveryContext carries no reviewed-head field to
+				// thread through. Still strictly better than trusting the marker
+				// for any head; the synchronize re-review is the backstop.
+				if m, merr := a.pullMeta(ctx, owner, repo, dc.IssueNumber); merr == nil && m.HeadSHA != "" {
+					body += "\n" + deliveryMarker("head:"+m.HeadSHA)
+				}
 				a.collapsePriorReviews(ctx, owner, repo, dc.IssueNumber) // superseded prior attempts
 				inline, unanchored := a.validComments(ctx, owner, repo, dc.IssueNumber, item.Comments)
 				body += renderUnanchoredFindings(unanchored)

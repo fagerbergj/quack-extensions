@@ -243,7 +243,7 @@ func (a *App) postIssueComment(ctx context.Context, owner, repo string, number i
 		return err
 	}
 	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number)
-	return a.doJSON(ctx, http.MethodPost, path, "token "+tok, map[string]string{"body": bodyText}, nil)
+	return a.doJSON(ctx, http.MethodPost, path, "token "+tok, map[string]string{"body": stripMentions(bodyText)}, nil)
 }
 
 func (a *App) editIssueComment(ctx context.Context, owner, repo string, id int64, bodyText string) error {
@@ -252,7 +252,18 @@ func (a *App) editIssueComment(ctx context.Context, owner, repo string, id int64
 		return err
 	}
 	path := fmt.Sprintf("/repos/%s/%s/issues/comments/%d", owner, repo, id)
-	return a.doJSON(ctx, http.MethodPatch, path, "token "+tok, map[string]string{"body": bodyText}, nil)
+	return a.doJSON(ctx, http.MethodPatch, path, "token "+tok, map[string]string{"body": stripMentions(bodyText)}, nil)
+}
+
+// updateReview replaces the body of one of quack's own reviews - how a merge
+// outcome lands on the review that approved it instead of as a new comment.
+func (a *App) updateReview(ctx context.Context, owner, repo string, number int, reviewID int64, bodyText string) error {
+	tok, err := a.tokenForRepo(ctx, owner, repo)
+	if err != nil {
+		return err
+	}
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews/%d", owner, repo, number, reviewID)
+	return a.doJSON(ctx, http.MethodPut, path, "token "+tok, map[string]string{"body": stripMentions(bodyText)}, nil)
 }
 
 func (a *App) createPullRequest(ctx context.Context, owner, repo, title, head, base, bodyText string, draft bool) (string, int, error) {
@@ -265,7 +276,7 @@ func (a *App) createPullRequest(ctx context.Context, owner, repo, title, head, b
 		Number  int    `json:"number"`
 	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls", owner, repo)
-	reqBody := map[string]any{"title": title, "head": head, "base": base, "body": bodyText}
+	reqBody := map[string]any{"title": stripMentions(title), "head": head, "base": base, "body": stripMentions(bodyText)}
 	if draft {
 		reqBody["draft"] = true
 	}
@@ -308,10 +319,10 @@ func (a *App) updatePullRequest(ctx context.Context, owner, repo string, number 
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number)
 	reqBody := map[string]string{}
 	if titleSet {
-		reqBody["title"] = title
+		reqBody["title"] = stripMentions(title)
 	}
 	if bodySet {
-		reqBody["body"] = bodyText
+		reqBody["body"] = stripMentions(bodyText)
 	}
 	if err := a.doJSON(ctx, http.MethodPatch, path, "token "+tok, reqBody, &out); err != nil {
 		return "", err
@@ -500,19 +511,26 @@ func (a *App) minimizeComment(ctx context.Context, owner, repo, nodeID string) e
 	return a.doGraphQL(ctx, "token "+tok, mutation, map[string]any{"id": nodeID}, nil)
 }
 
-// mergePR squash-merges a PR. headSHA pins to a specific commit;
+// mergePR squash-merges a PR and returns the merge commit sha. headSHA pins
+// to a specific commit;
 // ponytail: squash only; add merge_method config when someone wants otherwise.
-func (a *App) mergePR(ctx context.Context, owner, repo string, number int, requiredHeadSHA string) error {
+func (a *App) mergePR(ctx context.Context, owner, repo string, number int, requiredHeadSHA string) (string, error) {
 	tok, err := a.tokenForRepo(ctx, owner, repo)
 	if err != nil {
-		return err
+		return "", err
 	}
 	body := map[string]string{"merge_method": "squash"}
 	if requiredHeadSHA != "" {
 		body["sha"] = requiredHeadSHA
 	}
+	var out struct {
+		SHA string `json:"sha"`
+	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", owner, repo, number)
-	return a.doJSON(ctx, http.MethodPut, path, "token "+tok, body, nil)
+	if err := a.doJSON(ctx, http.MethodPut, path, "token "+tok, body, &out); err != nil {
+		return "", err
+	}
+	return out.SHA, nil
 }
 
 type checkRunView struct {
@@ -585,6 +603,40 @@ func (a *App) listCheckRuns(ctx context.Context, owner, repo, sha string) ([]che
 	return out.CheckRuns, nil
 }
 
+// checkSuiteView is one check-suite: created for a head at push time, before
+// any check run exists, for every workflow the push triggers.
+type checkSuiteView struct {
+	ID                   int64  `json:"id"`
+	Status               string `json:"status"`
+	Conclusion           string `json:"conclusion"`
+	LatestCheckRunsCount int    `json:"latest_check_runs_count"`
+	App                  struct {
+		Slug string `json:"slug"`
+	} `json:"app"`
+}
+
+// producesRuns reports whether this suite is ever expected to post check
+// runs: GitHub Actions always does; any other app only counts once it has -
+// some apps register a suite purely informational and never populate one.
+func (s checkSuiteView) producesRuns() bool {
+	return s.App.Slug == "github-actions" || s.LatestCheckRunsCount > 0
+}
+
+func (a *App) listCheckSuites(ctx context.Context, owner, repo, sha string) ([]checkSuiteView, error) {
+	tok, err := a.tokenForRepo(ctx, owner, repo)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		CheckSuites []checkSuiteView `json:"check_suites"`
+	}
+	path := fmt.Sprintf("/repos/%s/%s/commits/%s/check-suites?per_page=100", owner, repo, sha)
+	if err := a.doJSON(ctx, http.MethodGet, path, "token "+tok, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.CheckSuites, nil
+}
+
 type checkAnnotation struct {
 	Path      string `json:"path"`
 	StartLine int    `json:"start_line"`
@@ -624,9 +676,14 @@ func (a *App) createReview(ctx context.Context, owner, repo string, number int, 
 		HTMLURL string `json:"html_url"`
 	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", owner, repo, number)
-	reqBody := map[string]any{"event": event, "body": bodyText}
+	reqBody := map[string]any{"event": event, "body": stripMentions(bodyText)}
 	if len(comments) > 0 {
-		reqBody["comments"] = comments
+		clean := make([]reviewComment, len(comments))
+		for i, c := range comments {
+			c.Body = stripMentions(c.Body)
+			clean[i] = c
+		}
+		reqBody["comments"] = clean
 	}
 	if err := a.doJSON(ctx, http.MethodPost, path, "token "+tok, reqBody, &out); err != nil {
 		return "", 0, err
@@ -988,7 +1045,7 @@ func (a *App) replyToReviewComment(ctx context.Context, owner, repo string, numb
 		HTMLURL string `json:"html_url"`
 	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/comments/%d/replies", owner, repo, number, commentID)
-	if err := a.doJSON(ctx, http.MethodPost, path, "token "+tok, map[string]string{"body": bodyText}, &out); err != nil {
+	if err := a.doJSON(ctx, http.MethodPost, path, "token "+tok, map[string]string{"body": stripMentions(bodyText)}, &out); err != nil {
 		return 0, "", err
 	}
 	return out.ID, out.HTMLURL, nil

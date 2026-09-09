@@ -72,19 +72,19 @@ func (e *Extension) isWorkRequest(ctx context.Context, p issueCommentPayload, ta
 	return e.fallbackWorkRequest(p, toReview, fmt.Sprintf("classifier failed twice: %v", lastErr))
 }
 
-// fallbackWorkRequest announces a failed classification on the PR (best effort) and
+// fallbackWorkRequest marks a failed classification with a 😕 reaction on the
+// comment (the run's own answer is the one comment this trigger gets) and
 // returns the review-vs-conversational default the caller already resolved (#1172).
 func (e *Extension) fallbackWorkRequest(p issueCommentPayload, toReview bool, reason string) bool {
-	msg := "couldn't classify; treating as conversational"
-	if toReview {
-		msg = "couldn't classify; treating as review"
-	}
 	e.host.Log.Warn("github: intent classifier fallback", "reason", reason, "as_review", toReview)
+	if p.Comment.ID == 0 {
+		return toReview
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), reactionTimeout)
 	defer cancel()
 	owner, repo := p.Repository.Owner.Login, p.Repository.Name
-	if err := e.app.postIssueComment(ctx, owner, repo, p.Issue.Number, msg); err != nil {
-		e.host.Log.Warn("github: intent classifier fallback comment failed", "repo", owner+"/"+repo, "issue", p.Issue.Number, "err", err)
+	if _, err := e.app.reactToComment(ctx, owner, repo, "issues", p.Comment.ID, "confused"); err != nil {
+		e.host.Log.Warn("github: intent classifier fallback reaction failed", "repo", owner+"/"+repo, "issue", p.Issue.Number, "err", err)
 	}
 	return toReview
 }

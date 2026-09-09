@@ -2,7 +2,9 @@ package github
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -67,6 +69,83 @@ func TestStoreRoundTrips(t *testing.T) {
 	}
 }
 
+// TestMigrationAddsDispatchedHeadColumn opens a database created before the
+// dispatched_head column existed (#1277) - openStore must add it in place
+// rather than erroring on "duplicate column" on every later open, and the
+// pre-existing row must survive with an empty dispatched_head.
+func TestMigrationAddsDispatchedHeadColumn(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "github.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE github_merge_intent (
+		chat_id TEXT PRIMARY KEY,
+		requested_by TEXT NOT NULL,
+		created_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO github_merge_intent (chat_id, requested_by, created_at, updated_at) VALUES ('c1','alice','2026-01-01','2026-01-01')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := openStore(dir)
+	if err != nil {
+		t.Fatalf("openStore on a pre-migration db: %v", err)
+	}
+	defer s.Close()
+	mi, err := s.GetMergeIntent(context.Background(), "c1")
+	if err != nil || mi == nil || mi.RequestedBy != "alice" || mi.DispatchedHead != "" {
+		t.Fatalf("GetMergeIntent after migration = %+v, err=%v; want the pre-existing row preserved with an empty dispatched_head", mi, err)
+	}
+	if err := s.SetMergeIntentDispatchedHead(context.Background(), "c1", "abc123"); err != nil {
+		t.Fatalf("SetMergeIntentDispatchedHead: %v", err)
+	}
+	if mi, err := s.GetMergeIntent(context.Background(), "c1"); err != nil || mi.DispatchedHead != "abc123" {
+		t.Fatalf("GetMergeIntent = %+v, err=%v; want dispatched_head=abc123", mi, err)
+	}
+
+	// Re-opening an already-migrated database must not error on the "add
+	// column" step running again.
+	s2, err := openStore(dir)
+	if err != nil {
+		t.Fatalf("re-opening an already-migrated db: %v", err)
+	}
+	s2.Close()
+}
+
+// TestSetMergeIntentConflictLeavesDispatchedHeadUntouched pins the ON
+// CONFLICT clause's deliberate omission of dispatched_head: re-labeling a PR
+// that already has a push-triggered re-review dispatched must not forget
+// that head, or the next synchronize for the same head would dispatch again.
+func TestSetMergeIntentConflictLeavesDispatchedHeadUntouched(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	if err := s.SetMergeIntent(ctx, "c1", "alice"); err != nil {
+		t.Fatalf("SetMergeIntent: %v", err)
+	}
+	if err := s.SetMergeIntentDispatchedHead(ctx, "c1", "abc123"); err != nil {
+		t.Fatalf("SetMergeIntentDispatchedHead: %v", err)
+	}
+	if err := s.SetMergeIntent(ctx, "c1", "bob"); err != nil {
+		t.Fatalf("SetMergeIntent (re-label): %v", err)
+	}
+	mi, err := s.GetMergeIntent(ctx, "c1")
+	if err != nil || mi == nil || mi.DispatchedHead != "abc123" {
+		t.Fatalf("GetMergeIntent after re-label = %+v, err=%v; want dispatched_head still abc123", mi, err)
+	}
+	if mi.RequestedBy != "bob" {
+		t.Errorf("RequestedBy = %q; want the re-label to update it to bob", mi.RequestedBy)
+	}
+}
+
 // TestStoreConcurrentAccessNoErrors is Risk 2's baseline: many goroutines
 // hitting all four tables, many keys, concurrently. Run with -race. The
 // property under test is that MaxOpenConns(1) actually prevents SQLITE_BUSY
@@ -115,7 +194,7 @@ func TestStoreConcurrentAccessNoErrors(t *testing.T) {
 
 // TestKeyedMutexPreventsDoubleConsumeMergeIntent reproduces the exact race
 // the design doc's Risk 2 names: mergeIfApproved (Set) racing
-// tryMergeStandingIntent (Get-then-Delete) for the SAME chat. Without
+// tryMerge (Get-then-Delete) for the SAME chat. Without
 // serializing the two, two concurrent "Get, see an intent, Delete it"
 // sequences can both observe the same intent and both act on it (a double
 // merge attempt). keyedMutex closes this at the call-site: every
@@ -148,7 +227,7 @@ func TestKeyedMutexPreventsDoubleConsumeMergeIntent(t *testing.T) {
 	}()
 
 	// two concurrent consumers: mimics mergeIfApproved and
-	// tryMergeStandingIntent both potentially firing for the same PR.
+	// tryMerge both potentially firing for the same PR.
 	for c := 0; c < 2; c++ {
 		wg.Add(1)
 		go func() {

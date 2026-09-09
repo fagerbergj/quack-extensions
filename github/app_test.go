@@ -447,7 +447,7 @@ func TestGateCaveat(t *testing.T) {
 		t.Errorf("passing gate must not alter the body; got %q", got)
 	}
 	got := gateCaveat(sdk.DeliveryContext{GatePassed: false, GateFeedback: "no test for the nil case"}, body)
-	if !strings.Contains(got, "[!WARNING]") || !strings.Contains(got, "did NOT pass") {
+	if !strings.Contains(got, "[!WARNING]") || !strings.Contains(got, "did not pass") {
 		t.Errorf("failing gate must prepend a warning banner; got %q", got)
 	}
 	if !strings.Contains(got, "no test for the nil case") {
@@ -468,7 +468,7 @@ func TestGateCaveatChecksSkipNote(t *testing.T) {
 	if !strings.Contains(got, "[!NOTE]") {
 		t.Errorf("a passing gate with a checks-skip note must prepend a NOTE banner; got %q", got)
 	}
-	if strings.Contains(got, "[!WARNING]") || strings.Contains(got, "did NOT pass") {
+	if strings.Contains(got, "[!WARNING]") || strings.Contains(got, "did not pass") {
 		t.Errorf("the note must not read as a gate-failure warning about the code; got %q", got)
 	}
 	if !strings.Contains(got, "unsupported_build_system") {
@@ -490,7 +490,7 @@ func TestGateCaveatFailingNodeIgnoresChecksSkipNote(t *testing.T) {
 	if strings.Contains(got, "[!NOTE]") || strings.Contains(got, "unsupported_build_system") {
 		t.Errorf("a failing node's banner must ignore ChecksSkipNote entirely; got %q", got)
 	}
-	if !strings.Contains(got, "[!WARNING]") || !strings.Contains(got, "did NOT pass") || !strings.Contains(got, "tests fail") {
+	if !strings.Contains(got, "[!WARNING]") || !strings.Contains(got, "did not pass") || !strings.Contains(got, "tests fail") {
 		t.Errorf("the existing failing-gate banner must be unchanged; got %q", got)
 	}
 }

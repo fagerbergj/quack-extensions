@@ -186,7 +186,14 @@ func (e *Extension) finalize(chatID string, pr *pendingRun, outcome sdk.RunOutco
 				baselineCancel()
 
 				mergeCtx, mergeCancel := context.WithTimeout(context.Background(), mergeTimeout)
-				pr.reReview = e.tryMergeStandingIntent(mergeCtx, pr, chatID)
+				mo, merr := e.tryMerge(mergeCtx, owner, repo, number)
+				if merr != nil {
+					e.host.Log.Warn("github: merge evaluation after review delivery failed", "repo", owner+"/"+repo, "pr", number, "err", merr)
+				}
+				if mo == mergeStale {
+					// Head moved under the approving review (#1142): re-review it.
+					pr.reReview = e.reReviewMovedHead(mergeCtx, pr)
+				}
 				mergeCancel()
 			}
 			e.persistGithubSnapshot(chatID, pr.gh)
@@ -208,7 +215,7 @@ func (e *Extension) finalize(chatID string, pr *pendingRun, outcome sdk.RunOutco
 
 	// HITL pause: post the question as a comment; the reply resumes the paused node.
 	if outcome.Status == sdk.RunNeedsInput {
-		comment := fmt.Sprintf("⏸️ quack has a question before proceeding:\n\n**%s**\n\n%s", outcome.NodeID, outcome.Question)
+		comment := fmt.Sprintf("Question before continuing (%s):\n\n%s", outcome.NodeID, outcome.Question)
 		hitlCtx, hitlCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer hitlCancel()
 		if err := e.app.postIssueComment(hitlCtx, owner, repo, number, comment); err != nil {
@@ -220,16 +227,19 @@ func (e *Extension) finalize(chatID string, pr *pendingRun, outcome sdk.RunOutco
 	}
 
 	answer := strings.TrimSpace(outcome.Answer)
+	retry := "Re-apply the label to retry."
+	if !pr.isLabelTrigger {
+		retry = "Repeat the request to retry."
+	}
 	switch {
 	case outcome.TimedOut:
-		answer = fmt.Sprintf("⚠️ quack hit its run deadline before finishing; nothing was delivered. Re-apply the label to retry.\n\nLast progress:\n\n%s", answer)
+		answer = fmt.Sprintf("Run deadline reached; nothing delivered. %s\n\nLast progress:\n\n%s", retry, answer)
 	case outcome.Status == sdk.RunFailed && outcome.Error != "":
-		answer = fmt.Sprintf("⚠️ quack's run failed: %s\n\nRe-apply the label to retry.", outcome.Error)
+		answer = fmt.Sprintf("Run failed: %s\n\n%s", outcome.Error, retry)
 	case answer == "":
 		// Silent-gap (#568) — run finished (or failed) with nothing to say.
 		e.host.Log.Warn("github: run completed with no final answer", "repo", owner+"/"+repo, "issue", number, "status", outcome.Status)
-		answer = "⚠️ quack finished this run but produced no answer - no error, no failed node, nothing delivered. " +
-			"That's a silent-gap failure, not a run with nothing to say. Re-apply the label to retry."
+		answer = "Run finished with no answer, no error, and nothing delivered. " + retry
 	case pr.isPlan:
 		e.app.collapsePriorComments(context.Background(), owner, repo, number, "plan")
 		answer += "\n\n" + deliveryMarker("plan")
@@ -249,9 +259,9 @@ func (e *Extension) finalize(chatID string, pr *pendingRun, outcome sdk.RunOutco
 
 // postDeliveryFailure reports a failed delivery on GitHub, so a pushed-but-unopened branch is recoverable by hand instead of sitting silently invisible (#714).
 func (e *Extension) postDeliveryFailure(owner, repo string, number int, d deliveryOutcome) {
-	msg := fmt.Sprintf("⚠️ delivery failed: %s", d.err)
+	msg := fmt.Sprintf("Delivery failed: %s", d.err)
 	if d.branch != "" {
-		msg += fmt.Sprintf("\n\nBranch `%s` was not delivered — recover it by hand.", d.branch)
+		msg += fmt.Sprintf("\n\nBranch `%s` holds the undelivered work.", d.branch)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

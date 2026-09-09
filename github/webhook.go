@@ -11,7 +11,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -162,7 +161,11 @@ func (e *Extension) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	case "issues":
 		e.handleIssues(w, body)
 	case "workflow_run":
+		e.mergeOnCheckEvent("workflow_run", body)
 		e.handleWorkflowRun(w, body)
+	case "check_suite", "check_run":
+		e.mergeOnCheckEvent(r.Header.Get("X-GitHub-Event"), body)
+		w.WriteHeader(http.StatusAccepted)
 	default:
 		w.WriteHeader(http.StatusOK) // unhandled event type: no-op ack
 	}
@@ -240,11 +243,21 @@ func (e *Extension) handlePullRequest(w http.ResponseWriter, body []byte) {
 			badge, state = "closed", sdk.SubjectClosed
 		}
 		e.refreshChatOrigin(p.Repository.Owner.Login, p.Repository.Name, true, p.Number, badge, state)
+		if p.Action == "closed" {
+			e.clearMergeIntent(context.Background(), globalChatID(fmt.Sprintf("github-%s-%s-%d", p.Repository.Owner.Login, p.Repository.Name, p.Number)))
+		}
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	// The merge label is a human authorization — checks quack's verdict and merges (or explains why not).
+	// Removing the merge label withdraws the standing authorization.
+	if p.Action == "unlabeled" && p.Label.Name == e.labels.Merge {
+		e.clearMergeIntent(context.Background(), globalChatID(fmt.Sprintf("github-%s-%s-%d", p.Repository.Owner.Login, p.Repository.Name, p.Number)))
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// The merge label is a human authorization: recorded as a standing intent, merged once quack approves the head and CI is green.
 	if p.Action == "labeled" && e.triggers["merge"] && p.Label.Name == e.labels.Merge &&
 		!strings.HasSuffix(p.Sender.Login, "[bot]") {
 		if !e.isInvokerAllowed(p.Sender.Login) {
@@ -284,6 +297,8 @@ func (e *Extension) handlePullRequest(w http.ResponseWriter, body []byte) {
 	// that no longer exists on the branch; core decides if refreshing is safe.
 	if p.Action == "synchronize" {
 		e.invalidateSetup(p.Repository.Owner.Login, p.Repository.Name, p.Number)
+		go e.mergeOnEvent(p.Repository.Owner.Login, p.Repository.Name, p.Number, "pull_request.synchronize")
+		go e.reviewOnMovedHeadUnderIntent(p, body)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -371,6 +386,9 @@ func (e *Extension) handlePullRequestReview(w http.ResponseWriter, body []byte) 
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
+	if p.Action == "submitted" {
+		go e.mergeOnEvent(p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number, "pull_request_review.submitted")
+	}
 	if p.Action != "submitted" || p.Review.State != "changes_requested" || !e.triggers["ci_fix"] {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -432,7 +450,7 @@ func (e *Extension) engageOwnPRReview(p pullRequestReviewPayload, rawBody []byte
 
 	slog.Info("github: engaging own PR after requested changes", "component", "github", "repo", owner+"/"+repo, "pr", number)
 	e.dispatch(synthetic, fmt.Sprintf(
-		"@%s requested changes on this pull request, which you authored. Address every finding: read the review comments and the current diff, make the fix, run the repo's own checks to verify, and commit the change on this PR's existing head branch.",
+		"%s requested changes on this pull request, which you authored. Address every finding: read the review comments and the current diff, make the fix, run the repo's own checks to verify, and commit the change on this PR's existing head branch.",
 		p.Review.User.Login))
 }
 
@@ -562,325 +580,6 @@ func planTask(p issuesPayload) string {
 	return b.String()
 }
 
-// mergeTimeout bounds the deterministic merge-label handler (a few API calls).
-const mergeTimeout = 2 * time.Minute
-
-// requiredCheckFailingRe matches GitHub's merge-block message for one named
-// required status check, e.g. `Required status check "go-test" is failing.`
-var requiredCheckFailingRe = regexp.MustCompile(`(?i)required status check "([^"]+)" is failing`)
-
-// mergeAPIErrorMessage extracts the "message" field from a wrapped merge API
-// error's trailing JSON body (mergePR's error is
-// `github: PUT .../merge: status 405: {"message":"...","documentation_url":"..."}`)
-// so a comment never has to carry the raw JSON - full detail stays in the
-// slog entry that logged err.
-func mergeAPIErrorMessage(err error) string {
-	msg := err.Error()
-	if i := strings.IndexByte(msg, '{'); i >= 0 {
-		var body struct {
-			Message string `json:"message"`
-		}
-		if jerr := json.Unmarshal([]byte(msg[i:]), &body); jerr == nil && body.Message != "" {
-			return body.Message
-		}
-	}
-	return msg
-}
-
-// mergeFailureComment turns a merge API error into a comment-safe line. The
-// common case - GitHub blocking on one named required check - becomes an
-// actionable sentence naming the check and the self-heal label (the merge
-// flow itself never applies quack:fix; a human or the CI-failure auto-heal
-// does). Anything else collapses to "Merge failed: <message>".
-// isHeadBranchModified reports GitHub's "merge failed, the tip advanced
-// mid-review" error (#1142) - the one case where the standing intent should
-// trigger a re-review instead of just standing by for a human re-label.
-func isHeadBranchModified(err error) bool {
-	return strings.Contains(mergeAPIErrorMessage(err), "Head branch was modified")
-}
-
-func mergeFailureComment(err error, fixLabel string) string {
-	msg := mergeAPIErrorMessage(err)
-	if m := requiredCheckFailingRe.FindStringSubmatch(msg); m != nil {
-		return fmt.Sprintf("Merge blocked: required check **%s** is failing on this PR. Apply the `%s` label to trigger a self-heal, or push a fix yourself - re-review will follow once it pushes.", m[1], fixLabel)
-	}
-	return fmt.Sprintf("Merge failed: %s", msg)
-}
-
-// mergeIfApproved merges only at the intersection of a human's merge label and quack's own approving verdict.
-// A non-approving verdict records a standing intent — merge fires when a later review approves.
-func (e *Extension) mergeIfApproved(p pullRequestPayload, rawBody []byte) {
-	owner, repo, number := p.Repository.Owner.Login, p.Repository.Name, p.Number
-	sessionID := fmt.Sprintf("github-%s-%s-%d", owner, repo, number)
-	chatID := globalChatID(sessionID)
-	ctx, cancel := context.WithTimeout(context.Background(), mergeTimeout)
-	defer cancel()
-
-	comment := func(text string) {
-		if err := e.app.postIssueComment(ctx, owner, repo, number, text); err != nil {
-			slog.Error("github: merge-label comment failed", "component", "github",
-				"repo", owner+"/"+repo, "pr", number, "err", err)
-		}
-	}
-
-	verdict, err := e.latestQuackVerdict(ctx, owner, repo, number)
-	if err != nil {
-		slog.Error("github: merge-label review lookup failed", "component", "github",
-			"repo", owner+"/"+repo, "pr", number, "err", err)
-		comment(fmt.Sprintf("Not merging: I could not read this PR's reviews (%v). Re-apply the `%s` label to retry.", err, e.labels.Merge))
-		return
-	}
-	unlock := e.mergeMu.Lock(chatID)
-	defer unlock()
-	if verdict == "approve" {
-		if err := e.app.mergePR(ctx, owner, repo, number, ""); err != nil {
-			slog.Error("github merge failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", err)
-			comment(mergeFailureComment(err, e.labels.Fix))
-			return
-		}
-		slog.Info("github pr merged", "component", "github", "repo", owner+"/"+repo, "pr", number, "user", p.Sender.Login)
-		if e.autoArchiveOnMerge && e.host.ArchiveChat != nil {
-			if derr := e.host.ArchiveChat(chatID); derr != nil {
-				slog.Warn("github: auto-archive on merge failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "session", sessionID, "err", derr)
-			}
-		}
-		if derr := e.store.DeleteMergeIntent(ctx, chatID); derr != nil {
-			slog.Warn("github: stale merge-intent cleanup failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", derr)
-		}
-		comment(fmt.Sprintf("Merged - my review approved this PR and @%s authorized the merge via the `%s` label.", p.Sender.Login, e.labels.Merge))
-		return
-	}
-
-	// Not approved yet: record the standing intent BEFORE saying anything is
-	// queued - fail CLOSED, an unrecorded intent must never be reported as one.
-	if err := e.store.SetMergeIntent(ctx, chatID, p.Sender.Login); err != nil {
-		slog.Error("github: merge-intent persist failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", err)
-		comment(fmt.Sprintf("Not merging: I could not record your merge request (%v) - not queued. Re-apply `%s` to retry.", err, e.labels.Merge))
-		return
-	}
-
-	switch verdict {
-	case "":
-		msg := fmt.Sprintf("Queued: I have not reviewed this PR yet. @%s's `%s` label authorizes the merge once I approve.", p.Sender.Login, e.labels.Merge)
-		if _, live := e.inflightActive(sessionID); live {
-			msg += " A review is already in progress - I'll merge automatically once it lands, if it approves."
-		} else {
-			msg += " Reviewing it now."
-			go e.dispatch(autoReviewPayload(p, rawBody), autoReviewTask)
-		}
-		comment(msg)
-	default: // "request_changes" or "comment": already reviewed, just not approving
-		comment(fmt.Sprintf("Standing by: my latest review is %s, not an approval, so I'm not merging yet. @%s's `%s` label stands as authorization - I'll merge automatically the next time a review from me approves.",
-			verdict, p.Sender.Login, e.labels.Merge))
-	}
-}
-
-// reviewVerdictMarkerRe extracts quack's verdict from the hidden marker in an own-PR review comment (GitHub forbids self-review).
-var reviewVerdictMarkerRe = regexp.MustCompile(`<!-- quack:delivery:review:(approve|request_changes|comment) -->`)
-
-// formalReviewVerdicts maps GitHub review states to the same vocabulary as reviewVerdictMarkerRe.
-var formalReviewVerdicts = map[string]string{
-	"APPROVED":          "approve",
-	"CHANGES_REQUESTED": "request_changes",
-	"COMMENTED":         "comment",
-}
-
-// latestQuackVerdict returns quack's most recent review verdict — reads both formal reviews and own-PR comment markers.
-func (e *Extension) latestQuackVerdict(ctx context.Context, owner, repo string, number int) (string, error) {
-	verdict, _, err := e.latestQuackVerdictCommit(ctx, owner, repo, number)
-	return verdict, err
-}
-
-// latestQuackVerdictCommit is latestQuackVerdict plus the commit_id the
-// winning verdict was submitted against (empty for a marker found in an
-// issue comment, which carries no commit_id) - the SHA a merge must be
-// pinned to, per #71: the review's own commit_id, not a dispatch-time
-// snapshot that can go stale relative to it.
-func (e *Extension) latestQuackVerdictCommit(ctx context.Context, owner, repo string, number int) (string, string, error) {
-	bot, err := e.app.botLogin(ctx)
-	if err != nil {
-		return "", "", err
-	}
-	type dated struct {
-		at       time.Time
-		verdict  string
-		commitID string
-	}
-	var verdicts []dated
-
-	reviews, err := e.app.listReviews(ctx, owner, repo, number)
-	if err != nil {
-		return "", "", err
-	}
-	for _, r := range reviews {
-		if r.User.Login != bot {
-			continue
-		}
-		at, _ := time.Parse(time.RFC3339, r.SubmittedAt)
-		// Marker first: an own-PR review always submits as state COMMENTED
-		// (GitHub disallows approve/request_changes on your own PR) but carries
-		// the REAL verdict in the marker - the state alone would read as "comment".
-		if m := reviewVerdictMarkerRe.FindStringSubmatch(r.Body); m != nil {
-			verdicts = append(verdicts, dated{at, m[1], r.CommitID})
-			continue
-		}
-		if v := formalReviewVerdicts[r.State]; v != "" {
-			verdicts = append(verdicts, dated{at, v, r.CommitID})
-		}
-	}
-
-	comments, err := e.app.listIssueComments(ctx, owner, repo, number)
-	if err != nil {
-		return "", "", err
-	}
-	for _, c := range comments {
-		if c.User != bot {
-			continue
-		}
-		m := reviewVerdictMarkerRe.FindStringSubmatch(c.Body)
-		if m == nil {
-			continue
-		}
-		at, _ := time.Parse(time.RFC3339, c.CreatedAt)
-		verdicts = append(verdicts, dated{at, m[1], ""})
-	}
-
-	if len(verdicts) == 0 {
-		return "", "", nil
-	}
-	sort.Slice(verdicts, func(i, j int) bool { return verdicts[i].at.Before(verdicts[j].at) })
-	latest := verdicts[len(verdicts)-1]
-	return latest.verdict, latest.commitID, nil
-}
-
-// tryMergeStandingIntent consumes a merge intent after a review is actually posted.
-// headSHA pins the merge to the commit the review was against. Serialized
-// against mergeIfApproved per chat (e.mergeMu) - both read the intent, check
-// the live verdict, and act on it, which used to lean on Postgres's shared
-// connection for incidental ordering; SQLite gives this extension no such
-// guarantee, so the lock closes the gap explicitly (design doc Risk 2).
-// Returns a re-review payload when the merge failed because the head moved
-// (#1142); the CALLER dispatches it after releasing its inflight claim, or
-// dispatch's dedup would drop it.
-func (e *Extension) tryMergeStandingIntent(ctx context.Context, pr *pendingRun, chatID string) *issueCommentPayload {
-	owner, repo, number := pr.owner, pr.repo, pr.number
-	unlock := e.mergeMu.Lock(chatID)
-	defer unlock()
-
-	intent, err := e.store.GetMergeIntent(ctx, chatID)
-	if err != nil {
-		slog.Warn("github: merge-intent lookup failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", err)
-		return nil
-	}
-	if intent == nil {
-		return nil // no standing authorization on this PR
-	}
-	verdict, reviewedSHA, err := e.latestQuackVerdictCommit(ctx, owner, repo, number)
-	if err != nil {
-		slog.Warn("github: merge-intent verdict lookup failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", err)
-		return nil
-	}
-	if verdict != "approve" {
-		return nil // still not approved; the intent stands for a later review
-	}
-
-	comment := func(text string) {
-		if err := e.app.postIssueComment(ctx, owner, repo, number, text); err != nil {
-			slog.Error("github: merge-intent comment failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", err)
-		}
-	}
-	// #71: pin against the PR's actual current head, and decide "moved" by
-	// comparing it to the commit_id the approving review was submitted
-	// against - never a dispatch-time snapshot, which goes stale relative to
-	// the review whenever anything (including this run's own delivery) landed
-	// after the snapshot was taken.
-	m, merr := e.app.pullMeta(ctx, owner, repo, number)
-	if merr != nil {
-		slog.Warn("github: standing-intent merge cannot pin the head; not merging",
-			"component", "github", "repo", owner+"/"+repo, "pr", number, "err", merr)
-		return nil
-	}
-	headSHA := m.HeadSHA
-	if reviewedSHA != "" && reviewedSHA != headSHA {
-		// The tip moved under the approved review. The standing intent (never
-		// cleared here) still authorizes a merge once a fresh review of the
-		// NEW head approves - so re-review it instead of stalling until a
-		// human re-labels.
-		return e.reReviewMovedHead(ctx, pr, comment)
-	}
-	if err := e.app.mergePR(ctx, owner, repo, number, headSHA); err != nil {
-		if isHeadBranchModified(err) {
-			// Genuine race: the tip moved between our compare above and the
-			// merge call itself.
-			return e.reReviewMovedHead(ctx, pr, comment)
-		}
-		slog.Error("github: standing-intent merge failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", err)
-		comment(fmt.Sprintf("%s @%s's standing `%s` authorization still stands - I'll retry the next time a review from me approves.",
-			mergeFailureComment(err, e.labels.Fix), intent.RequestedBy, e.labels.Merge))
-		return nil
-	}
-	slog.Info("github pr merged", "component", "github", "repo", owner+"/"+repo, "pr", number, "user", intent.RequestedBy)
-	if e.autoArchiveOnMerge && e.host.ArchiveChat != nil {
-		if derr := e.host.ArchiveChat(chatID); derr != nil {
-			slog.Warn("github: auto-archive on merge failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "chat", chatID, "err", derr)
-		}
-	}
-	// Clear the intent BEFORE announcing the merge: once the comment is visible
-	// the intent must already be gone, not racing whoever reads it next.
-	if derr := e.store.DeleteMergeIntent(ctx, chatID); derr != nil {
-		slog.Warn("github: merge-intent cleanup failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", derr)
-	}
-	comment(fmt.Sprintf("Merged - my review approved this PR, on the standing authorization @%s gave via the `%s` label.", intent.RequestedBy, e.labels.Merge))
-	return nil
-}
-
-// reReviewMovedHead handles the #1142 "Head branch was modified" merge
-// failure: fetches the actual current head, posts the single re-review
-// comment, and returns the auto-review payload for it - same run a
-// label-trigger would produce. The standing intent is left untouched; once
-// THIS review approves, tryMergeStandingIntent fires again for the new head.
-func (e *Extension) reReviewMovedHead(ctx context.Context, pr *pendingRun, comment func(string)) *issueCommentPayload {
-	owner, repo, number := pr.owner, pr.repo, pr.number
-	title := ""
-	newHead := "the new head"
-	if meta, err := e.app.pullMeta(ctx, owner, repo, number); err != nil {
-		slog.Warn("github: head-moved re-review PR lookup failed; re-reviewing without a sha in the comment",
-			"component", "github", "repo", owner+"/"+repo, "pr", number, "err", err)
-	} else {
-		title = meta.Title
-		if meta.HeadSHA != "" {
-			newHead = meta.HeadSHA
-		}
-	}
-	comment(fmt.Sprintf("head moved; re-reviewing %s", newHead))
-	cloneURL := ""
-	if pr.dispatched.Run.Setup != nil {
-		cloneURL = pr.dispatched.Run.Setup.Repo
-	}
-	p := reReviewPayload(owner, repo, number, title, cloneURL, pr.defaultBranch, pr.installationID)
-	return &p
-}
-
-// reReviewPayload synthesizes an issueCommentPayload for a re-review that
-// quack itself triggers (no webhook event backs it) - same auto-review path
-// a label trigger dispatches.
-func reReviewPayload(owner, repo string, number int, title, cloneURL, defaultBranch string, installationID int64) issueCommentPayload {
-	synthetic := issueCommentPayload{Action: "created"}
-	synthetic.Issue.Number = number
-	synthetic.Issue.Title = title
-	synthetic.Issue.PullRequest = &struct{}{}
-	synthetic.Comment.User.Login = autoReviewUser
-	synthetic.Repository.Name = repo
-	synthetic.Repository.Owner.Login = owner
-	synthetic.Repository.CloneURL = cloneURL
-	synthetic.Repository.DefaultBranch = defaultBranch
-	synthetic.Installation.ID = installationID
-	synthetic.isLabelTrigger = true // auto-review, never a mention (T4)
-	synthetic.rawEvent = json.RawMessage(`{}`)
-	synthetic.eventName = "github.head_branch_modified_rereview"
-	return synthetic
-}
-
 // ackReaction posts a 👀 reaction on the mentioning comment — instant code-level acknowledgment, best effort.
 func (e *Extension) ackReaction(p issueCommentPayload) {
 	if p.Comment.ID == 0 {
@@ -903,17 +602,6 @@ func (e *Extension) ackLabelReaction(p issuesPayload) {
 	if _, err := e.app.reactToIssue(ctx, owner, repo, p.Issue.Number, "eyes"); err != nil {
 		slog.Warn("github label ack reaction failed", "component", "github",
 			"repo", owner+"/"+repo, "issue", p.Issue.Number, "err", err)
-	}
-}
-
-// ackDedup fires a 👀 reaction when a dispatch is dropped (run already in-flight). Best effort.
-func (e *Extension) ackDedup(owner, repo string, number int) {
-	ctx, cancel := context.WithTimeout(context.Background(), reactionTimeout)
-	defer cancel()
-	// reactToIssue works for both plain issues and PRs.
-	if _, err := e.app.reactToIssue(ctx, owner, repo, number, "eyes"); err != nil {
-		slog.Warn("github dedup ack reaction failed", "component", "github",
-			"repo", owner+"/"+repo, "issue", number, "err", err)
 	}
 }
 
@@ -1070,7 +758,15 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 		slog.Info("deduplicated trigger: a run for this session is still in flight",
 			"component", "github", "sessionID", sessionID, "repo", owner+"/"+repo, "issue", number,
 			"claim_age", age.Round(time.Second), "lease", e.inflightLease())
-		go e.ackDedup(owner, repo, number)
+		// A comment-triggered dispatch (mention, /review) already reacted to
+		// its own comment before calling in here - react there again rather
+		// than on the issue too, or the trigger gets two visibly different
+		// reactions instead of the one this whole rewrite is meant to leave (#1304).
+		if p.Comment.ID != 0 {
+			go e.ackReaction(p)
+		} else {
+			go e.ackIssue(owner, repo, number)
+		}
 		return
 	}
 	if age > 0 {
@@ -1101,7 +797,7 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 		slog.Warn("github: label-triggered work request has no usable GitHub context; aborting rather than running blind",
 			"component", "github", "repo", owner+"/"+repo, "issue", number)
 		abortCtx, abortCancel := context.WithTimeout(context.Background(), reactionTimeout)
-		abortMsg := "Couldn't load this issue's plan and discussion from GitHub (a transient error fetching it) - not running blind. Re-apply the label to retry."
+		abortMsg := "Could not load this issue from GitHub; not running. Re-apply the label to retry."
 		if err := e.app.postIssueComment(abortCtx, owner, repo, number, abortMsg); err != nil {
 			slog.Warn("github: abort comment failed", "component", "github", "repo", owner+"/"+repo, "issue", number, "err", err)
 		}
@@ -1171,7 +867,7 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 				slog.Error("github: PR dispatch has no head ref even after refetch; refusing to send a blank ExistingHeadRef",
 					"component", "github", "repo", owner+"/"+repo, "issue", number, "err", merr)
 				abortCtx, abortCancel := context.WithTimeout(context.Background(), reactionTimeout)
-				abortMsg := "Couldn't determine this PR's head branch (GitHub fetch failed) - not dispatching a review with a blank head ref. Retry the command."
+				abortMsg := "Could not determine this PR's head branch; not running. Retry the command."
 				if perr := e.app.postIssueComment(abortCtx, owner, repo, number, abortMsg); perr != nil {
 					slog.Warn("github: abort comment failed", "component", "github", "repo", owner+"/"+repo, "issue", number, "err", perr)
 				}
