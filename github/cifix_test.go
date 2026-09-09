@@ -234,7 +234,7 @@ func TestAutoHealOneAttemptGuard(t *testing.T) {
 
 	select {
 	case c := <-posted:
-		for _, want := range []string{"Auto-heal stopped", "won't attempt a second fix"} {
+		for _, want := range []string{"Auto-heal stopped", "no second attempt"} {
 			if !strings.Contains(c, want) {
 				t.Errorf("stop comment missing %q: %q", want, c)
 			}

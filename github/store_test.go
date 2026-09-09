@@ -115,7 +115,7 @@ func TestStoreConcurrentAccessNoErrors(t *testing.T) {
 
 // TestKeyedMutexPreventsDoubleConsumeMergeIntent reproduces the exact race
 // the design doc's Risk 2 names: mergeIfApproved (Set) racing
-// tryMergeStandingIntent (Get-then-Delete) for the SAME chat. Without
+// tryMerge (Get-then-Delete) for the SAME chat. Without
 // serializing the two, two concurrent "Get, see an intent, Delete it"
 // sequences can both observe the same intent and both act on it (a double
 // merge attempt). keyedMutex closes this at the call-site: every
@@ -148,7 +148,7 @@ func TestKeyedMutexPreventsDoubleConsumeMergeIntent(t *testing.T) {
 	}()
 
 	// two concurrent consumers: mimics mergeIfApproved and
-	// tryMergeStandingIntent both potentially firing for the same PR.
+	// tryMerge both potentially firing for the same PR.
 	for c := 0; c < 2; c++ {
 		wg.Add(1)
 		go func() {

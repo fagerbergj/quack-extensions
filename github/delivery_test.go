@@ -506,7 +506,7 @@ func TestDeliverCommentCarriesGateCaveat(t *testing.T) {
 		if _, err := app.Deliver(context.Background(), dc); err != nil {
 			t.Fatalf("Deliver: %v", err)
 		}
-		if !strings.Contains(postedBody, "did NOT pass") {
+		if !strings.Contains(postedBody, "did not pass") {
 			t.Fatalf("gate-failed comment missing the caveat banner: %q", postedBody)
 		}
 	})
@@ -541,7 +541,7 @@ func TestDeliverCommentCarriesGateCaveat(t *testing.T) {
 		if _, err := app.Deliver(context.Background(), dc); err != nil {
 			t.Fatalf("Deliver: %v", err)
 		}
-		if strings.Contains(postedBody, "did NOT pass") {
+		if strings.Contains(postedBody, "did not pass") {
 			t.Fatalf("gate-passed comment must not carry the caveat banner: %q", postedBody)
 		}
 	})
@@ -1016,7 +1016,7 @@ func TestDeliverFailedGateOpensDraftPR(t *testing.T) {
 	if !posted.Draft {
 		t.Fatalf("gate-failed PR must open as a draft: %s", prBody)
 	}
-	if !strings.Contains(posted.Body, "did NOT pass") {
+	if !strings.Contains(posted.Body, "did not pass") {
 		t.Fatalf("caveat banner missing from body: %s", posted.Body)
 	}
 	// #575: a fresh PR opened for a chat tied to issue #3 closes it deterministically.

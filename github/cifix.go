@@ -155,24 +155,20 @@ func (e *Extension) autoHeal(p workflowRunPayload, number int, rawBody []byte) {
 		}
 	}
 
-	comment := func(text string) {
-		if err := e.app.postIssueComment(ctx, ri.Owner, ri.Name, number, text); err != nil {
-			e.host.Log.Error("github: auto-heal comment failed", "repo", ri.Owner+"/"+ri.Name, "pr", number, "err", err)
-		}
-	}
 	checksText := e.failingChecksText(ctx, ri.Owner, ri.Name, sha, p.WorkflowRun.Name, p.WorkflowRun.HTMLURL)
 
 	if ownCommit {
 		if err := e.store.SetFixState(ctx, FixState{ChatID: chatID, LastSHA: sha, Stopped: true}); err != nil {
 			e.host.Log.Warn("github: auto-heal stop-state write failed", "repo", ri.Owner+"/"+ri.Name, "pr", number, "err", err)
 		}
-		comment(fmt.Sprintf("⚠️ Auto-heal stopped: my own fix on `%s` did not get CI green. Still failing:\n\n%s\nI won't attempt a second fix on my own - that's how a fix loop starts. Mention me directly with guidance, or push a change yourself.",
+		// The one comment for this trigger: no run follows, so nothing else will say why.
+		e.comment(ctx, ri.Owner, ri.Name, number, fmt.Sprintf("Auto-heal stopped: CI still fails on quack's own fix `%s`; no second attempt. Push a fix or ask with guidance.\n\n%s",
 			shortSHA(sha), checksText))
 		return
 	}
 
 	e.host.Log.Info("github: auto-heal dispatching fix run", "repo", ri.Owner+"/"+ri.Name, "pr", number, "sha", sha)
-	comment(fmt.Sprintf("🔧 CI failed on `%s` - attempting an automatic fix.", shortSHA(sha)))
+	e.ackIssue(ri.Owner, ri.Name, number) // the fix run's push (or answer) is the outcome
 	e.beginFix(ctx, ri, number, sha, "CI is failing on this pull request.", checksText, rawBody, "workflow_run.completed")
 }
 
@@ -193,9 +189,7 @@ func (e *Extension) fixLabelApplied(p pullRequestPayload, rawBody []byte) {
 	if err := e.store.DeleteFixState(ctx, chatID); err != nil {
 		e.host.Log.Warn("github: fix-state reset failed", "repo", ri.Owner+"/"+ri.Name, "pr", number, "err", err)
 	}
-	if _, err := e.app.reactToIssue(ctx, ri.Owner, ri.Name, number, "eyes"); err != nil {
-		e.host.Log.Warn("github: fix-label ack reaction failed", "repo", ri.Owner+"/"+ri.Name, "pr", number, "err", err)
-	}
+	e.ackIssue(ri.Owner, ri.Name, number)
 
 	sha := p.PullRequest.Head.SHA
 	checks, err := e.failingChecks(ctx, ri.Owner, ri.Name, sha)
@@ -208,7 +202,7 @@ func (e *Extension) fixLabelApplied(p pullRequestPayload, rawBody []byte) {
 		return // nothing failing right now - armed and waiting for the next CI failure
 	}
 	e.beginFix(ctx, ri, number, sha,
-		fmt.Sprintf("@%s asked me (via the `%s` label) to fix this pull request's currently-failing checks.", p.Sender.Login, e.labels.Fix),
+		fmt.Sprintf("The `%s` label asks for this pull request's currently-failing checks to be fixed.", e.labels.Fix),
 		renderFailingChecks(checks), rawBody, "pull_request.labeled")
 }
 

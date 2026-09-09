@@ -1,0 +1,340 @@
+package github
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func TestStripMentions(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"@alice please look", "alice please look"},
+		{"cc @alice and @bob-smith.", "cc alice and bob-smith."},
+		{"team @acme/core owns it", "team acme/core owns it"},
+		{"mail me@example.com", "mail me@example.com"},
+		{"see https://x.io/@alice", "see https://x.io/@alice"},
+		{"inline `@Override` stays", "inline `@Override` stays"},
+		{"```go\n@decorator\n```\n@alice", "```go\n@decorator\n```\nalice"},
+		{"~~~\n@kept\n~~~", "~~~\n@kept\n~~~"},
+		{"**@alice** wrote", "**alice** wrote"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := stripMentions(tt.in); got != tt.want {
+			t.Errorf("stripMentions(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestAppendLineOnce(t *testing.T) {
+	body, ok := appendLine("LGTM\n", "Merged as abc1234.")
+	if !ok || body != "LGTM\n\nMerged as abc1234." {
+		t.Fatalf("first append = %q, %v", body, ok)
+	}
+	if again, ok := appendLine(body, "Merged as abc1234."); ok || again != body {
+		t.Errorf("second append changed the body: %q, %v", again, ok)
+	}
+	if body, _ := appendLine("", "x"); body != "x" {
+		t.Errorf("empty body append = %q", body)
+	}
+}
+
+// mergeSim is a mutable GitHub stub for the event-driven merge flow: the
+// test flips reviews / check runs / head sha between webhook events and
+// counts every outbound write by kind.
+type mergeSim struct {
+	mu       sync.Mutex
+	reviews  string // GET .../reviews; BODY is replaced by body
+	body     string // the quack review's current body - PUT edits persist here
+	checks   string // GET .../check-runs
+	headSHA  string
+	mergeErr string // non-empty: PUT .../merge returns 405 with this message
+
+	comments  atomic.Int32 // POST issue comments
+	edits     atomic.Int32 // PUT review body
+	merges    atomic.Int32
+	reactions atomic.Int32
+	lastEdit  atomic.Value // string
+	lastMerge atomic.Value // string: request body
+}
+
+func (m *mergeSim) set(fn func(*mergeSim)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	fn(m)
+}
+
+func (m *mergeSim) server(t *testing.T) *httptest.Server {
+	t.Helper()
+	m.lastEdit.Store("")
+	m.lastMerge.Store("")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m.mu.Lock()
+		reviews, checks, head, mergeErr := strings.Replace(m.reviews, "BODY", m.body, 1), m.checks, m.headSHA, m.mergeErr
+		m.mu.Unlock()
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			fmt.Fprint(w, `{"id":5}`)
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		case strings.HasSuffix(r.URL.Path, "/app"):
+			fmt.Fprint(w, `{"slug":"quack"}`)
+		case strings.HasSuffix(r.URL.Path, "/reactions"):
+			m.reactions.Add(1)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":1}`)
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/reviews/"):
+			var edit struct {
+				Body string `json:"body"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&edit)
+			m.edits.Add(1)
+			m.lastEdit.Store(edit.Body)
+			m.set(func(m *mergeSim) { m.body = edit.Body })
+			fmt.Fprint(w, `{}`)
+		case strings.HasSuffix(r.URL.Path, "/reviews"):
+			fmt.Fprint(w, reviews)
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/merge"):
+			body, _ := io.ReadAll(r.Body)
+			m.lastMerge.Store(string(body))
+			if mergeErr != "" {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				fmt.Fprintf(w, `{"message":%q}`, mergeErr)
+				return
+			}
+			m.merges.Add(1)
+			fmt.Fprint(w, `{"merged":true,"sha":"deadbeefcafe"}`)
+		case strings.Contains(r.URL.Path, "/check-runs"):
+			fmt.Fprint(w, checks)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+			m.comments.Add(1)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{}`)
+		case strings.HasSuffix(r.URL.Path, "/comments"):
+			fmt.Fprint(w, `[]`)
+		case strings.HasSuffix(r.URL.Path, "/files"), strings.HasSuffix(r.URL.Path, "/commits"):
+			fmt.Fprint(w, `[]`)
+		case strings.Contains(r.URL.Path, "/pulls/"):
+			fmt.Fprintf(w, `{"title":"Test PR","body":"","state":"open","head":{"ref":"feature","sha":%q},"base":{"ref":"main"}}`, head)
+		case isIssueMetaPath(r.URL.Path):
+			fmt.Fprint(w, `{"title":"Test PR","body":"","state":"open"}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+const (
+	approvedOnHead1 = `[{"id":11,"state":"APPROVED","commit_id":"head1","body":"BODY","user":{"login":"quack[bot]"},"submitted_at":"2026-01-01T00:00:00Z"}]`
+	checksPending   = `{"check_runs":[{"id":1,"name":"go-test","status":"in_progress"}]}`
+	checksGreen     = `{"check_runs":[{"id":1,"name":"go-test","status":"completed","conclusion":"success"}]}`
+)
+
+func checkEventBody(kind string) []byte {
+	return []byte(fmt.Sprintf(`{"action":"completed",%q:{"head_sha":"head1","conclusion":"success","pull_requests":[{"number":7}]},
+		"repository":{"name":"widgets","owner":{"login":"acme"}},"installation":{"id":5}}`, kind))
+}
+
+// settle gives the goroutines a webhook spawns time to finish their GitHub
+// calls - used before asserting that nothing happened.
+func settle() { time.Sleep(300 * time.Millisecond) }
+
+// waitFor polls cond until it holds or the deadline passes.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestMergeWaitsForChecksThenMerges: approval already on the head, checks
+// still running when the label lands - no merge, no comment, one reaction.
+// The check completing merges and appends the sha to the review, once.
+func TestMergeWaitsForChecksThenMerges(t *testing.T) {
+	sim := &mergeSim{reviews: approvedOnHead1, body: "LGTM", checks: checksPending, headSHA: "head1"}
+	srv := sim.server(t)
+	ext, fh := newTestExtension(t, srv.URL, []string{"merge"})
+
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request", mergeLabelBody("alice")))
+	waitFor(t, "the label ack", func() bool { return sim.reactions.Load() == 1 })
+	settle()
+	if sim.merges.Load() != 0 || sim.comments.Load() != 0 || sim.edits.Load() != 0 {
+		t.Fatalf("pending checks: merges=%d comments=%d edits=%d; want all 0", sim.merges.Load(), sim.comments.Load(), sim.edits.Load())
+	}
+	if sim.reactions.Load() != 1 {
+		t.Errorf("reactions = %d; want the single 👀 ack", sim.reactions.Load())
+	}
+	if len(fh.calls()) != 0 {
+		t.Errorf("an approved-on-head PR must not be re-reviewed; dispatches = %d", len(fh.calls()))
+	}
+
+	sim.set(func(m *mergeSim) { m.checks = checksGreen })
+	for _, kind := range []string{"check_run", "check_suite", "workflow_run"} {
+		ext.handleWebhook(httptest.NewRecorder(), signedRequest(kind, checkEventBody(kind)))
+	}
+	waitFor(t, "the merge", func() bool { return sim.merges.Load() == 1 })
+	settle()
+	if sim.merges.Load() != 1 {
+		t.Fatalf("merges = %d; want exactly 1 across three completion events", sim.merges.Load())
+	}
+	if !strings.Contains(sim.lastMerge.Load().(string), `"sha":"head1"`) {
+		t.Errorf("merge body = %q; want it pinned to the reviewed head", sim.lastMerge.Load())
+	}
+	if sim.edits.Load() != 1 || sim.lastEdit.Load().(string) != "LGTM\n\nMerged as deadbee." {
+		t.Errorf("edits=%d last=%q; want one review edit carrying the merge sha", sim.edits.Load(), sim.lastEdit.Load())
+	}
+	if sim.comments.Load() != 0 {
+		t.Errorf("comments = %d; the outcome must land on the review, never as a comment", sim.comments.Load())
+	}
+	if intent, _ := ext.store.GetMergeIntent(context.Background(), globalChatID("github-acme-widgets-7")); intent != nil {
+		t.Errorf("intent = %+v; want it cleared after the merge", intent)
+	}
+}
+
+// TestMergeChecksGreenThenApproval: label lands on a green but unreviewed
+// PR - a review is dispatched, nothing merges. The approving review's
+// submitted event then merges.
+func TestMergeChecksGreenThenApproval(t *testing.T) {
+	sim := &mergeSim{reviews: "[]", checks: checksGreen, headSHA: "head1"}
+	srv := sim.server(t)
+	ext, fh := newTestExtension(t, srv.URL, []string{"merge"})
+
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request", mergeLabelBody("alice")))
+	fh.waitForDispatch(t, 2*time.Second)
+	settle()
+	if sim.merges.Load() != 0 || sim.comments.Load() != 0 {
+		t.Fatalf("unreviewed: merges=%d comments=%d; want 0", sim.merges.Load(), sim.comments.Load())
+	}
+
+	sim.set(func(m *mergeSim) { m.reviews = approvedOnHead1 })
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request_review", pullRequestReviewBody("approved", "quack[bot]", 7)))
+	waitFor(t, "the merge", func() bool { return sim.merges.Load() == 1 })
+	settle()
+	if sim.merges.Load() != 1 || sim.edits.Load() != 1 || sim.comments.Load() != 0 {
+		t.Errorf("merges=%d edits=%d comments=%d; want 1/1/0", sim.merges.Load(), sim.edits.Load(), sim.comments.Load())
+	}
+}
+
+// TestMergeApprovalOnOldHeadDoesNotMerge: the approval's commit_id is not
+// the current head after a push - synchronize must not merge and must stay
+// silent.
+func TestMergeApprovalOnOldHeadDoesNotMerge(t *testing.T) {
+	sim := &mergeSim{reviews: approvedOnHead1, checks: checksGreen, headSHA: "head2"}
+	srv := sim.server(t)
+	ext, _ := newTestExtension(t, srv.URL, []string{"merge"})
+	chatID := globalChatID("github-acme-widgets-7")
+	if err := ext.store.SetMergeIntent(context.Background(), chatID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"action":"synchronize","number":7,"pull_request":{"head":{"sha":"head2"}},
+		"repository":{"name":"widgets","owner":{"login":"acme"}},"installation":{"id":5},"sender":{"login":"alice"}}`)
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request", body))
+	for _, kind := range []string{"check_run", "check_suite"} {
+		ext.handleWebhook(httptest.NewRecorder(), signedRequest(kind, checkEventBody(kind)))
+	}
+	settle()
+	if sim.merges.Load() != 0 || sim.comments.Load() != 0 || sim.edits.Load() != 0 {
+		t.Errorf("stale approval: merges=%d comments=%d edits=%d; want all 0", sim.merges.Load(), sim.comments.Load(), sim.edits.Load())
+	}
+	if intent, _ := ext.store.GetMergeIntent(context.Background(), chatID); intent == nil {
+		t.Error("intent must survive a stale approval so a fresh approval on the new head can still merge")
+	}
+}
+
+// TestMergeRealFailureLandsOnReviewOnce: a conflict is appended to the
+// approving review exactly once, even when several later events re-evaluate.
+func TestMergeRealFailureLandsOnReviewOnce(t *testing.T) {
+	sim := &mergeSim{reviews: approvedOnHead1, body: "LGTM", checks: checksGreen, headSHA: "head1", mergeErr: "Pull Request has merge conflicts"}
+	srv := sim.server(t)
+	ext, _ := newTestExtension(t, srv.URL, []string{"merge"})
+	if err := ext.store.SetMergeIntent(context.Background(), globalChatID("github-acme-widgets-7"), "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 3; i++ {
+		ext.handleWebhook(httptest.NewRecorder(), signedRequest("check_run", checkEventBody("check_run")))
+	}
+	waitFor(t, "the failure edit", func() bool { return sim.edits.Load() >= 1 })
+	settle()
+	if sim.merges.Load() != 0 || sim.comments.Load() != 0 {
+		t.Errorf("merges=%d comments=%d; want 0/0", sim.merges.Load(), sim.comments.Load())
+	}
+	if sim.edits.Load() != 1 || sim.lastEdit.Load().(string) != "LGTM\n\nMerge failed: Pull Request has merge conflicts." {
+		t.Errorf("edits=%d last=%q; want the conflict appended to the review exactly once", sim.edits.Load(), sim.lastEdit.Load())
+	}
+
+	// A pending required check reported by GitHub itself is not a failure.
+	sim.set(func(m *mergeSim) { m.mergeErr = `Required status check "go-test" is in progress.` })
+	before := sim.edits.Load()
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest("check_run", checkEventBody("check_run")))
+	settle()
+	if sim.edits.Load() != before || sim.comments.Load() != 0 {
+		t.Errorf("pending check must be silent: edits %d->%d comments=%d", before, sim.edits.Load(), sim.comments.Load())
+	}
+}
+
+// TestMergeLabelRemovedWithdrawsIntent: unlabeling clears the standing
+// authorization, so a later green+approved state does not merge.
+func TestMergeLabelRemovedWithdrawsIntent(t *testing.T) {
+	sim := &mergeSim{reviews: approvedOnHead1, checks: checksGreen, headSHA: "head1"}
+	srv := sim.server(t)
+	ext, _ := newTestExtension(t, srv.URL, []string{"merge"})
+	chatID := globalChatID("github-acme-widgets-7")
+	if err := ext.store.SetMergeIntent(context.Background(), chatID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Replace(string(mergeLabelBody("alice")), `"labeled"`, `"unlabeled"`, 1)
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request", []byte(body)))
+	if intent, _ := ext.store.GetMergeIntent(context.Background(), chatID); intent != nil {
+		t.Fatalf("intent = %+v; want it cleared on unlabel", intent)
+	}
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest("check_run", checkEventBody("check_run")))
+	settle()
+	if sim.merges.Load() != 0 {
+		t.Errorf("merged without the label: merges=%d", sim.merges.Load())
+	}
+}
+
+// TestMergeLabelTwiceWhileReviewRunsPostsNothing pins #1304: `gh pr create
+// --label quack:review --label quack:merge` delivers the review label (a
+// review dispatch) and then the merge label twice within a second. Every
+// trigger on the same head while that review runs must post nothing and
+// must not start a second review.
+func TestMergeLabelTwiceWhileReviewRunsPostsNothing(t *testing.T) {
+	sim := &mergeSim{reviews: "[]", checks: checksPending, headSHA: "head1"}
+	srv := sim.server(t)
+	ext, fh := newTestExtension(t, srv.URL, []string{"label", "merge"})
+
+	review := strings.Replace(string(mergeLabelBody("alice")), "quack:merge", "quack-auto-review", 1)
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request", []byte(review)))
+	fh.waitForDispatch(t, 2*time.Second)
+	for i := 0; i < 2; i++ {
+		ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request", mergeLabelBody("alice")))
+	}
+	waitFor(t, "both label acks", func() bool { return sim.reactions.Load() == 2 })
+	settle()
+	if sim.comments.Load() != 0 || sim.edits.Load() != 0 || sim.merges.Load() != 0 {
+		t.Errorf("comments=%d edits=%d merges=%d; want all 0 while the review runs", sim.comments.Load(), sim.edits.Load(), sim.merges.Load())
+	}
+	if calls := fh.calls(); len(calls) != 1 {
+		t.Errorf("dispatches = %d; want the one review the review label started", len(calls))
+	}
+	if intent, _ := ext.store.GetMergeIntent(context.Background(), globalChatID("github-acme-widgets-7")); intent == nil || intent.RequestedBy != "alice" {
+		t.Errorf("intent = %+v; want alice's standing authorization recorded", intent)
+	}
+}
