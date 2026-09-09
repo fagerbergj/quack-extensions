@@ -305,16 +305,22 @@ func (e *Extension) tryMerge(ctx context.Context, owner, repo string, number int
 		if !slices.Contains(meta.Labels, e.labels.Merge) {
 			return mergeNoIntent, nil
 		}
-		// The label itself is ground truth: its "labeled" delivery can go
-		// missing (GitHub's own delivery failure, or a second near-simultaneous
-		// delivery for the same PR the handler never got to) - adopt it here
-		// instead of staying blocked until someone re-applies the label.
-		if serr := e.store.SetMergeIntent(ctx, chatID, "label"); serr != nil {
+		// The label's "labeled" delivery can go missing, but GET /pulls/{n}
+		// doesn't report who applied it - re-check the timeline's actor
+		// against the delivery path's own two checks before adopting, failing
+		// closed on any doubt (webhook.go enforces the same pair on delivery).
+		actor, stillApplied, known, aerr := e.app.mergeLabelActor(ctx, owner, repo, number, e.labels.Merge)
+		if aerr != nil || !known || !stillApplied || strings.HasSuffix(actor, "[bot]") || !e.isInvokerAllowed(actor) {
+			slog.Warn("github: quack:merge label present but its actor is not an authorized invoker; not adopting",
+				"component", "github", "repo", owner+"/"+repo, "pr", number, "actor", actor, "err", aerr)
+			return mergeNoIntent, nil
+		}
+		if serr := e.store.SetMergeIntent(ctx, chatID, actor); serr != nil {
 			return mergeNoIntent, fmt.Errorf("merge-intent adopt: %w", serr)
 		}
 		slog.Info("github: adopted merge intent from the quack:merge label directly; its labeled delivery was never handled",
-			"component", "github", "repo", owner+"/"+repo, "pr", number)
-		intent = &MergeIntent{ChatID: chatID, RequestedBy: "label"}
+			"component", "github", "repo", owner+"/"+repo, "pr", number, "actor", actor)
+		intent = &MergeIntent{ChatID: chatID, RequestedBy: actor}
 		m = &meta
 	}
 	ref, err := e.latestQuackVerdict(ctx, owner, repo, number)
@@ -573,8 +579,8 @@ type ciHead struct {
 }
 
 // mergeOnCheckEvent fans a completed CI event out to tryMerge for every PR it
-// belongs to. Cheap when nothing is labeled: tryMerge stops at the intent
-// lookup before any GitHub call.
+// belongs to. A PR with no stored intent still costs one GET /pulls/{n}
+// label check per fanned-out event before tryMerge gives up.
 //
 // Required topology: pull_requests is populated only when the check's head
 // AND base both live in p.Repository (GitHub's own scoping) - so for a fork

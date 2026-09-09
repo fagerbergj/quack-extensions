@@ -951,6 +951,44 @@ func (a *App) pullMeta(ctx context.Context, owner, repo string, number int) (prM
 	}, nil
 }
 
+// mergeLabelActor finds who last applied (or removed) label, via the issues
+// timeline - the only place GitHub records that actor. known is false when
+// the label never appears there; callers must fail closed on that.
+func (a *App) mergeLabelActor(ctx context.Context, owner, repo string, number int, label string) (actor string, stillApplied, known bool, err error) {
+	tok, err := a.tokenForRepo(ctx, owner, repo)
+	if err != nil {
+		return "", false, false, err
+	}
+	type timelineEvent struct {
+		Event     string `json:"event"`
+		CreatedAt string `json:"created_at"`
+		Actor     struct {
+			Login string `json:"login"`
+		} `json:"actor"`
+		Label struct {
+			Name string `json:"name"`
+		} `json:"label"`
+	}
+	var latest string
+	for page := 1; ; page++ {
+		var events []timelineEvent
+		path := fmt.Sprintf("/repos/%s/%s/issues/%d/timeline?per_page=100&page=%d", owner, repo, number, page)
+		if err := a.doJSON(ctx, http.MethodGet, path, "token "+tok, nil, &events); err != nil {
+			return "", false, false, err
+		}
+		// Comparing created_at (not page/list order) keeps this correct
+		// regardless of the API's page ordering.
+		for _, e := range events {
+			if e.Label.Name == label && (e.Event == "labeled" || e.Event == "unlabeled") && e.CreatedAt >= latest {
+				latest, actor, stillApplied, known = e.CreatedAt, e.Actor.Login, e.Event == "labeled", true
+			}
+		}
+		if len(events) < 100 {
+			return actor, stillApplied, known, nil
+		}
+	}
+}
+
 type changedFile struct {
 	Filename  string `json:"filename"`
 	Additions int    `json:"additions"`
