@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -295,8 +296,26 @@ func (e *Extension) tryMerge(ctx context.Context, owner, repo string, number int
 	if err != nil {
 		return mergeNoIntent, fmt.Errorf("merge-intent lookup: %w", err)
 	}
+	var m *prMeta // set here when adopted below, so the later lookup isn't repeated
 	if intent == nil {
-		return mergeNoIntent, nil
+		meta, merr := e.app.pullMeta(ctx, owner, repo, number)
+		if merr != nil {
+			return mergeNoIntent, fmt.Errorf("pull lookup: %w", merr)
+		}
+		if !slices.Contains(meta.Labels, e.labels.Merge) {
+			return mergeNoIntent, nil
+		}
+		// The label itself is ground truth: its "labeled" delivery can go
+		// missing (GitHub's own delivery failure, or a second near-simultaneous
+		// delivery for the same PR the handler never got to) - adopt it here
+		// instead of staying blocked until someone re-applies the label.
+		if serr := e.store.SetMergeIntent(ctx, chatID, "label"); serr != nil {
+			return mergeNoIntent, fmt.Errorf("merge-intent adopt: %w", serr)
+		}
+		slog.Info("github: adopted merge intent from the quack:merge label directly; its labeled delivery was never handled",
+			"component", "github", "repo", owner+"/"+repo, "pr", number)
+		intent = &MergeIntent{ChatID: chatID, RequestedBy: "label"}
+		m = &meta
 	}
 	ref, err := e.latestQuackVerdict(ctx, owner, repo, number)
 	if err != nil {
@@ -309,9 +328,12 @@ func (e *Extension) tryMerge(ctx context.Context, owner, repo string, number int
 	default:
 		return mergeNotApproved, nil
 	}
-	m, err := e.app.pullMeta(ctx, owner, repo, number)
-	if err != nil {
-		return mergeNoIntent, fmt.Errorf("pull lookup: %w", err)
+	if m == nil {
+		meta, merr := e.app.pullMeta(ctx, owner, repo, number)
+		if merr != nil {
+			return mergeNoIntent, fmt.Errorf("pull lookup: %w", merr)
+		}
+		m = &meta
 	}
 	if m.Merged || m.State == "closed" {
 		e.clearMergeIntent(ctx, chatID)

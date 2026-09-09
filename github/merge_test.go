@@ -121,6 +121,7 @@ type mergeSim struct {
 	suites        string // GET .../check-suites; "" behaves as zero suites (no CI on this head at all)
 	issueComments string // GET .../comments; "" behaves as no own-PR comment markers
 	headSHA       string
+	labels        string // pullMeta's "labels" array, e.g. `[{"name":"quack:merge"}]`; "" behaves as no labels
 	mergeErr      string // non-empty: PUT .../merge returns 405 with this message
 
 	comments  atomic.Int32 // POST issue comments
@@ -144,13 +145,16 @@ func (m *mergeSim) server(t *testing.T) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
 		reviews, checks, head, mergeErr := strings.Replace(m.reviews, "BODY", m.body, 1), m.checks, m.headSHA, m.mergeErr
-		suites, issueComments := m.suites, m.issueComments
+		suites, issueComments, labels := m.suites, m.issueComments, m.labels
 		m.mu.Unlock()
 		if suites == "" {
 			suites = `{"check_suites":[]}`
 		}
 		if issueComments == "" {
 			issueComments = `[]`
+		}
+		if labels == "" {
+			labels = `[]`
 		}
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/installation"):
@@ -197,7 +201,7 @@ func (m *mergeSim) server(t *testing.T) *httptest.Server {
 		case strings.HasSuffix(r.URL.Path, "/files"), strings.HasSuffix(r.URL.Path, "/commits"):
 			fmt.Fprint(w, `[]`)
 		case strings.Contains(r.URL.Path, "/pulls/"):
-			fmt.Fprintf(w, `{"title":"Test PR","body":"","state":"open","head":{"ref":"feature","sha":%q},"base":{"ref":"main"}}`, head)
+			fmt.Fprintf(w, `{"title":"Test PR","body":"","state":"open","head":{"ref":"feature","sha":%q},"base":{"ref":"main"},"labels":%s}`, head, labels)
 		case isIssueMetaPath(r.URL.Path):
 			fmt.Fprint(w, `{"title":"Test PR","body":"","state":"open"}`)
 		default:
@@ -460,6 +464,91 @@ func TestMergeLabelTwiceWhileReviewRunsPostsNothing(t *testing.T) {
 	}
 	if intent, _ := ext.store.GetMergeIntent(context.Background(), globalChatID("github-acme-widgets-7")); intent == nil || intent.RequestedBy != "alice" {
 		t.Errorf("intent = %+v; want alice's standing authorization recorded", intent)
+	}
+}
+
+// TestTryMergeAdoptsIntentFromLabelWhenNoneStored pins #1330: a PR carries
+// quack:merge on GitHub but has no stored intent (its "labeled" delivery was
+// missed) - tryMerge must adopt the label itself rather than staying blocked
+// on mergeNoIntent until someone re-applies it.
+func TestTryMergeAdoptsIntentFromLabelWhenNoneStored(t *testing.T) {
+	sim := &mergeSim{reviews: "[]", checks: checksGreen, headSHA: "head1", labels: `[{"name":"quack:merge"}]`}
+	srv := sim.server(t)
+	ext, _ := newTestExtension(t, srv.URL, []string{"merge"})
+	chatID := globalChatID("github-acme-widgets-7")
+
+	if intent, _ := ext.store.GetMergeIntent(context.Background(), chatID); intent != nil {
+		t.Fatalf("intent = %+v; want none stored before the call", intent)
+	}
+	outcome, err := ext.tryMerge(context.Background(), "acme", "widgets", 7)
+	if err != nil {
+		t.Fatalf("tryMerge: %v", err)
+	}
+	if outcome != mergeUnreviewed {
+		t.Errorf("outcome = %v; want mergeUnreviewed once the label is adopted and evaluation proceeds", outcome)
+	}
+	intent, _ := ext.store.GetMergeIntent(context.Background(), chatID)
+	if intent == nil || intent.RequestedBy != "label" {
+		t.Errorf("intent = %+v; want it persisted from the label", intent)
+	}
+}
+
+// TestTryMergeNoIntentNoLabelStaysNoIntent: no stored intent and the label is
+// absent from GitHub too - mergeNoIntent, and nothing gets persisted.
+func TestTryMergeNoIntentNoLabelStaysNoIntent(t *testing.T) {
+	sim := &mergeSim{reviews: "[]", checks: checksGreen, headSHA: "head1"}
+	srv := sim.server(t)
+	ext, _ := newTestExtension(t, srv.URL, []string{"merge"})
+	chatID := globalChatID("github-acme-widgets-7")
+
+	outcome, err := ext.tryMerge(context.Background(), "acme", "widgets", 7)
+	if err != nil {
+		t.Fatalf("tryMerge: %v", err)
+	}
+	if outcome != mergeNoIntent {
+		t.Errorf("outcome = %v; want mergeNoIntent", outcome)
+	}
+	if intent, _ := ext.store.GetMergeIntent(context.Background(), chatID); intent != nil {
+		t.Errorf("intent = %+v; want nothing persisted with no label and no prior intent", intent)
+	}
+}
+
+// TestConcurrentReviewAndMergeLabelDeliveriesBothHandled pins #1330's other
+// half: GitHub can deliver quack:review and quack:merge as two
+// near-simultaneous "labeled" events for one PR. Both deliveries must be
+// handled - the merge-intent write must not wait on, or be dropped by, the
+// review dispatch racing it in the same window.
+func TestConcurrentReviewAndMergeLabelDeliveriesBothHandled(t *testing.T) {
+	sim := &mergeSim{reviews: "[]", checks: checksPending, headSHA: "head1"}
+	srv := sim.server(t)
+	ext, fh := newTestExtension(t, srv.URL, []string{"label", "merge"})
+
+	review := strings.Replace(string(mergeLabelBody("alice")), "quack:merge", "quack-auto-review", 1)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request", []byte(review)))
+	}()
+	go func() {
+		defer wg.Done()
+		ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request", mergeLabelBody("alice")))
+	}()
+	wg.Wait()
+
+	fh.waitForDispatch(t, 2*time.Second)
+	chatID := globalChatID("github-acme-widgets-7")
+	waitFor(t, "the merge intent", func() bool {
+		intent, _ := ext.store.GetMergeIntent(context.Background(), chatID)
+		return intent != nil
+	})
+	settle()
+
+	if intent, _ := ext.store.GetMergeIntent(context.Background(), chatID); intent == nil || intent.RequestedBy != "alice" {
+		t.Errorf("intent = %+v; want alice's standing authorization recorded", intent)
+	}
+	if calls := fh.calls(); len(calls) != 1 {
+		t.Errorf("dispatches = %d; want exactly one review dispatched", len(calls))
 	}
 }
 

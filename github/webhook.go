@@ -155,7 +155,7 @@ func (e *Extension) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	case "issue_comment":
 		e.handleIssueComment(w, body)
 	case "pull_request":
-		e.handlePullRequest(w, body)
+		e.handlePullRequest(w, body, r.Header.Get("X-GitHub-Delivery"))
 	case "pull_request_review":
 		e.handlePullRequestReview(w, body)
 	case "issues":
@@ -227,11 +227,20 @@ func (e *Extension) handleIssueComment(w http.ResponseWriter, body []byte) {
 
 // handlePullRequest fires an auto-review on "opened" or "labeled" with the configured auto_review_label,
 // and refreshes the sidebar badge on close/merge/reopen.
-func (e *Extension) handlePullRequest(w http.ResponseWriter, body []byte) {
+func (e *Extension) handlePullRequest(w http.ResponseWriter, body []byte, deliveryID string) {
 	var p pullRequestPayload
 	if err := json.Unmarshal(body, &p); err != nil {
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
+	}
+
+	// Logged before any dedup or dispatch (#1330's missing quack:merge
+	// delivery): a delivery GitHub never sent and one this handler dropped
+	// both look like silence downstream - this is the one place to tell them apart.
+	if p.Action == "labeled" || p.Action == "unlabeled" {
+		slog.Info("github webhook: label delivery received", "component", "github",
+			"repo", p.Repository.Owner.Login+"/"+p.Repository.Name, "pr", p.Number,
+			"action", p.Action, "label", p.Label.Name, "sender", p.Sender.Login, "delivery_id", deliveryID)
 	}
 
 	if p.Action == "closed" || p.Action == "reopened" {
