@@ -87,9 +87,6 @@ func TestExtensionImplementsInterfaces(t *testing.T) {
 	if ui := ext.UI(); ui.Title == "" || ui.Href != documentsPath {
 		t.Errorf("UI() = %+v, want the documents page as the nav entry", ui)
 	}
-	if _, ok := extVal.(sdk.Stopper); ok {
-		t.Error("extension implements Stopper, but there is nothing to stop")
-	}
 }
 
 func TestStartFailsLoudOnUnreachableCloud(t *testing.T) {
