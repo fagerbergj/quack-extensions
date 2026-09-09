@@ -2,7 +2,9 @@ package github
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -65,6 +67,57 @@ func TestStoreRoundTrips(t *testing.T) {
 	if mi, err := s.GetMergeIntent(ctx, "c1"); err != nil || mi != nil {
 		t.Fatalf("GetMergeIntent after delete = %+v, err=%v, want nil", mi, err)
 	}
+}
+
+// TestMigrationAddsDispatchedHeadColumn opens a database created before the
+// dispatched_head column existed (#1277) - openStore must add it in place
+// rather than erroring on "duplicate column" on every later open, and the
+// pre-existing row must survive with an empty dispatched_head.
+func TestMigrationAddsDispatchedHeadColumn(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "github.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE github_merge_intent (
+		chat_id TEXT PRIMARY KEY,
+		requested_by TEXT NOT NULL,
+		created_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO github_merge_intent (chat_id, requested_by, created_at, updated_at) VALUES ('c1','alice','2026-01-01','2026-01-01')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := openStore(dir)
+	if err != nil {
+		t.Fatalf("openStore on a pre-migration db: %v", err)
+	}
+	defer s.Close()
+	mi, err := s.GetMergeIntent(context.Background(), "c1")
+	if err != nil || mi == nil || mi.RequestedBy != "alice" || mi.DispatchedHead != "" {
+		t.Fatalf("GetMergeIntent after migration = %+v, err=%v; want the pre-existing row preserved with an empty dispatched_head", mi, err)
+	}
+	if err := s.SetMergeIntentDispatchedHead(context.Background(), "c1", "abc123"); err != nil {
+		t.Fatalf("SetMergeIntentDispatchedHead: %v", err)
+	}
+	if mi, err := s.GetMergeIntent(context.Background(), "c1"); err != nil || mi.DispatchedHead != "abc123" {
+		t.Fatalf("GetMergeIntent = %+v, err=%v; want dispatched_head=abc123", mi, err)
+	}
+
+	// Re-opening an already-migrated database must not error on the "add
+	// column" step running again.
+	s2, err := openStore(dir)
+	if err != nil {
+		t.Fatalf("re-opening an already-migrated db: %v", err)
+	}
+	s2.Close()
 }
 
 // TestStoreConcurrentAccessNoErrors is Risk 2's baseline: many goroutines

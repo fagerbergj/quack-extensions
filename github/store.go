@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	// glebarez/go-sqlite, not modernc.org/sqlite directly: quack itself
@@ -50,6 +51,7 @@ CREATE TABLE IF NOT EXISTS github_fix_state (
 CREATE TABLE IF NOT EXISTS github_merge_intent (
 	chat_id TEXT PRIMARY KEY,
 	requested_by TEXT NOT NULL,
+	dispatched_head TEXT NOT NULL DEFAULT '',
 	created_at TIMESTAMP NOT NULL,
 	updated_at TIMESTAMP NOT NULL
 );
@@ -87,6 +89,13 @@ func openStore(dataDir string) (*ghStore, error) {
 	if _, err := db.Exec(ghSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("github: migrate store: %w", err)
+	}
+	// Additive migration for a database created before dispatched_head
+	// existed - ignore "duplicate column" on a database that already has it.
+	if _, err := db.Exec(`ALTER TABLE github_merge_intent ADD COLUMN dispatched_head TEXT NOT NULL DEFAULT ''`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		db.Close()
+		return nil, fmt.Errorf("github: migrate store: add dispatched_head: %w", err)
 	}
 	return &ghStore{db: db}, nil
 }
@@ -181,17 +190,21 @@ func (s *ghStore) DeleteFixState(ctx context.Context, chatID string) error {
 
 // MergeIntent records a standing merge authorization for a PR chat, durable
 // across restarts so quack:merge applied before a review still works.
+// DispatchedHead is the head SHA a push-triggered re-review was last
+// dispatched for under this intent (#1277) - the guard so two synchronize
+// events for the same head dispatch once.
 type MergeIntent struct {
-	ChatID      string
-	RequestedBy string
-	CreatedAt   time.Time
+	ChatID         string
+	RequestedBy    string
+	DispatchedHead string
+	CreatedAt      time.Time
 }
 
 // GetMergeIntent returns the merge authorization, or (nil, nil) when none.
 func (s *ghStore) GetMergeIntent(ctx context.Context, chatID string) (*MergeIntent, error) {
 	var mi MergeIntent
-	err := s.db.QueryRowContext(ctx, `SELECT chat_id, requested_by, created_at FROM github_merge_intent WHERE chat_id = ?`, chatID).
-		Scan(&mi.ChatID, &mi.RequestedBy, &mi.CreatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT chat_id, requested_by, dispatched_head, created_at FROM github_merge_intent WHERE chat_id = ?`, chatID).
+		Scan(&mi.ChatID, &mi.RequestedBy, &mi.DispatchedHead, &mi.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -202,12 +215,23 @@ func (s *ghStore) GetMergeIntent(ctx context.Context, chatID string) (*MergeInte
 }
 
 // SetMergeIntent upserts the merge authorization (quack:merge label applied).
+// dispatched_head is left untouched on conflict - re-labeling the same PR
+// must not forget a head a push-triggered re-review already covered.
 func (s *ghStore) SetMergeIntent(ctx context.Context, chatID, requestedBy string) error {
 	now := time.Now().UTC()
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO github_merge_intent (chat_id, requested_by, created_at, updated_at) VALUES (?, ?, ?, ?)
+		INSERT INTO github_merge_intent (chat_id, requested_by, dispatched_head, created_at, updated_at) VALUES (?, ?, '', ?, ?)
 		ON CONFLICT(chat_id) DO UPDATE SET requested_by = excluded.requested_by, updated_at = excluded.updated_at`,
 		chatID, requestedBy, now, now)
+	return err
+}
+
+// SetMergeIntentDispatchedHead records the head SHA a push-triggered
+// re-review was just dispatched for (#1277) - a no-op if the intent was
+// cleared out from under it (unlabel/close racing the push).
+func (s *ghStore) SetMergeIntentDispatchedHead(ctx context.Context, chatID, head string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE github_merge_intent SET dispatched_head = ?, updated_at = ? WHERE chat_id = ?`,
+		head, time.Now().UTC(), chatID)
 	return err
 }
 

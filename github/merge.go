@@ -290,6 +290,43 @@ func (e *Extension) mergeIfApproved(p pullRequestPayload, rawBody []byte) {
 	go e.dispatch(autoReviewPayload(p, rawBody), autoReviewTask)
 }
 
+// reviewOnMovedHeadUnderIntent dispatches a fresh review when a push moves
+// the head of a PR under a standing quack:merge intent (#1277): otherwise an
+// approved-then-pushed PR sits waiting for a human to comment /review, since
+// nothing else re-reviews a head that moved after delivery already
+// finished. Guarded by the head SHA recorded on the intent row itself -
+// concurrent or repeated synchronize events for the same head dispatch once.
+func (e *Extension) reviewOnMovedHeadUnderIntent(p pullRequestPayload, rawBody []byte) {
+	if !e.triggers["merge"] {
+		return
+	}
+	owner, repo, number := p.Repository.Owner.Login, p.Repository.Name, p.Number
+	head := p.PullRequest.Head.SHA
+	if head == "" {
+		return
+	}
+	sessionID := fmt.Sprintf("github-%s-%s-%d", owner, repo, number)
+	chatID := globalChatID(sessionID)
+	unlock := e.mergeMu.Lock(chatID)
+	defer unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), reactionTimeout)
+	defer cancel()
+	intent, err := e.store.GetMergeIntent(ctx, chatID)
+	if err != nil {
+		slog.Warn("github: merge-intent lookup for push re-review failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", err)
+		return
+	}
+	if intent == nil || intent.DispatchedHead == head {
+		return
+	}
+	if err := e.store.SetMergeIntentDispatchedHead(ctx, chatID, head); err != nil {
+		slog.Warn("github: recording the push re-review's head failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", err)
+		return
+	}
+	go e.dispatch(autoReviewPayload(p, rawBody), autoReviewTask)
+}
+
 // mergeOnEvent re-evaluates the merge after a state-changing webhook (check
 // completed, head pushed, review submitted). Silent by design: nothing to
 // say until the PR is mergeable, and the outcome then lands on the review.

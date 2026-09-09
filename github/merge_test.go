@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/fagerbergj/quack-extensions/sdk"
 )
 
 func TestStripMentions(t *testing.T) {
@@ -26,6 +28,10 @@ func TestStripMentions(t *testing.T) {
 		{"~~~\n@kept\n~~~", "~~~\n@kept\n~~~"},
 		{"**@alice** wrote", "**alice** wrote"},
 		{"", ""},
+		// An unterminated fence (a truncated diff quote) must not disable
+		// stripping for the rest of the body - a real mention past it would
+		// otherwise leak through untouched.
+		{"```go\n@decorator\nno closing fence\n@alice", "```go\ndecorator\nno closing fence\nalice"},
 	}
 	for _, tt := range tests {
 		if got := stripMentions(tt.in); got != tt.want {
@@ -336,5 +342,74 @@ func TestMergeLabelTwiceWhileReviewRunsPostsNothing(t *testing.T) {
 	}
 	if intent, _ := ext.store.GetMergeIntent(context.Background(), globalChatID("github-acme-widgets-7")); intent == nil || intent.RequestedBy != "alice" {
 		t.Errorf("intent = %+v; want alice's standing authorization recorded", intent)
+	}
+}
+
+func synchronizeBody(sha string) []byte {
+	return []byte(fmt.Sprintf(`{"action":"synchronize","number":7,"pull_request":{"title":"Test PR","head":{"sha":%q}},
+		"repository":{"name":"widgets","owner":{"login":"acme"},"clone_url":"https://github.com/acme/widgets.git","default_branch":"main"},
+		"installation":{"id":5},"sender":{"login":"alice"}}`, sha))
+}
+
+// TestSynchronizeUnderMergeIntentDispatchesReview pins #1277 (quack#1277): a
+// push under a standing quack:merge intent must not sit silent until a human
+// comments /review - it re-reviews automatically.
+func TestSynchronizeUnderMergeIntentDispatchesReview(t *testing.T) {
+	sim := &mergeSim{reviews: "[]", checks: checksGreen, headSHA: "head2"}
+	srv := sim.server(t)
+	ext, fh := newTestExtension(t, srv.URL, []string{"merge"})
+	chatID := globalChatID("github-acme-widgets-7")
+	if err := ext.store.SetMergeIntent(context.Background(), chatID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request", synchronizeBody("head2")))
+	req := fh.waitForDispatch(t, 2*time.Second)
+	if !strings.Contains(req.Ask.Message, "<deliverable>a review with inline comments and a verdict</deliverable>") {
+		t.Errorf("dispatched envelope = %q; want the auto-review deliverable", req.Ask.Message)
+	}
+	if intent, _ := ext.store.GetMergeIntent(context.Background(), chatID); intent == nil || intent.DispatchedHead != "head2" {
+		t.Errorf("intent = %+v; want dispatched_head recorded as head2", intent)
+	}
+}
+
+// TestSynchronizeWithoutMergeIntentDispatchesNothing: a push on a PR with no
+// standing quack:merge intent must not get an unsolicited re-review.
+func TestSynchronizeWithoutMergeIntentDispatchesNothing(t *testing.T) {
+	sim := &mergeSim{reviews: "[]", checks: checksGreen, headSHA: "head2"}
+	srv := sim.server(t)
+	ext, fh := newTestExtension(t, srv.URL, []string{"merge"})
+
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request", synchronizeBody("head2")))
+	settle()
+	if calls := fh.calls(); len(calls) != 0 {
+		t.Errorf("dispatches = %d; want 0 with no standing intent", len(calls))
+	}
+}
+
+// TestSynchronizeSameHeadTwiceDispatchesOnce pins the guard: two synchronize
+// events for the SAME head must dispatch exactly once, even after the first
+// review has already completed (so the ordinary inflight dedup is no longer
+// what's preventing the second one - the head-SHA guard on the intent itself is).
+func TestSynchronizeSameHeadTwiceDispatchesOnce(t *testing.T) {
+	sim := &mergeSim{reviews: "[]", checks: checksGreen, headSHA: "head2"}
+	srv := sim.server(t)
+	ext, fh := newTestExtension(t, srv.URL, []string{"merge"})
+	chatID := globalChatID("github-acme-widgets-7")
+	if err := ext.store.SetMergeIntent(context.Background(), chatID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request", synchronizeBody("head2")))
+	fh.waitForDispatch(t, 2*time.Second)
+	// Settle the first run so the ordinary inflight dedup releases its claim -
+	// what's left standing between the two synchronize events must be the
+	// head-SHA guard, not the unrelated in-flight-run guard.
+	ext.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "reviewed"})
+
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request", synchronizeBody("head2")))
+	settle()
+	if calls := fh.calls(); len(calls) != 1 {
+		t.Errorf("dispatches = %d; want exactly 1 across two synchronize events for the same head", len(calls))
 	}
 }

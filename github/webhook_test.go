@@ -4571,6 +4571,59 @@ func TestHandleWebhookReviewCommandRespectsAllowlist(t *testing.T) {
 	}
 }
 
+// TestReviewCommandWhileRunningReactsOnOneTargetOnly pins #1304's silence
+// rule for the dedup path: a /review comment arriving while a review is
+// already in flight for the same PR must not end up visibly reacted twice -
+// handleIssueComment already reacted to the comment before calling dispatch,
+// so dispatch's own dedup ack must land on that SAME comment, never
+// additionally on the issue (GitHub itself collapses a repeated identical
+// reaction on the same target into the one already there; two DIFFERENT
+// targets would both stay visible).
+func TestReviewCommandWhileRunningReactsOnOneTargetOnly(t *testing.T) {
+	var commentReactions, issueReactions int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			fmt.Fprint(w, `{"id":5}`)
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		case strings.HasSuffix(r.URL.Path, "/app"):
+			fmt.Fprint(w, `{"slug":"quack"}`)
+		case strings.Contains(r.URL.Path, "/comments/") && strings.HasSuffix(r.URL.Path, "/reactions"):
+			atomic.AddInt32(&commentReactions, 1)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":1}`)
+		case strings.HasSuffix(r.URL.Path, "/reactions"):
+			atomic.AddInt32(&issueReactions, 1)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":1}`)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+	ext, _ := newTestExtension(t, srv.URL, []string{"label"})
+
+	// A review is already running for this session - claimInflight will
+	// reject the incoming /review as a duplicate.
+	sessionID := "github-acme-widgets-7"
+	ext.inflight.Store(sessionID, time.Now())
+
+	rec := httptest.NewRecorder()
+	ext.handleWebhook(rec, signedRequest("issue_comment", reviewCommandBody("/review", "OWNER", "quack-auto-review")))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d; want 202", rec.Code)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	if atomic.LoadInt32(&commentReactions) == 0 {
+		t.Error("no reaction landed on the triggering comment")
+	}
+	if got := atomic.LoadInt32(&issueReactions); got != 0 {
+		t.Errorf("issue reactions = %d; want 0 - the comment already carries the ack, a second reaction on the issue is a second visible reaction for one trigger", got)
+	}
+}
+
 // TestHandleWebhookSynchronizeInvalidatesOnlyARunningPR pins both halves of
 // the push signal: a PR with a run in flight gets its clone invalidated, and
 // a PR with none must not - there is no clone to refresh, and no run to

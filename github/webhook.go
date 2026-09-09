@@ -298,6 +298,7 @@ func (e *Extension) handlePullRequest(w http.ResponseWriter, body []byte) {
 	if p.Action == "synchronize" {
 		e.invalidateSetup(p.Repository.Owner.Login, p.Repository.Name, p.Number)
 		go e.mergeOnEvent(p.Repository.Owner.Login, p.Repository.Name, p.Number, "pull_request.synchronize")
+		go e.reviewOnMovedHeadUnderIntent(p, body)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -757,7 +758,15 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 		slog.Info("deduplicated trigger: a run for this session is still in flight",
 			"component", "github", "sessionID", sessionID, "repo", owner+"/"+repo, "issue", number,
 			"claim_age", age.Round(time.Second), "lease", e.inflightLease())
-		go e.ackIssue(owner, repo, number)
+		// A comment-triggered dispatch (mention, /review) already reacted to
+		// its own comment before calling in here - react there again rather
+		// than on the issue too, or the trigger gets two visibly different
+		// reactions instead of the one this whole rewrite is meant to leave (#1304).
+		if p.Comment.ID != 0 {
+			go e.ackReaction(p)
+		} else {
+			go e.ackIssue(owner, repo, number)
+		}
 		return
 	}
 	if age > 0 {

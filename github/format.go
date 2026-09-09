@@ -14,11 +14,24 @@ var mentionRe = regexp.MustCompile(`(^|[^\w/.:@])@([A-Za-z0-9][A-Za-z0-9-]*(?:/[
 // can ping a person. The login itself stays, so the sentence still reads.
 func stripMentions(s string) string {
 	lines := strings.Split(s, "\n")
+	// An odd number of fence markers means an unterminated block (a truncated
+	// diff quote, say) - tracking fenced state would then hide every mention
+	// past it for the rest of the body. Fail safe: strip everywhere instead.
+	fenceCount := 0
+	for _, ln := range lines {
+		t := strings.TrimSpace(ln)
+		if strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~") {
+			fenceCount++
+		}
+	}
+	trackFences := fenceCount%2 == 0
 	fenced := false
 	for i, ln := range lines {
 		t := strings.TrimSpace(ln)
 		if strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~") {
-			fenced = !fenced
+			if trackFences {
+				fenced = !fenced
+			}
 			continue
 		}
 		if fenced {
