@@ -59,12 +59,54 @@ func stripMentions(s string) string {
 
 // appendLine adds line to body once: the same outcome re-evaluated on a later
 // event (another check completing, another labeled delivery) must not stack.
+// A trailing quack footer (see withFooter) stays last - line slots in above it.
 func appendLine(body, line string) (string, bool) {
 	if strings.Contains(body, line) {
 		return body, false
+	}
+	if loc := footerRe.FindStringIndex(body); loc != nil {
+		return body[:loc[0]] + "\n\n" + line + body[loc[0]:], true
 	}
 	if body = strings.TrimRight(body, "\n"); body == "" {
 		return line, true
 	}
 	return body + "\n\n" + line, true
+}
+
+// footerRe matches quack's own trailing <sub>...</sub> footer block -
+// always the body's last two-newline-separated block - so appendLine can
+// slot a new line above it instead of after it.
+var footerRe = regexp.MustCompile(`\n\n<sub>quack[^\n]*</sub>\s*\z`)
+
+// withFooter appends quack's version/run-link footer after one blank line,
+// once: the owner's two asks were "show the quack version somewhere
+// inconspicuous" and "link a posted review/comment back to the run that
+// produced it". body is unchanged when the host set neither Host.Version
+// nor Host.PublicURL, or when body already carries this exact footer
+// (idempotent re-render, e.g. a revised-then-reposted comment).
+func (a *App) withFooter(body, chatID string) string {
+	text := footerText(a.version, a.publicURL, chatID)
+	if text == "" || strings.Contains(body, text) {
+		return body
+	}
+	if b := strings.TrimRight(body, "\n"); b != "" {
+		return b + "\n\n" + text
+	}
+	return text
+}
+
+// footerText renders the <sub> footer itself, or "" when there is nothing to
+// show - never stamp a bare "quack" with no version and no link.
+func footerText(version, publicURL, chatID string) string {
+	if version == "" && publicURL == "" {
+		return ""
+	}
+	s := "<sub>quack"
+	if version != "" {
+		s += " " + version
+	}
+	if publicURL != "" {
+		s += ` · <a href="` + publicURL + "/chat/" + chatID + `">run</a>`
+	}
+	return s + "</sub>"
 }

@@ -247,7 +247,7 @@ func (e *Extension) finalize(chatID string, pr *pendingRun, outcome sdk.RunOutco
 
 	tailCtx, tailCancel := context.WithTimeout(context.Background(), time.Minute)
 	defer tailCancel()
-	if err := e.app.postIssueComment(tailCtx, owner, repo, number, answer); err != nil {
+	if err := e.app.postIssueComment(tailCtx, owner, repo, number, e.app.withFooter(answer, chatID)); err != nil {
 		e.host.Log.Error("github comment post failed", "repo", owner+"/"+repo, "issue", number, "err", err)
 		return
 	}

@@ -182,6 +182,7 @@ func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
 	}
 	app.SetPartialFixLabel(cfg.Labels.PartialFix)
 	app.SetAPIBase(cfg.APIBase)
+	app.SetFooter(host.Version, host.PublicURL)
 
 	st, err := openStore(host.DataDir)
 	if err != nil {

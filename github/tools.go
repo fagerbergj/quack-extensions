@@ -261,6 +261,9 @@ type submitReviewArgs struct {
 	Event      string `json:"event"`
 	// Gate-supplied inline findings, posted alongside the review.
 	Comments []reviewComment `json:"-"`
+	// ChatID is the run this review came from, for withFooter's run link.
+	// Never a tool field - submitReview is gate-owned, never a model tool.
+	ChatID string `json:"-"`
 }
 
 type submitReviewResult struct {
@@ -284,9 +287,11 @@ func (a *App) submitReview(ctx context.Context, args submitReviewArgs) (submitRe
 		// Empty body guard — never post a review with no summary.
 		body = defaultReviewBody(event, len(comments))
 	}
-	// Marker lets a later run find this review.
+	// Marker lets a later run find this review. Footer goes last, after the
+	// marker - both are unanchored substring lookups, so order doesn't
+	// affect either parser.
 	marker := "\n\n" + deliveryMarker("review")
-	url, id, err := a.createReview(ctx, args.Owner, args.Repo, args.PullNumber, event, body+marker, comments)
+	url, id, err := a.createReview(ctx, args.Owner, args.Repo, args.PullNumber, event, a.withFooter(body+marker, args.ChatID), comments)
 	if err != nil && len(comments) > 0 && strings.Contains(err.Error(), "status 422") {
 		// One unresolvable anchor 422s the WHOLE review and GitHub never says which
 		// comment is at fault, so there is nothing to salvage selectively. The clone
@@ -301,7 +306,7 @@ func (a *App) submitReview(ctx context.Context, args submitReviewArgs) (submitRe
 		}
 		body += renderUnanchoredFindings(stranded)
 		comments = nil
-		url, id, err = a.createReview(ctx, args.Owner, args.Repo, args.PullNumber, event, body+marker, nil)
+		url, id, err = a.createReview(ctx, args.Owner, args.Repo, args.PullNumber, event, a.withFooter(body+marker, args.ChatID), nil)
 	}
 	if err != nil {
 		return submitReviewResult{}, err
@@ -468,9 +473,9 @@ func stripNarrationLead(lines []string) []string {
 }
 
 // deliverStagedComment posts or edits a staged comment (marker makes revise-before-post idempotent).
-func (a *App) deliverStagedComment(ctx context.Context, owner, repo string, number int, slot, bodyText string) error {
+func (a *App) deliverStagedComment(ctx context.Context, owner, repo string, number int, slot, bodyText, chatID string) error {
 	marker := deliveryMarker("comment:" + slot)
-	withMarker := strings.TrimSpace(sanitizeCommentBody(bodyText)) + "\n\n" + marker
+	withMarker := a.withFooter(strings.TrimSpace(sanitizeCommentBody(bodyText))+"\n\n"+marker, chatID)
 	id, found, err := a.findQuackComment(ctx, owner, repo, number, marker)
 	if err != nil {
 		slog.Warn("github: find prior comment failed; posting fresh", "component", "github", "repo", owner+"/"+repo, "issue", number, "slot", slot, "err", err)
@@ -905,7 +910,7 @@ func (a *App) deliverOne(ctx context.Context, owner, repo string, dc sdk.Deliver
 				a.collapsePriorReviews(ctx, owner, repo, dc.IssueNumber) // superseded prior attempts
 				inline, unanchored := a.validComments(ctx, owner, repo, dc.IssueNumber, item.Comments)
 				body += renderUnanchoredFindings(unanchored)
-				res, err := a.submitReview(ctx, submitReviewArgs{Owner: owner, Repo: repo, PullNumber: dc.IssueNumber, Body: gateCaveat(dc, body), Event: "COMMENT", Comments: inline})
+				res, err := a.submitReview(ctx, submitReviewArgs{Owner: owner, Repo: repo, PullNumber: dc.IssueNumber, Body: gateCaveat(dc, body), Event: "COMMENT", Comments: inline, ChatID: dc.ChatID})
 				if err != nil {
 					return deliveryItemResult{}, fmt.Errorf("github: delivery: self-review: %w", err)
 				}
@@ -922,7 +927,7 @@ func (a *App) deliverOne(ctx context.Context, owner, repo string, dc sdk.Deliver
 		// Validate inline findings before submit — one bad anchor 422s the whole review.
 		inline, unanchored := a.validComments(ctx, owner, repo, dc.IssueNumber, item.Comments)
 		body := item.Body + renderUnanchoredFindings(unanchored) + deliveryKeyMarker(dc.IdempotencyKey)
-		res, err := a.submitReview(ctx, submitReviewArgs{Owner: owner, Repo: repo, PullNumber: dc.IssueNumber, Body: gateCaveat(dc, body), Event: event, Comments: inline})
+		res, err := a.submitReview(ctx, submitReviewArgs{Owner: owner, Repo: repo, PullNumber: dc.IssueNumber, Body: gateCaveat(dc, body), Event: event, Comments: inline, ChatID: dc.ChatID})
 		if err != nil {
 			return deliveryItemResult{}, fmt.Errorf("github: delivery: submit review: %w", err)
 		}
@@ -933,7 +938,7 @@ func (a *App) deliverOne(ctx context.Context, owner, repo string, dc sdk.Deliver
 			return deliveryItemResult{}, fmt.Errorf("github: delivery: staged comment %q has no issue/PR number to post to", item.Slot)
 		}
 		// A comment has no draft-equivalent lever, so the banner is the only unvetted signal.
-		if err := a.deliverStagedComment(ctx, owner, repo, dc.IssueNumber, item.Slot, gateCaveat(dc, item.Body)); err != nil {
+		if err := a.deliverStagedComment(ctx, owner, repo, dc.IssueNumber, item.Slot, gateCaveat(dc, item.Body), dc.ChatID); err != nil {
 			return deliveryItemResult{}, fmt.Errorf("github: delivery: post comment %q: %w", item.Slot, err)
 		}
 		return deliveryItemResult{}, nil
