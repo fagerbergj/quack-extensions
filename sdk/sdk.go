@@ -516,6 +516,35 @@ type GitCredential struct {
 	Token    string
 }
 
+// Assignment is one bit of work in a dispatched plan, passed to the two
+// node-reuse hooks below. Mirrors quack's own internal dag.Assignment.
+type Assignment struct {
+	PlanID    string
+	NodeID    string
+	Agent     string
+	Task      string
+	DependsOn []string
+	ContextID string
+	TaskID    string
+
+	// Meta is namespaced per extension: quack stores each extension's own
+	// OnAssignment return value under Meta[<that extension's registered
+	// name>], never under a key the extension didn't itself return.
+	Meta map[string]map[string]any
+}
+
+// AssignmentMetaExtension is an optional interface: OnAssignment stamps a
+// per-extension map into Assignment.Meta[<this extension's name>] once per assignment.
+type AssignmentMetaExtension interface {
+	OnAssignment(ctx context.Context, a Assignment) map[string]any
+}
+
+// AssignmentFreshnessChecker is an optional interface: BeforeAssignment
+// judges a REUSED node fresh or stale before quack resumes its session.
+type AssignmentFreshnessChecker interface {
+	BeforeAssignment(ctx context.Context, a Assignment) (fresh bool, reason string)
+}
+
 // Factory builds an extension. config is the raw bytes of the deployment's
 // extensions.<name> block - the extension unmarshals its own config; quack
 // treats extension blocks as opaque beyond the reserved BaseConfig keys
