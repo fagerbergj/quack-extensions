@@ -699,7 +699,8 @@ func verifySignature(secret, body []byte, header string) bool {
 
 // runNudge is delivered when a webhook run answered without running a plan - a
 // firm instruction to actually do the work rather than narrate intent.
-const runNudge = "You answered without running anything. Do NOT reply in prose: use the plan and execute tools NOW to actually clone the repo, read the change, and carry out the review (or the requested change). Nothing has run yet and the user is waiting."
+// runNudge names no tool: quack owns its planning tools and renames them; the extension only says that work must run.
+const runNudge = "You answered without running anything. Do NOT reply in prose: plan and run the work NOW - clone the repo, read the change, and carry out the review (or the requested change). Nothing has run yet and the user is waiting."
 
 // inflightLease bounds how long one session's in-flight claim suppresses new
 // triggers. A run that dies without settling never reaches finalize's delete -
