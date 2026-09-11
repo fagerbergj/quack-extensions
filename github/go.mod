@@ -4,7 +4,7 @@ go 1.26.6
 
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3
-	github.com/fagerbergj/quack-extensions/sdk v0.13.0
+	github.com/fagerbergj/quack-extensions/sdk v0.14.0
 	github.com/glebarez/go-sqlite v1.23.0
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
