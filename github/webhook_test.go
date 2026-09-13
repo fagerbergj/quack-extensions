@@ -590,6 +590,42 @@ func TestRunEndedNudgesOnceThenFinalizes(t *testing.T) {
 	}
 }
 
+// TestRunEndedDoesNotNudgeAGuardHardStop pins the QA rig regression: a run
+// the repeat guard hard-stopped finalizes as RunFailed (quack #1391), and
+// nudging it would only reproduce the identical refused tool-call loop.
+func TestRunEndedDoesNotNudgeAGuardHardStop(t *testing.T) {
+	posted := make(chan string, 1)
+	srv := stubGitHub(t, posted)
+	defer srv.Close()
+	e, fh := newTestExtension(t, srv.URL, []string{"issue_plan"})
+
+	sessionID := "github-acme-widgets-7"
+	chatID := globalChatID(sessionID)
+	e.pending.Store(chatID, &pendingRun{
+		sessionID: sessionID, owner: "acme", repo: "widgets", number: 7,
+		login: "alice", isLabelTrigger: true,
+	})
+	claimInflightFor(t, e, chatID, sessionID)
+
+	e.RunEnded(chatID, sdk.RunOutcome{
+		Status:  sdk.RunFailed,
+		PlanRan: false,
+		Error:   "tool-call loop: create_plan called with identical arguments and the same result 6 times despite being refused; turn terminated",
+	})
+
+	if calls := fh.calls(); len(calls) != 0 {
+		t.Fatalf("nudge Dispatch calls = %d, want 0 - a guard hard stop must not be retried", len(calls))
+	}
+	select {
+	case body := <-posted:
+		if !strings.Contains(body, "create_plan") {
+			t.Errorf("posted comment = %q, want it to name the tool that kept repeating", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no comment posted for the guard-stopped run")
+	}
+}
+
 // TestFinalizeSkipsSummaryWhenDeliveryVerified proves finalize's
 // "commitDelivery already posted the review/PR" short-circuit still holds:
 // when takeDeliveryDetail reports a verified delivery, finalize must not

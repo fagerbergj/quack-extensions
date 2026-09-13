@@ -80,7 +80,9 @@ func (e *Extension) RunEnded(chatID string, outcome sdk.RunOutcome) {
 		pr = rebuilt
 	}
 
-	if !pr.nudged && !outcome.PlanRan && pr.isLabelTrigger && outcome.Status != sdk.RunCancelled {
+	// RunFailed already carries a definite cause (rejected plan, guard hard
+	// stop, gateway outage); nudging it only re-asks a question quack answered.
+	if !pr.nudged && !outcome.PlanRan && pr.isLabelTrigger && outcome.Status == sdk.RunDone {
 		pr.nudged = true
 		// The nudge is a second run under the same claim - restart the lease so
 		// primary+nudge can't outlive it and get taken over mid-flight.
