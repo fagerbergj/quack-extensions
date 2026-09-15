@@ -96,6 +96,16 @@ func (c *config) issuer() string {
 // applyDefaults validates and fills in defaults, mirroring quack's former
 // GitHubExtensionConfig.applyDefaults exactly.
 func (c *config) applyDefaults(log func(string, ...any)) error {
+	if err := c.validateCredentials(); err != nil {
+		return err
+	}
+	return c.applyLabelDefaults(log)
+}
+
+// validateCredentials: the credential exclusivity checks - exactly one of
+// client_id/app_id, exactly one of private_key/private_key_path, and a
+// webhook_secret.
+func (c *config) validateCredentials() error {
 	switch {
 	case c.ClientID == "" && c.AppID == 0:
 		return fmt.Errorf("github: needs one of client_id (recommended) or app_id")
@@ -111,6 +121,12 @@ func (c *config) applyDefaults(log func(string, ...any)) error {
 	if c.WebhookSecret == "" {
 		return fmt.Errorf("github: webhook_secret is required")
 	}
+	return nil
+}
+
+// applyLabelDefaults: the non-credential defaults - mention/triggers (with
+// validation), the seven label defaults, and the allowed_users deny log.
+func (c *config) applyLabelDefaults(log func(string, ...any)) error {
 	if c.RunTimeoutMinutes <= 0 {
 		c.RunTimeoutMinutes = 120
 	}

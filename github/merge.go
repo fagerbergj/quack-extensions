@@ -298,30 +298,10 @@ func (e *Extension) tryMerge(ctx context.Context, owner, repo string, number int
 	}
 	var m *prMeta // set here when adopted below, so the later lookup isn't repeated
 	if intent == nil {
-		meta, merr := e.app.pullMeta(ctx, owner, repo, number)
-		if merr != nil {
-			return mergeNoIntent, fmt.Errorf("pull lookup: %w", merr)
+		intent, m, err = e.adoptMergeIntent(ctx, owner, repo, number, chatID)
+		if err != nil || intent == nil {
+			return mergeNoIntent, err
 		}
-		if !slices.Contains(meta.Labels, e.labels.Merge) {
-			return mergeNoIntent, nil
-		}
-		// The label's "labeled" delivery can go missing, but GET /pulls/{n}
-		// doesn't report who applied it - re-check the timeline's actor
-		// against the delivery path's own two checks before adopting, failing
-		// closed on any doubt (webhook.go enforces the same pair on delivery).
-		actor, stillApplied, known, aerr := e.app.mergeLabelActor(ctx, owner, repo, number, e.labels.Merge)
-		if aerr != nil || !known || !stillApplied || strings.HasSuffix(actor, "[bot]") || !e.isInvokerAllowed(actor) {
-			slog.Warn("github: quack:merge label present but its actor is not an authorized invoker; not adopting",
-				"component", "github", "repo", owner+"/"+repo, "pr", number, "actor", actor, "err", aerr)
-			return mergeNoIntent, nil
-		}
-		if serr := e.store.SetMergeIntent(ctx, chatID, actor); serr != nil {
-			return mergeNoIntent, fmt.Errorf("merge-intent adopt: %w", serr)
-		}
-		slog.Info("github: adopted merge intent from the quack:merge label directly; its labeled delivery was never handled",
-			"component", "github", "repo", owner+"/"+repo, "pr", number, "actor", actor)
-		intent = &MergeIntent{ChatID: chatID, RequestedBy: actor}
-		m = &meta
 	}
 	ref, err := e.latestQuackVerdict(ctx, owner, repo, number)
 	if err != nil {
@@ -341,27 +321,76 @@ func (e *Extension) tryMerge(ctx context.Context, owner, repo string, number int
 		}
 		m = &meta
 	}
+	if o, err, blocked := e.checkMergeBlockers(ctx, owner, repo, number, chatID, m, ref); err != nil || blocked {
+		return o, err
+	}
+	if o, pending := e.ciGate(ctx, owner, repo, number, ref, m.HeadSHA); pending {
+		return o, nil
+	}
+	return e.mergeAndSettle(ctx, owner, repo, number, ref, m.HeadSHA, intent, chatID)
+}
+
+// checkMergeBlockers: the closed-PR, stale-approval (#71), and human-objection
+// checks between a fresh approval and the CI gate.
+func (e *Extension) checkMergeBlockers(ctx context.Context, owner, repo string, number int, chatID string, m *prMeta, ref verdictRef) (mergeOutcome, error, bool) {
 	if m.Merged || m.State == "closed" {
 		e.clearMergeIntent(ctx, chatID)
-		return mergeNoIntent, nil
+		return mergeNoIntent, nil, true
 	}
 	// #71: the approval must be for the PR's actual current head; a push
 	// after it invalidates it. An own-PR marker comment carries no commit_id
 	// and is trusted as-is.
 	if ref.commitID != "" && ref.commitID != m.HeadSHA {
-		return mergeStale, nil
+		return mergeStale, nil, true
 	}
 	allReviews, rerr := e.app.listReviews(ctx, owner, repo, number)
 	if rerr != nil {
-		return mergeNoIntent, fmt.Errorf("review lookup: %w", rerr)
+		return mergeNoIntent, fmt.Errorf("review lookup: %w", rerr), true
 	}
 	if login, blocked := blockingHumanReviewer(allReviews, m.HeadSHA); blocked {
 		slog.Debug("github: merge blocked by a standing human objection", "component", "github", "repo", owner+"/"+repo, "pr", number, "reviewer", login)
-		return mergeHumanBlocked, nil
+		return mergeHumanBlocked, nil, true
 	}
-	if checks, cerr := e.app.listCheckRuns(ctx, owner, repo, m.HeadSHA); cerr != nil {
+	return 0, nil, false
+}
+
+// adoptMergeIntent: no stored intent - adopt one from the quack:merge label
+// itself, failing closed on any doubt about who applied it (webhook.go
+// enforces the same pair on delivery).
+func (e *Extension) adoptMergeIntent(ctx context.Context, owner, repo string, number int, chatID string) (*MergeIntent, *prMeta, error) {
+	meta, merr := e.app.pullMeta(ctx, owner, repo, number)
+	if merr != nil {
+		return nil, nil, fmt.Errorf("pull lookup: %w", merr)
+	}
+	if !slices.Contains(meta.Labels, e.labels.Merge) {
+		return nil, nil, nil
+	}
+	// The label's "labeled" delivery can go missing, but GET /pulls/{n}
+	// doesn't report who applied it - re-check the timeline's actor against
+	// the delivery path's own two checks before adopting.
+	actor, stillApplied, known, aerr := e.app.mergeLabelActor(ctx, owner, repo, number, e.labels.Merge)
+	if aerr != nil || !known || !stillApplied || strings.HasSuffix(actor, "[bot]") || !e.isInvokerAllowed(actor) {
+		slog.Warn("github: quack:merge label present but its actor is not an authorized invoker; not adopting",
+			"component", "github", "repo", owner+"/"+repo, "pr", number, "actor", actor, "err", aerr)
+		return nil, nil, nil
+	}
+	if serr := e.store.SetMergeIntent(ctx, chatID, actor); serr != nil {
+		return nil, nil, fmt.Errorf("merge-intent adopt: %w", serr)
+	}
+	slog.Info("github: adopted merge intent from the quack:merge label directly; its labeled delivery was never handled",
+		"component", "github", "repo", owner+"/"+repo, "pr", number, "actor", actor)
+	return &MergeIntent{ChatID: chatID, RequestedBy: actor}, &meta, nil
+}
+
+// ciGate: the head's CI evidence -> proceed, or a terminal outcome (waiting
+// for runs / CI failed with no posted run to retry).
+func (e *Extension) ciGate(ctx context.Context, owner, repo string, number int, ref verdictRef, headSHA string) (mergeOutcome, bool) {
+	checks, cerr := e.app.listCheckRuns(ctx, owner, repo, headSHA)
+	if cerr != nil {
 		slog.Warn("github: check-runs lookup failed before merge; letting GitHub decide", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", cerr)
-	} else if len(checks) == 0 {
+		return mergeDone, false
+	}
+	if len(checks) == 0 {
 		// Zero runs is ambiguous: pull_request_review.submitted can beat every
 		// workflow's queue (event ordering), this head may never get a run at
 		// all (docs-only PR under path filters, no CI), or a suite already
@@ -369,21 +398,29 @@ func (e *Extension) tryMerge(ctx context.Context, owner, repo string, number int
 		// workflow a push triggers before any run exists, so consult that to
 		// tell the three apart - no CI ever waits forever for an event that
 		// never arrives.
-		if state, serr := e.headHasPendingCI(ctx, owner, repo, m.HeadSHA); serr != nil {
+		if state, serr := e.headHasPendingCI(ctx, owner, repo, headSHA); serr != nil {
 			slog.Warn("github: check-suites lookup failed before merge; letting GitHub decide", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", serr)
 		} else if state == ciWaiting {
-			return mergePending, nil
+			return mergePending, true
 		} else if state == ciFailed {
 			e.appendToVerdict(ctx, owner, repo, number, ref, "Merge blocked: CI failed on this head and posted no check run to retry.")
-			return mergeFailed, nil
+			return mergeFailed, true
 		}
 		// ciClear (or the lookup failed): no relevant suite - attempt the
 		// merge and let GitHub's own required-check refusal (mergePendingRe)
 		// be the guard wherever branch protection is actually configured.
-	} else if !allChecksGreen(checks) {
-		return mergePending, nil
+		return mergeDone, false
 	}
-	sha, err := e.app.mergePR(ctx, owner, repo, number, m.HeadSHA)
+	if !allChecksGreen(checks) {
+		return mergePending, true
+	}
+	return mergeDone, false
+}
+
+// mergeAndSettle: the mergePR call, its error classification, the archive,
+// and the intent clear.
+func (e *Extension) mergeAndSettle(ctx context.Context, owner, repo string, number int, ref verdictRef, headSHA string, intent *MergeIntent, chatID string) (mergeOutcome, error) {
+	sha, err := e.app.mergePR(ctx, owner, repo, number, headSHA)
 	if err != nil {
 		switch {
 		case isHeadBranchModified(err):
