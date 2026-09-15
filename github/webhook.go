@@ -227,6 +227,7 @@ func (e *Extension) handleIssueComment(w http.ResponseWriter, body []byte) {
 
 // handlePullRequest fires an auto-review on "opened" or "labeled" with the configured auto_review_label,
 // and refreshes the sidebar badge on close/merge/reopen.
+// sloplint: cc-allow flat webhook action dispatcher - one case per action, no shared logic to extract
 func (e *Extension) handlePullRequest(w http.ResponseWriter, body []byte, deliveryID string) {
 	var p pullRequestPayload
 	if err := json.Unmarshal(body, &p); err != nil {
@@ -805,9 +806,8 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 	isPlan := e.deliverableIsPlan(ctx, p, task, allowedKinds, isPR)
 
 	// Input artifacts (#1010): the heavy evidence a worker only sometimes
-	// needs - full comment thread, raw webhook payload, timeline, CI
-	// check-runs/annotations - one write per dispatch, best-effort. Skipped
-	// entirely (no fetches) when Host has no artifact capability wired.
+	// needs - one write per dispatch, best-effort, no fetches at all when
+	// Host has no artifact capability wired.
 	manifest := e.writeDispatchArtifacts(ctx, chatID, login, p, owner, repo, number, isPR)
 
 	message := e.buildEnvelope(ctx, p, task, gh, allowedKinds, manifest)
