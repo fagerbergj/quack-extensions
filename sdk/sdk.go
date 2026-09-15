@@ -99,10 +99,8 @@ const (
 )
 
 // RunObserver is an optional, observation-only interface: quack calls
-// RunEnded after a dispatched run's outcome is final, so an extension can
-// mark its own records done/failed and drive retries. It never blocks or
-// mutates the run - dispatch-time shaping (DispatchRequest) is the only
-// place an extension influences a run; there are no agent-loop hooks.
+// RunEnded after a dispatched run's outcome is final so extensions can
+// mark their own records done/failed, never blocking or mutating the run.
 type RunObserver interface {
 	RunEnded(chatID string, outcome RunOutcome)
 }
@@ -216,14 +214,12 @@ type Host struct {
 	// as ArchiveChat: callers must nil-check.
 	InvalidateSetup func(chatID string) error
 
-	// Classify is a single free-text model round trip - a classification or
-	// short judgment call an extension needs INLINE, before it decides how
-	// to shape a DispatchRequest (e.g. "is this comment asking for work, or
-	// just conversation?"). It is not a dispatched, gated, observed run: no
-	// RunObserver callback, no delivery, no session history - just a prompt
-	// in, an answer out, bound to quack's judge/advisor model. nil is a
-	// valid value (no judge model configured); callers must degrade
-	// gracefully, matching every other best-effort Host call.
+	// Classify is a single free-text model round trip for a judgment an
+	// extension needs INLINE before shaping a DispatchRequest. Not a
+	// dispatched, gated, observed run: no callback, delivery, or history.
+
+	// Bound to quack's judge/advisor model. nil = no judge model
+	// configured; callers must degrade gracefully.
 	Classify func(ctx context.Context, prompt string) (string, error)
 }
 

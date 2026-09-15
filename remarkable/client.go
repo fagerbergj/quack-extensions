@@ -37,7 +37,6 @@ type rawEntry struct {
 // - the field names serialize as-is ("Entries"/"Trash").
 type rawTree struct {
 	Entries []rawEntry `json:"Entries"`
-	Trash   []rawEntry `json:"Trash"`
 }
 
 // rmClient talks to one rmfakecloud instance's UI/export API: the only

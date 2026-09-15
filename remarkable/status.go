@@ -87,9 +87,8 @@ func (e *extension) statusSnapshot() statusResponse {
 	return resp
 }
 
-// handleStatus renders the human-facing page (sdk.UI's Href target). JSON
-// moved to handleStatusJSON - a path split, not Accept-header negotiation,
-// since there's exactly one consumer of each.
+// handleStatus renders the human-facing page (sdk.UI's Href target);
+// handleStatusJSON serves machine consumers.
 func (e *extension) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := statusTmpl.Execute(w, e.statusSnapshot()); err != nil {

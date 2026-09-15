@@ -12,3 +12,4 @@ go.work.sum
 .idea/
 .vscode/
 sloplint
+.cccheck/

@@ -26,9 +26,6 @@ const webhookPath = "/webhook"
 // when a comment carries no login (defensive; GitHub always sends one).
 const runUserID = "github"
 
-// defaultRunTimeout when run_timeout_minutes is unset.
-const defaultRunTimeout = 2 * time.Hour
-
 // reactionTimeout bounds the 👀 ack reaction on a mention.
 const reactionTimeout = 10 * time.Second
 
