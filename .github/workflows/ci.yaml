@@ -73,3 +73,8 @@ jobs:
       - name: sloplint tests
         if: matrix.module == 'github'
         run: go -C tools/sloplint test .
+      # Same for coverdiff - a broken key alignment is a silent no-op
+      # gate (every PR passes), the tests pin it.
+      - name: coverdiff tests
+        if: matrix.module == 'github'
+        run: go -C tools/coverdiff test .
