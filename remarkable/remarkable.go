@@ -1,10 +1,10 @@
 // Package remarkable browses a self-hosted rmfakecloud instance's documents
 // and dispatches the ones a user explicitly selects into quack's
-// document-ingest workflow. See .quack/rmfakecloud-eval.md (agent-researcher
-// repo) for why rmfakecloud's UI API - not its webhook, which carries no
-// document identity - is the inbound path. Ingest is user-driven on purpose:
-// every autosave of a note in progress bumps lastModified, so anything
-// automatic runs the pipeline against half-written documents.
+// document-ingest workflow.
+
+// Inbound is the rmfakecloud UI API, not its webhook (no document identity);
+// ingest is user-driven because every autosave bumps lastModified, so
+// anything automatic would run on half-written notes.
 package remarkable
 
 import (

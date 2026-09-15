@@ -544,15 +544,10 @@ func (e *Extension) runImplement(p issuesPayload, synthetic issueCommentPayload)
 	e.dispatch(synthetic, implementTask(p, labels, e.labels.PartialFix))
 }
 
-// hasPartialFix reports whether names includes the configured partial-fix label.
-func hasPartialFix(partialFixLabel string, names []string) bool {
-	return hasLabel(names, partialFixLabel)
-}
-
 // issueImplementDeliverable is the PR-implementing deliverable text, shared by
 // the label trigger and a comment classified/heuristically read as implement.
 func issueImplementDeliverable(partialFixLabel string, labels []string, issueNumber int) string {
-	if hasPartialFix(partialFixLabel, labels) {
+	if hasLabel(labels, partialFixLabel) {
 		return "a pull request implementing the changes, without a Closes keyword (this is a partial fix)"
 	}
 	return fmt.Sprintf("a pull request implementing the approved plan, body containing `Closes #%d`", issueNumber)
@@ -567,7 +562,7 @@ func implementTask(p issuesPayload, labels []string, partialFixLabel string) str
 		fmt.Fprintf(&b, "\nIssue description (may be incomplete - see discussion below):\n%s\n", truncate(body, 4000))
 	}
 
-	isPartial := hasPartialFix(partialFixLabel, labels)
+	isPartial := hasLabel(labels, partialFixLabel)
 	if isPartial {
 		b.WriteString("\nA maintainer approved this for implementation (see the approved plan in the discussion below). This is a partial fix: implement the changes, commit locally, and call stage_pr. Do NOT use a Closes keyword - the issue will not be fully closed by this PR.")
 	} else {

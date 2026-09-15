@@ -81,7 +81,6 @@ func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
 	}
 
 	return &extension{
-		host:        host,
 		tempoURL:    tempoURL,
 		rangeWindow: rangeWindow,
 		proxy:       newPrometheusProxy(promURL.String(), host.Log),
@@ -103,7 +102,6 @@ func absoluteURL(raw string) (*url.URL, error) {
 }
 
 type extension struct {
-	host        sdk.Host
 	tempoURL    string
 	rangeWindow time.Duration
 	proxy       *prometheusProxy
