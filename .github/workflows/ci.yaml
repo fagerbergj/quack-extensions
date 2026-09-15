@@ -60,7 +60,26 @@ jobs:
       - name: coverage gate (changed code only, ${{ matrix.module }})
         env:
           SLOP_BASE: ${{ github.event.pull_request.base.sha }}
-        run: go run -C tools/coverdiff . diff "$SLOP_BASE" "$GITHUB_WORKSPACE" "${{ matrix.module }}"
+        run: |
+          set +e
+          OUT=$(go run -C tools/coverdiff . diff "$SLOP_BASE" "$GITHUB_WORKSPACE" "${{ matrix.module }}" 2>&1)
+          RC=$?
+          set -e
+          printf '%s\n' "$OUT"
+          if [ "$RC" -ne 0 ]; then
+            # The job log carries the full suite output; the PR gets the
+            # verdict and the uncovered lines.
+            {
+              echo "### Coverage gate: changed lines below the 70% floor (module: ${{ matrix.module }})"
+              echo ""
+              echo '```'
+              printf '%s\n' "$OUT" | grep -E '^coverdiff:|^  uncovered:'
+              echo '```'
+              echo ""
+              echo "Cover the changed lines above (or split the change)."
+            } | gh pr comment "${{ github.event.pull_request.number }}" --body-file -
+            exit "$RC"
+          fi
       # One repo-wide hunk-aware CC/comment gate; run once (the github leg)
       # - sloplint scans every module from the repo root it is handed.
       - name: slop gate (sloplint CC + comment runs, changed code only)
