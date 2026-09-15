@@ -63,3 +63,8 @@ jobs:
         env:
           SLOP_BASE: ${{ github.event.pull_request.base.sha }}
         run: go run -C tools/sloplint . diff "$SLOP_BASE" "$GITHUB_WORKSPACE"
+      # The gate's own tests (window boundary, wiring) run in CI, not
+      # just locally - a broken cc-allow silently un-gates every PR.
+      - name: sloplint tests
+        if: matrix.module == 'github'
+        run: go -C tools/sloplint test .
