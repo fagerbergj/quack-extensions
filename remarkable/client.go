@@ -82,7 +82,7 @@ func (c *rmClient) login(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("connect to rmfakecloud: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	tok, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -118,7 +118,7 @@ func (c *rmClient) authedRequest(ctx context.Context, path string) (*http.Respon
 		return nil, err
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err := c.login(ctx); err != nil {
 			return nil, err
 		}
@@ -137,7 +137,7 @@ func (c *rmClient) listDocuments(ctx context.Context) ([]remoteDoc, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list documents: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
@@ -180,7 +180,7 @@ func (c *rmClient) downloadPDF(ctx context.Context, docID string) ([]byte, error
 	if err != nil {
 		return nil, fmt.Errorf("download document %s: %w", docID, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
