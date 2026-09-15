@@ -235,7 +235,7 @@ func (a *App) doJSON(ctx context.Context, method, path, authz string, reqBody, o
 		return fmt.Errorf("github: %s %s: %w", method, path, err)
 	}
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("github: %s %s: status %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(data)))
 	}
@@ -247,22 +247,32 @@ func (a *App) doJSON(ctx context.Context, method, path, authz string, reqBody, o
 	return nil
 }
 
-func (a *App) postIssueComment(ctx context.Context, owner, repo string, number int, bodyText string) error {
+// getRepoJSON resolves the repo token and GETs path, decoding the response into out.
+func (a *App) getRepoJSON(ctx context.Context, owner, repo, path string, out any) error {
 	tok, err := a.tokenForRepo(ctx, owner, repo)
 	if err != nil {
 		return err
 	}
+	return a.doJSON(ctx, http.MethodGet, path, "token "+tok, nil, out)
+}
+
+// setCommentBody resolves the repo token and writes bodyText (mentions stripped) as {"body": ...}.
+func (a *App) setCommentBody(ctx context.Context, owner, repo, method, path, bodyText string) error {
+	tok, err := a.tokenForRepo(ctx, owner, repo)
+	if err != nil {
+		return err
+	}
+	return a.doJSON(ctx, method, path, "token "+tok, map[string]string{"body": stripMentions(bodyText)}, nil)
+}
+
+func (a *App) postIssueComment(ctx context.Context, owner, repo string, number int, bodyText string) error {
 	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number)
-	return a.doJSON(ctx, http.MethodPost, path, "token "+tok, map[string]string{"body": stripMentions(bodyText)}, nil)
+	return a.setCommentBody(ctx, owner, repo, http.MethodPost, path, bodyText)
 }
 
 func (a *App) editIssueComment(ctx context.Context, owner, repo string, id int64, bodyText string) error {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return err
-	}
 	path := fmt.Sprintf("/repos/%s/%s/issues/comments/%d", owner, repo, id)
-	return a.doJSON(ctx, http.MethodPatch, path, "token "+tok, map[string]string{"body": stripMentions(bodyText)}, nil)
+	return a.setCommentBody(ctx, owner, repo, http.MethodPatch, path, bodyText)
 }
 
 // updateReview replaces the body of one of quack's own reviews - how a merge
@@ -341,17 +351,13 @@ func (a *App) updatePullRequest(ctx context.Context, owner, repo string, number 
 }
 
 func (a *App) branchHeadSHA(ctx context.Context, owner, repo, branch string) (string, error) {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return "", err
-	}
 	var out struct {
 		Object struct {
 			SHA string `json:"sha"`
 		} `json:"object"`
 	}
 	path := fmt.Sprintf("/repos/%s/%s/git/ref/heads/%s", owner, repo, branch)
-	if err := a.doJSON(ctx, http.MethodGet, path, "token "+tok, nil, &out); err != nil {
+	if err := a.getRepoJSON(ctx, owner, repo, path, &out); err != nil {
 		return "", err
 	}
 	return out.Object.SHA, nil
@@ -480,7 +486,7 @@ func (a *App) commitDiff(ctx context.Context, owner, repo, sha string) (string, 
 	if err != nil {
 		return "", fmt.Errorf("github: commit diff %s: %w", sha, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("github: commit diff %s: status %d: %s", sha, resp.StatusCode, strings.TrimSpace(string(data)))
@@ -599,15 +605,10 @@ func (a *App) enrichFailingChecks(ctx context.Context, owner, repo string, runs 
 }
 
 func (a *App) listCheckRuns(ctx context.Context, owner, repo, sha string) ([]checkRunView, error) {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return nil, err
-	}
-	var out struct {
+	var out = &struct {
 		CheckRuns []checkRunView `json:"check_runs"`
-	}
-	path := fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs?per_page=100", owner, repo, sha)
-	if err := a.doJSON(ctx, http.MethodGet, path, "token "+tok, nil, &out); err != nil {
+	}{}
+	if err := a.getRepoJSON(ctx, owner, repo, fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs?per_page=100", owner, repo, sha), out); err != nil {
 		return nil, err
 	}
 	return out.CheckRuns, nil
@@ -633,15 +634,11 @@ func (s checkSuiteView) producesRuns() bool {
 }
 
 func (a *App) listCheckSuites(ctx context.Context, owner, repo, sha string) ([]checkSuiteView, error) {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return nil, err
-	}
-	var out struct {
+	type suitesPage struct {
 		CheckSuites []checkSuiteView `json:"check_suites"`
 	}
-	path := fmt.Sprintf("/repos/%s/%s/commits/%s/check-suites?per_page=100", owner, repo, sha)
-	if err := a.doJSON(ctx, http.MethodGet, path, "token "+tok, nil, &out); err != nil {
+	var out suitesPage
+	if err := a.getRepoJSON(ctx, owner, repo, fmt.Sprintf("/repos/%s/%s/commits/%s/check-suites?per_page=100", owner, repo, sha), &out); err != nil {
 		return nil, err
 	}
 	return out.CheckSuites, nil
@@ -655,13 +652,9 @@ type checkAnnotation struct {
 }
 
 func (a *App) listCheckAnnotations(ctx context.Context, owner, repo string, checkRunID int64) ([]checkAnnotation, error) {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return nil, err
-	}
 	var out []checkAnnotation
 	path := fmt.Sprintf("/repos/%s/%s/check-runs/%d/annotations?per_page=50", owner, repo, checkRunID)
-	if err := a.doJSON(ctx, http.MethodGet, path, "token "+tok, nil, &out); err != nil {
+	if err := a.getRepoJSON(ctx, owner, repo, path, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -892,13 +885,8 @@ type prReview struct {
 }
 
 func (a *App) listReviews(ctx context.Context, owner, repo string, number int) ([]prReview, error) {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return nil, err
-	}
 	var out []prReview
-	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews?per_page=100", owner, repo, number)
-	if err := a.doJSON(ctx, http.MethodGet, path, "token "+tok, nil, &out); err != nil {
+	if err := a.getRepoJSON(ctx, owner, repo, fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews?per_page=100", owner, repo, number), &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1006,31 +994,25 @@ type changedFile struct {
 	Status    string `json:"status"`
 }
 
+// pullFilesPage is one page of the PR changed-files listing.
+type pullFilesPage = []changedFile
+
 func (a *App) pullFiles(ctx context.Context, owner, repo string, number int) ([]changedFile, error) {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return nil, err
-	}
-	var out []changedFile
-	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/files?per_page=100", owner, repo, number)
-	if err := a.doJSON(ctx, http.MethodGet, path, "token "+tok, nil, &out); err != nil {
+	var out pullFilesPage
+	if err := a.getRepoJSON(ctx, owner, repo, fmt.Sprintf("/repos/%s/%s/pulls/%d/files?per_page=100", owner, repo, number), &out); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
 func (a *App) prAuthor(ctx context.Context, owner, repo string, number int) (string, error) {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return "", err
-	}
-	var out struct {
+	type authorPage struct {
 		User struct {
 			Login string `json:"login"`
 		} `json:"user"`
 	}
-	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number)
-	if err := a.doJSON(ctx, http.MethodGet, path, "token "+tok, nil, &out); err != nil {
+	var out authorPage
+	if err := a.getRepoJSON(ctx, owner, repo, fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number), &out); err != nil {
 		return "", err
 	}
 	return out.User.Login, nil

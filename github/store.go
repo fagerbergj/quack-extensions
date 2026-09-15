@@ -87,14 +87,14 @@ func openStore(dataDir string) (*ghStore, error) {
 	}
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(ghSchema); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("github: migrate store: %w", err)
 	}
 	// Additive migration for a database created before dispatched_head
 	// existed - ignore "duplicate column" on a database that already has it.
 	if _, err := db.Exec(`ALTER TABLE github_merge_intent ADD COLUMN dispatched_head TEXT NOT NULL DEFAULT ''`); err != nil &&
 		!strings.Contains(err.Error(), "duplicate column") {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("github: migrate store: add dispatched_head: %w", err)
 	}
 	return &ghStore{db: db}, nil
@@ -102,17 +102,22 @@ func openStore(dataDir string) (*ghStore, error) {
 
 func (s *ghStore) Close() error { return s.db.Close() }
 
-// GetSnapshot returns the stored snapshot JSON, or ("", false, nil) when none exists.
-func (s *ghStore) GetSnapshot(ctx context.Context, chatID string) (string, bool, error) {
-	var j string
-	err := s.db.QueryRowContext(ctx, `SELECT json FROM github_snapshot WHERE chat_id = ?`, chatID).Scan(&j)
+// getChatString runs a single-string-column query by chat_id, returning (value, found).
+func (s *ghStore) getChatString(ctx context.Context, query, chatID string) (string, bool, error) {
+	var v string
+	err := s.db.QueryRowContext(ctx, query, chatID).Scan(&v)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
 	if err != nil {
 		return "", false, err
 	}
-	return j, true, nil
+	return v, true, nil
+}
+
+// GetSnapshot returns the stored snapshot JSON, or ("", false, nil) when none exists.
+func (s *ghStore) GetSnapshot(ctx context.Context, chatID string) (string, bool, error) {
+	return s.getChatString(ctx, `SELECT json FROM github_snapshot WHERE chat_id = ?`, chatID)
 }
 
 // SetSnapshot upserts the snapshot JSON for the next resume's diff.
@@ -126,15 +131,7 @@ func (s *ghStore) SetSnapshot(ctx context.Context, chatID, json string) error {
 
 // GetReviewBaseline returns the patch-id list quack last delivered a review at.
 func (s *ghStore) GetReviewBaseline(ctx context.Context, chatID string) (string, bool, error) {
-	var p string
-	err := s.db.QueryRowContext(ctx, `SELECT patch_ids FROM github_review_baseline WHERE chat_id = ?`, chatID).Scan(&p)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, err
-	}
-	return p, true, nil
+	return s.getChatString(ctx, `SELECT patch_ids FROM github_review_baseline WHERE chat_id = ?`, chatID)
 }
 
 // SetReviewBaseline upserts the patch-id list (only when a review is delivered).

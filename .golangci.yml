@@ -47,6 +47,12 @@ linters:
     paths:
       - third_party
     rules:
+      # Table-driven test scaffolding (identical t.Run blocks) is
+      # intentional structure, triage-dead in Wave 2-F: deduplicating it
+      # makes tests less readable for zero behavior win.
+      - path: '_test\.go'
+        linters:
+          - dupl
       # test fixtures ignore errors by design - loosen the two noisiest
       # defect linters there only, not for real code
       - path: '_test\.go'

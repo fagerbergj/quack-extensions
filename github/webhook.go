@@ -171,6 +171,18 @@ func (e *Extension) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// rejectDisallowedInvoker logs and 200-acks a webhook from a user not in
+// allowed_users; it returns true when the request was rejected.
+func (e *Extension) rejectDisallowedInvoker(w http.ResponseWriter, repo, kind string, number int, login string) bool {
+	if e.isInvokerAllowed(login) {
+		return false
+	}
+	slog.Warn("github webhook: invoker not in allowed_users; ignoring", "component", "github",
+		"repo", repo, kind, number, "user", login)
+	w.WriteHeader(http.StatusOK)
+	return true
+}
+
 func (e *Extension) handleIssueComment(w http.ResponseWriter, body []byte) {
 	var p issueCommentPayload
 	if err := json.Unmarshal(body, &p); err != nil {
@@ -186,10 +198,7 @@ func (e *Extension) handleIssueComment(w http.ResponseWriter, body []byte) {
 	// off/on fast enough coalesces into no webhook at all, so the label alone
 	// can't re-trigger.
 	if e.isReviewCommand(p) {
-		if !e.isInvokerAllowed(p.Comment.User.Login) {
-			slog.Warn("github webhook: invoker not in allowed_users; ignoring", "component", "github",
-				"repo", p.Repository.Owner.Login+"/"+p.Repository.Name, "issue", p.Issue.Number, "user", p.Comment.User.Login)
-			w.WriteHeader(http.StatusOK)
+		if e.rejectDisallowedInvoker(w, p.Repository.Owner.Login+"/"+p.Repository.Name, "issue", p.Issue.Number, p.Comment.User.Login) {
 			return
 		}
 		p.rawEvent = json.RawMessage(body)
@@ -210,10 +219,7 @@ func (e *Extension) handleIssueComment(w http.ResponseWriter, body []byte) {
 	}
 	p.rawEvent = json.RawMessage(body)
 	p.eventName = "issue_comment." + p.Action
-	if !e.isInvokerAllowed(p.Comment.User.Login) {
-		slog.Warn("github webhook: invoker not in allowed_users; ignoring", "component", "github",
-			"repo", p.Repository.Owner.Login+"/"+p.Repository.Name, "issue", p.Issue.Number, "user", p.Comment.User.Login)
-		w.WriteHeader(http.StatusOK)
+	if e.rejectDisallowedInvoker(w, p.Repository.Owner.Login+"/"+p.Repository.Name, "issue", p.Issue.Number, p.Comment.User.Login) {
 		return
 	}
 
@@ -404,10 +410,7 @@ func (e *Extension) handlePullRequestReview(w http.ResponseWriter, body []byte) 
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	if !e.isInvokerAllowed(p.Review.User.Login) {
-		slog.Warn("github webhook: invoker not in allowed_users; ignoring", "component", "github",
-			"repo", p.Repository.Owner.Login+"/"+p.Repository.Name, "pr", p.PullRequest.Number, "user", p.Review.User.Login)
-		w.WriteHeader(http.StatusOK)
+	if e.rejectDisallowedInvoker(w, p.Repository.Owner.Login+"/"+p.Repository.Name, "pr", p.PullRequest.Number, p.Review.User.Login) {
 		return
 	}
 	slog.Info("github webhook received", "component", "github",

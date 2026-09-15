@@ -520,20 +520,20 @@ type replyResult struct {
 	URL string `json:"url"`
 }
 
-func (a *App) replyToReviewCommentTool() tool.Tool {
-	t, _ := functiontool.New[replyArgs, replyResult](
-		functiontool.Config{
-			Name: "github_reply_to_review_comment",
-			Description: "Reply in-thread to an existing inline review comment (acknowledge, agree, add context) " +
-				"instead of opening a new thread. `comment_id` is the review comment you're replying to (from " +
-				"github_list_pr_comments). `owner`/`repo`/`pull_number` identify the PR, `body` is the reply text. " +
-				"Authenticated as the app installation.",
-		},
-		func(ctx adkagent.Context, args replyArgs) (replyResult, error) {
-			return a.reply(ctx, args)
-		},
-	)
+// newTool registers a function tool, dropping functiontool.New's unused second return.
+func newTool[A, R any](name, description string, handle functiontool.Func[A, R]) tool.Tool {
+	t, _ := functiontool.New[A, R](functiontool.Config{Name: name, Description: description}, handle)
 	return t
+}
+
+var replyToolDescription = "Reply in-thread to an existing inline review comment (acknowledge, agree, add context) " +
+	"instead of opening a new thread. `comment_id` is the review comment you're replying to (from " +
+	"github_list_pr_comments). `owner`/`repo`/`pull_number` identify the PR, `body` is the reply text. " +
+	"Authenticated as the app installation."
+
+func (a *App) replyToReviewCommentTool() tool.Tool {
+	return newTool[replyArgs, replyResult]("github_reply_to_review_comment", replyToolDescription,
+		func(ctx adkagent.Context, args replyArgs) (replyResult, error) { return a.reply(ctx, args) })
 }
 
 func (a *App) reply(ctx context.Context, args replyArgs) (replyResult, error) {
@@ -567,20 +567,14 @@ type reactResult struct {
 	ReactionID int64 `json:"reaction_id"`
 }
 
+var reactToolDescription = "Add an emoji reaction to a comment - a lightweight acknowledgment. `comment_id` is the " +
+	"comment; `comment_type` is `review_comment` (an inline review comment) or `issue_comment` (a " +
+	"conversation comment); `content` is one of +1, -1, laugh, hooray, confused, heart, rocket, eyes. " +
+	"`owner`/`repo` identify the repo. Authenticated as the app installation."
+
 func (a *App) reactToCommentTool() tool.Tool {
-	t, _ := functiontool.New[reactArgs, reactResult](
-		functiontool.Config{
-			Name: "github_react_to_comment",
-			Description: "Add an emoji reaction to a comment - a lightweight acknowledgment. `comment_id` is the " +
-				"comment; `comment_type` is `review_comment` (an inline review comment) or `issue_comment` (a " +
-				"conversation comment); `content` is one of +1, -1, laugh, hooray, confused, heart, rocket, eyes. " +
-				"`owner`/`repo` identify the repo. Authenticated as the app installation.",
-		},
-		func(ctx adkagent.Context, args reactArgs) (reactResult, error) {
-			return a.react(ctx, args)
-		},
-	)
-	return t
+	return newTool[reactArgs, reactResult]("github_react_to_comment", reactToolDescription,
+		func(ctx adkagent.Context, args reactArgs) (reactResult, error) { return a.react(ctx, args) })
 }
 
 func (a *App) react(ctx context.Context, args reactArgs) (reactResult, error) {

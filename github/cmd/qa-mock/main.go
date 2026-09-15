@@ -65,7 +65,7 @@ func runServe(args []string) {
 	fixtures := fs.String("fixtures", "testdata/qa", "fixture directory")
 	addr := fs.String("addr", ":8090", "listen address")
 	record := fs.String("record", "", "real GitHub token; GET misses proxy+save instead of 404")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	if err := os.MkdirAll(filepath.Join(*fixtures, "get"), 0o755); err != nil {
 		log.Fatal(err)
@@ -74,7 +74,7 @@ func runServe(args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer df.Close()
+	defer func() { _ = df.Close() }()
 
 	s := &server{dir: *fixtures, recordTok: *record, http: &http.Client{Timeout: 15 * time.Second}, deliveries: df}
 	log.Printf("qa-mock github server on %s, fixtures=%s, record=%v", *addr, *fixtures, *record != "")
@@ -84,7 +84,7 @@ func runServe(args []string) {
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// App-installation-token minting: any App reaching the mock gets a fake token.
 	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/access_tokens") {
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"token":      "qa-mock-token",
 			"expires_at": time.Now().Add(time.Hour).Format(time.RFC3339),
 		})
@@ -115,7 +115,7 @@ func (s *server) serveFixture(w http.ResponseWriter, r *http.Request) {
 	path := filepath.Join(s.dir, "get", fixtureKey(r))
 	if b, err := os.ReadFile(path); err == nil {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(b)
+		_, _ = w.Write(b)
 		return
 	}
 	if s.recordTok == "" {
@@ -134,13 +134,13 @@ func (s *server) serveFixture(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 300 {
-		os.WriteFile(path, b, 0o644)
+		_ = os.WriteFile(path, b, 0o644)
 	}
 	w.WriteHeader(resp.StatusCode)
-	w.Write(b)
+	_, _ = w.Write(b)
 }
 
 // mockMutationResponse fabricates a generic success body for any write call
@@ -149,7 +149,7 @@ func (s *server) serveFixture(w http.ResponseWriter, r *http.Request) {
 func (s *server) mockMutationResponse(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"id":       time.Now().UnixNano(),
 		"html_url": "https://mock.invalid" + r.URL.Path,
 		"node_id":  "MOCK_" + strconv.FormatInt(time.Now().UnixNano(), 36),
@@ -169,7 +169,7 @@ func (s *server) recordDelivery(method, url string, body []byte) {
 	if err != nil {
 		return
 	}
-	s.deliveries.Write(append(b, '\n'))
+	_, _ = s.deliveries.Write(append(b, '\n'))
 }
 
 // --- deliveries: dump the recorded mutation log ---
@@ -177,7 +177,7 @@ func (s *server) recordDelivery(method, url string, body []byte) {
 func runDeliveries(args []string) {
 	fs := flag.NewFlagSet("deliveries", flag.ExitOnError)
 	fixtures := fs.String("fixtures", "testdata/qa", "fixture directory")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 	b, err := os.ReadFile(filepath.Join(*fixtures, "deliveries.jsonl"))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -186,7 +186,7 @@ func runDeliveries(args []string) {
 		}
 		log.Fatal(err)
 	}
-	os.Stdout.Write(b)
+	_, _ = os.Stdout.Write(b)
 }
 
 // --- send: build + sign a webhook from a fixture, POST it ---
@@ -197,7 +197,7 @@ func runSend(args []string) {
 	event := fs.String("event", "issues", "X-GitHub-Event value")
 	url := fs.String("url", "http://localhost:8080/api/v1/github/webhook", "quack webhook endpoint")
 	secret := fs.String("secret", "", "webhook secret (must match extensions.github.webhook_secret)")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 	if *fixture == "" || *secret == "" {
 		fmt.Fprintln(os.Stderr, "send requires --fixture and --secret")
 		os.Exit(2)
@@ -221,7 +221,7 @@ func runSend(args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	fmt.Printf("%s %s -> %d\n%s\n", *event, *url, resp.StatusCode, b)
 	if resp.StatusCode >= 300 {

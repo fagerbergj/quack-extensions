@@ -271,7 +271,7 @@ func (a *App) doPagedGET(ctx context.Context, pathOrURL, authz string, out any) 
 	}
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
 	link := resp.Header.Get("Link")
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("github: GET %s: status %d: %s", url, resp.StatusCode, strings.TrimSpace(string(data)))
 	}

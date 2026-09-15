@@ -116,7 +116,7 @@ func (e *Extension) fetchSnapshot(ctx context.Context, owner, repo string, numbe
 		e.host.Log.Warn("github: snapshot: listPRDiscussion failed", "repo", owner+"/"+repo, "number", number, "err", err)
 	} else {
 		for _, r := range d.Reviews {
-			snap.Reviews = append(snap.Reviews, snapshotReview{ID: r.ID, Body: r.Body, State: r.State, User: r.User, SubmittedAt: r.SubmittedAt})
+			snap.Reviews = append(snap.Reviews, snapshotReview(r))
 		}
 		for _, c := range d.ReviewComments {
 			snap.ReviewComments = append(snap.ReviewComments, snapshotReviewComment{ID: c.ID, Path: c.Path, Line: c.Line, Body: c.Body, User: c.User, InReplyToID: c.InReplyToID})

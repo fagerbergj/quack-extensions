@@ -99,7 +99,8 @@ func runDrop(args []string) {
 	name := fs.String("name", "", "document visible name, e.g. \"2-page note\"")
 	folder := fs.String("folder", "", "folder path, e.g. inbox")
 	pdfPath := fs.String("pdf", "", "path to a PDF file to serve as this document's content")
-	fs.Parse(args)
+	_ = fs.Parse(args) // fs is ExitOnError
+
 	if *name == "" || *pdfPath == "" {
 		fmt.Fprintln(os.Stderr, "drop requires --name and --pdf")
 		os.Exit(2)
@@ -153,7 +154,7 @@ func runServe(args []string) {
 	addr := fs.String("addr", ":8091", "listen address")
 	email := fs.String("email", "qa@example.com", "login email the extension must be configured with")
 	password := fs.String("password", "qa-password", "login password the extension must be configured with")
-	fs.Parse(args)
+	_ = fs.Parse(args) // fs is ExitOnError
 
 	if err := os.MkdirAll(*fixtures, 0o755); err != nil {
 		log.Fatal(err)
@@ -184,7 +185,7 @@ func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	s.token = "qa-mock-token-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	tok := s.token
 	s.mu.Unlock()
-	w.Write([]byte(tok))
+	_, _ = w.Write([]byte(tok))
 }
 
 func (s *server) authOK(r *http.Request) bool {
@@ -205,7 +206,7 @@ func (s *server) handleDocuments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(buildTree(docs))
+	_ = json.NewEncoder(w).Encode(buildTree(docs))
 }
 
 func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
@@ -227,7 +228,7 @@ func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			w.Header().Set("Content-Type", "application/octet-stream")
-			w.Write(pdf)
+			_, _ = w.Write(pdf)
 			return
 		}
 	}

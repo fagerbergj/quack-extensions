@@ -87,7 +87,7 @@ func (p *prometheusProxy) forward(w http.ResponseWriter, r *http.Request, path s
 		writePromError(w, http.StatusBadGateway, "prometheus unreachable")
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Prometheus JSON, verbatim - status code and body untouched.
 	w.Header().Set("Content-Type", "application/json")
