@@ -227,6 +227,7 @@ func (e *Extension) handleIssueComment(w http.ResponseWriter, body []byte) {
 
 // handlePullRequest fires an auto-review on "opened" or "labeled" with the configured auto_review_label,
 // and refreshes the sidebar badge on close/merge/reopen.
+// sloplint: cc-allow flat webhook action dispatcher - one case per action, no shared logic to extract
 func (e *Extension) handlePullRequest(w http.ResponseWriter, body []byte, deliveryID string) {
 	var p pullRequestPayload
 	if err := json.Unmarshal(body, &p); err != nil {
@@ -267,38 +268,12 @@ func (e *Extension) handlePullRequest(w http.ResponseWriter, body []byte, delive
 	}
 
 	// The merge label is a human authorization: recorded as a standing intent, merged once quack approves the head and CI is green.
-	if p.Action == "labeled" && e.triggers["merge"] && p.Label.Name == e.labels.Merge &&
-		!strings.HasSuffix(p.Sender.Login, "[bot]") {
-		if !e.isInvokerAllowed(p.Sender.Login) {
-			slog.Warn("github webhook: invoker not in allowed_users; ignoring", "component", "github",
-				"repo", p.Repository.Owner.Login+"/"+p.Repository.Name, "pr", p.Number,
-				"label", p.Label.Name, "user", p.Sender.Login)
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		slog.Info("github webhook received", "component", "github",
-			"repo", p.Repository.Owner.Login+"/"+p.Repository.Name, "pr", p.Number,
-			"label", p.Label.Name, "user", p.Sender.Login, "installation", p.Installation.ID)
-		go e.mergeIfApproved(p, body)
-		w.WriteHeader(http.StatusAccepted)
+	if e.labeledTrigger(w, p, "merge", e.labels.Merge, func() { go e.mergeIfApproved(p, body) }) {
 		return
 	}
 
 	// quack:fix is a persistent capability flag (#656) — re-arms auto-heal; fixes CI if currently failing.
-	if p.Action == "labeled" && e.triggers["ci_fix"] && p.Label.Name == e.labels.Fix &&
-		!strings.HasSuffix(p.Sender.Login, "[bot]") {
-		if !e.isInvokerAllowed(p.Sender.Login) {
-			slog.Warn("github webhook: invoker not in allowed_users; ignoring", "component", "github",
-				"repo", p.Repository.Owner.Login+"/"+p.Repository.Name, "pr", p.Number,
-				"label", p.Label.Name, "user", p.Sender.Login)
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		slog.Info("github webhook received", "component", "github",
-			"repo", p.Repository.Owner.Login+"/"+p.Repository.Name, "pr", p.Number,
-			"label", p.Label.Name, "user", p.Sender.Login, "installation", p.Installation.ID)
-		go e.fixLabelApplied(p, body)
-		w.WriteHeader(http.StatusAccepted)
+	if e.labeledTrigger(w, p, "ci_fix", e.labels.Fix, func() { go e.fixLabelApplied(p, body) }) {
 		return
 	}
 
@@ -324,6 +299,29 @@ func (e *Extension) handlePullRequest(w http.ResponseWriter, body []byte, delive
 		"action", p.Action, "installation", p.Installation.ID)
 	go e.dispatch(autoReviewPayload(p, body), autoReviewTask)
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// labeledTrigger: the shape the quack:merge and quack:fix handlers share -
+// fire (kick + 202) on a matching human trigger, deny (200 itself) for a
+// non-invoker, return false (nothing written) when the trigger didn't fire.
+func (e *Extension) labeledTrigger(w http.ResponseWriter, p pullRequestPayload, trigger, label string, kick func()) bool {
+	if p.Action != "labeled" || !e.triggers[trigger] || p.Label.Name != label ||
+		strings.HasSuffix(p.Sender.Login, "[bot]") {
+		return false
+	}
+	if !e.isInvokerAllowed(p.Sender.Login) {
+		slog.Warn("github webhook: invoker not in allowed_users; ignoring", "component", "github",
+			"repo", p.Repository.Owner.Login+"/"+p.Repository.Name, "pr", p.Number,
+			"label", p.Label.Name, "user", p.Sender.Login)
+		w.WriteHeader(http.StatusOK)
+		return true
+	}
+	slog.Info("github webhook received", "component", "github",
+		"repo", p.Repository.Owner.Login+"/"+p.Repository.Name, "pr", p.Number,
+		"label", p.Label.Name, "user", p.Sender.Login, "installation", p.Installation.ID)
+	kick()
+	w.WriteHeader(http.StatusAccepted)
+	return true
 }
 
 // invalidateSetup signals a moved branch, but only for a PR with a run still
@@ -759,30 +757,12 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 	if login == "" {
 		login = runUserID
 	}
-
 	// Dedup: one run per session — second trigger is dropped, not queued (#665, #668).
 	sessionID := fmt.Sprintf("github-%s-%s-%d", owner, repo, number)
 	chatID := globalChatID(sessionID)
-	claimedAt, age, claimed := e.claimInflight(sessionID)
+	claimedAt, claimed := e.claimOrAck(p, sessionID, owner, repo, number)
 	if !claimed {
-		slog.Info("deduplicated trigger: a run for this session is still in flight",
-			"component", "github", "sessionID", sessionID, "repo", owner+"/"+repo, "issue", number,
-			"claim_age", age.Round(time.Second), "lease", e.inflightLease())
-		// A comment-triggered dispatch (mention, /review) already reacted to
-		// its own comment before calling in here - react there again rather
-		// than on the issue too, or the trigger gets two visibly different
-		// reactions instead of the one this whole rewrite is meant to leave (#1304).
-		if p.Comment.ID != 0 {
-			go e.ackReaction(p)
-		} else {
-			go e.ackIssue(owner, repo, number)
-		}
 		return
-	}
-	if age > 0 {
-		slog.Warn("github: took over an expired in-flight claim; the run holding it never settled",
-			"component", "github", "sessionID", sessionID, "repo", owner+"/"+repo, "issue", number,
-			"claim_age", age.Round(time.Second), "lease", e.inflightLease())
 	}
 	// clearInflight is called exactly once, either here (immediate failure) or
 	// from finalize (after RunEnded settles the whole chain). Compare-and-delete
@@ -820,46 +800,19 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 	}
 
 	// Compute permission grant once — authorship-check failure denies rather than grants.
-	authored := false
-	if isPR {
-		if a, aerr := e.authoredByQuack(ctx, owner, repo, number); aerr != nil {
-			slog.Warn("github: authorship check failed computing this run's grant; treating as not-authored",
-				"component", "github", "repo", owner+"/"+repo, "issue", number, "err", aerr)
-		} else {
-			authored = a
-		}
-	}
-	allowedKinds := computeGrant(e.labels, gh.snap.Labels, isPR, authored, gh.snap.Fork)
+	_, allowedKinds := e.grantForDispatch(ctx, owner, repo, number, isPR, gh)
 
 	p.issueDeliverableCache = &issueDeliverableResult{}
 	isPlan := e.deliverableIsPlan(ctx, p, task, allowedKinds, isPR)
 
 	// Input artifacts (#1010): the heavy evidence a worker only sometimes
-	// needs - full comment thread, raw webhook payload, timeline, CI
-	// check-runs/annotations - one write per dispatch, best-effort. Skipped
-	// entirely (no fetches) when Host has no artifact capability wired.
-	var manifest []artifactEntry
-	if e.host.WriteArtifact != nil {
-		manifest = e.writeInputArtifacts(ctx, chatID, login, ContextRequest{
-			Owner: owner, Repo: repo, Number: number, IsPR: isPR, CheckSHA: p.checkSHA,
-		})
-		if entry := writeArtifact(e.host, chatID, login, "event", "application/json", p.rawEvent, eventNote(p)); entry != nil {
-			manifest = append(manifest, *entry)
-		}
-		sort.Slice(manifest, func(i, j int) bool { return manifest[i].Name < manifest[j].Name })
-	}
+	// needs - one write per dispatch, best-effort, no fetches at all when
+	// Host has no artifact capability wired.
+	manifest := e.writeDispatchArtifacts(ctx, chatID, login, p, owner, repo, number, isPR)
 
 	message := e.buildEnvelope(ctx, p, task, gh, allowedKinds, manifest)
 	workerAsk := e.buildWorkerAsk(ctx, p, task, gh, allowedKinds, manifest)
-	var contextItems []sdk.NamedContext
-	if p.checkSHA != "" {
-		if checks, cerr := e.failingChecks(ctx, owner, repo, p.checkSHA); cerr != nil {
-			slog.Warn("github: CI-check fetch for node-scoped detail failed; nodes get none", "component", "github",
-				"repo", owner+"/"+repo, "issue", number, "err", cerr)
-		} else {
-			contextItems = ciChecksForNodes(checks)
-		}
-	}
+	contextItems := e.nodeContextItems(ctx, owner, repo, number, p.checkSHA)
 
 	title := strings.TrimSpace(p.Issue.Title)
 	if title == "" {
@@ -868,42 +821,12 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 
 	setup := &sdk.Setup{Repo: p.Repository.CloneURL, BaseRef: setupBaseRef(p, gh), WorkBranch: fmt.Sprintf("quack/issue-%d", number)}
 	if isPR {
-		headRef := gh.snap.HeadRef
-		if headRef == "" {
-			// The snapshot's pullMeta call can transiently fail or race a
-			// stale cache without tripping contextUnavailable (only checked
-			// on label triggers) - refetch once before giving up, since a
-			// blank ref only quack's own fallback can rescue (#55).
-			if m, merr := e.app.pullMeta(ctx, owner, repo, number); merr == nil && m.HeadRef != "" {
-				headRef = m.HeadRef
-			} else {
-				slog.Error("github: PR dispatch has no head ref even after refetch; refusing to send a blank ExistingHeadRef",
-					"component", "github", "repo", owner+"/"+repo, "issue", number, "err", merr)
-				abortCtx, abortCancel := context.WithTimeout(context.Background(), reactionTimeout)
-				abortMsg := "Could not determine this PR's head branch; not running. Retry the command."
-				if perr := e.app.postIssueComment(abortCtx, owner, repo, number, abortMsg); perr != nil {
-					slog.Warn("github: abort comment failed", "component", "github", "repo", owner+"/"+repo, "issue", number, "err", perr)
-				}
-				abortCancel()
-				clearInflight()
-				return
-			}
+		if !e.resolvePRHead(ctx, p, owner, repo, number, gh, setup, clearInflight) {
+			return
 		}
-		// The PR's real head branch, not the deterministic default - dag.
-		// OverrideExistingPRHead's job in the old ctx-stamped world.
-		setup.ExistingHeadRef = headRef
 	}
 
-	badge := gh.snap.State
-	subjectState := sdk.SubjectOpen
-	if gh.snap.State == "closed" {
-		subjectState = sdk.SubjectClosed
-	}
-	if isPR && gh.snap.Merged {
-		badge, subjectState = "merged", sdk.SubjectMerged
-	} else if isPR && gh.snap.Draft {
-		badge = "draft" // still open - draft is a badge-only distinction
-	}
+	badge, subjectState := e.prBadgeState(gh, isPR)
 	o := chatOrigin(owner, repo, isPR, number, badge, subjectState)
 	origin := &o
 
@@ -958,6 +881,124 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 			slog.Warn("github: DeletePendingRun after failed dispatch", "component", "github", "repo", owner+"/"+repo, "issue", number, "err", derr)
 		}
 	}
+}
+
+// nodeContextItems: the CI-check detail a checkSHA-scoped run injects per
+// node - a failed fetch means no nodes get any, not a failed dispatch.
+func (e *Extension) nodeContextItems(ctx context.Context, owner, repo string, number int, checkSHA string) []sdk.NamedContext {
+	if checkSHA == "" {
+		return nil
+	}
+	checks, cerr := e.failingChecks(ctx, owner, repo, checkSHA)
+	if cerr != nil {
+		slog.Warn("github: CI-check fetch for node-scoped detail failed; nodes get none", "component", "github",
+			"repo", owner+"/"+repo, "issue", number, "err", cerr)
+		return nil
+	}
+	return ciChecksForNodes(checks)
+}
+
+// prBadgeState: the sidebar badge + typed subject state for a chat origin -
+// merged beats draft; draft is a badge-only distinction while still open.
+func (e *Extension) prBadgeState(gh githubContext, isPR bool) (string, sdk.SubjectState) {
+	badge := gh.snap.State
+	subjectState := sdk.SubjectOpen
+	if gh.snap.State == "closed" {
+		subjectState = sdk.SubjectClosed
+	}
+	if isPR && gh.snap.Merged {
+		badge, subjectState = "merged", sdk.SubjectMerged
+	} else if isPR && gh.snap.Draft {
+		badge = "draft" // still open - draft is a badge-only distinction
+	}
+	return badge, subjectState
+}
+
+// claimOrAck: the one-run-per-session dedup gate (#665, #668) - a fresh claim
+// proceeds; a live one is dropped with an ack in the right place; an expired
+// one is taken over with a warn.
+func (e *Extension) claimOrAck(p issueCommentPayload, sessionID, owner, repo string, number int) (claimedAt time.Time, claimed bool) {
+	var age time.Duration
+	claimedAt, age, claimed = e.claimInflight(sessionID)
+	if !claimed {
+		slog.Info("deduplicated trigger: a run for this session is still in flight",
+			"component", "github", "sessionID", sessionID, "repo", owner+"/"+repo, "issue", number,
+			"claim_age", age.Round(time.Second), "lease", e.inflightLease())
+		// A comment-triggered dispatch (mention, /review) already reacted to
+		// its own comment - react there, not on the issue too, or the trigger
+		// gets two visibly different reactions (#1304).
+		if p.Comment.ID != 0 {
+			go e.ackReaction(p)
+		} else {
+			go e.ackIssue(owner, repo, number)
+		}
+		return claimedAt, false
+	}
+	if age > 0 {
+		slog.Warn("github: took over an expired in-flight claim; the run holding it never settled",
+			"component", "github", "sessionID", sessionID, "repo", owner+"/"+repo, "issue", number,
+			"claim_age", age.Round(time.Second), "lease", e.inflightLease())
+	}
+	return claimedAt, true
+}
+
+// grantForDispatch computes the run's delivery grant once: the authorship
+// check (a failed check denies rather than grants) feeds computeGrant.
+func (e *Extension) grantForDispatch(ctx context.Context, owner, repo string, number int, isPR bool, gh githubContext) (authored bool, allowedKinds []string) {
+	if isPR {
+		if a, aerr := e.authoredByQuack(ctx, owner, repo, number); aerr != nil {
+			slog.Warn("github: authorship check failed computing this run's grant; treating as not-authored",
+				"component", "github", "repo", owner+"/"+repo, "issue", number, "err", aerr)
+		} else {
+			authored = a
+		}
+	}
+	return authored, computeGrant(e.labels, gh.snap.Labels, isPR, authored, gh.snap.Fork)
+}
+
+// writeDispatchArtifacts: the per-dispatch input artifacts plus the raw
+// event, name-sorted - all best-effort, all skipped without the capability.
+func (e *Extension) writeDispatchArtifacts(ctx context.Context, chatID, login string, p issueCommentPayload, owner, repo string, number int, isPR bool) []artifactEntry {
+	if e.host.WriteArtifact == nil {
+		return nil
+	}
+	manifest := e.writeInputArtifacts(ctx, chatID, login, ContextRequest{
+		Owner: owner, Repo: repo, Number: number, IsPR: isPR, CheckSHA: p.checkSHA,
+	})
+	if entry := writeArtifact(e.host, chatID, login, "event", "application/json", p.rawEvent, eventNote(p)); entry != nil {
+		manifest = append(manifest, *entry)
+	}
+	sort.Slice(manifest, func(i, j int) bool { return manifest[i].Name < manifest[j].Name })
+	return manifest
+}
+
+// resolvePRHead sets setup.ExistingHeadRef to the PR's real head branch (the
+// dag equivalent of OverrideExistingPRHead); a blank ref is refused and
+// refetched first - only quack's own fallback can rescue one (#55).
+func (e *Extension) resolvePRHead(ctx context.Context, p issueCommentPayload, owner, repo string, number int, gh githubContext, setup *sdk.Setup, clearInflight func()) bool {
+	headRef := gh.snap.HeadRef
+	if headRef != "" {
+		setup.ExistingHeadRef = headRef
+		return true
+	}
+	// The snapshot's pullMeta call can transiently fail or race a stale cache
+	// without tripping contextUnavailable (only checked on label triggers) -
+	// refetch once before giving up.
+	m, merr := e.app.pullMeta(ctx, owner, repo, number)
+	if merr == nil && m.HeadRef != "" {
+		setup.ExistingHeadRef = m.HeadRef
+		return true
+	}
+	slog.Error("github: PR dispatch has no head ref even after refetch; refusing to send a blank ExistingHeadRef",
+		"component", "github", "repo", owner+"/"+repo, "issue", number, "err", merr)
+	abortCtx, abortCancel := context.WithTimeout(context.Background(), reactionTimeout)
+	abortMsg := "Could not determine this PR's head branch; not running. Retry the command."
+	if perr := e.app.postIssueComment(abortCtx, owner, repo, number, abortMsg); perr != nil {
+		slog.Warn("github: abort comment failed", "component", "github", "repo", owner+"/"+repo, "issue", number, "err", perr)
+	}
+	abortCancel()
+	clearInflight()
+	return false
 }
 
 // sdkDeliveryKinds converts the plain-string allowlist computeGrant emits to

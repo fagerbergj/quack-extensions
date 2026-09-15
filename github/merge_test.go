@@ -122,6 +122,7 @@ type mergeSim struct {
 	issueComments string // GET .../comments; "" behaves as no own-PR comment markers
 	headSHA       string
 	labels        string // pullMeta's "labels" array, e.g. `[{"name":"quack:merge"}]`; "" behaves as no labels
+	prState       string // the pull's "state"; "" behaves as "open"
 	mergeErr      string // non-empty: PUT .../merge returns 405 with this message
 	timeline      string // GET .../timeline; "" behaves as no matching events (known=false)
 	timelineErr   bool   // true: GET .../timeline returns 500
@@ -148,6 +149,10 @@ func (m *mergeSim) server(t *testing.T) *httptest.Server {
 		m.mu.Lock()
 		reviews, checks, head, mergeErr := strings.Replace(m.reviews, "BODY", m.body, 1), m.checks, m.headSHA, m.mergeErr
 		suites, issueComments, labels := m.suites, m.issueComments, m.labels
+		state := m.prState
+		if state == "" {
+			state = "open"
+		}
 		timeline, timelineErr := m.timeline, m.timelineErr
 		m.mu.Unlock()
 		if suites == "" {
@@ -214,7 +219,7 @@ func (m *mergeSim) server(t *testing.T) *httptest.Server {
 		case strings.HasSuffix(r.URL.Path, "/files"), strings.HasSuffix(r.URL.Path, "/commits"):
 			fmt.Fprint(w, `[]`)
 		case strings.Contains(r.URL.Path, "/pulls/"):
-			fmt.Fprintf(w, `{"title":"Test PR","body":"","state":"open","head":{"ref":"feature","sha":%q},"base":{"ref":"main"},"labels":%s}`, head, labels)
+			fmt.Fprintf(w, `{"title":"Test PR","body":"","state":%q,"head":{"ref":"feature","sha":%q},"base":{"ref":"main"},"labels":%s}`, state, head, labels)
 		case isIssueMetaPath(r.URL.Path):
 			fmt.Fprint(w, `{"title":"Test PR","body":"","state":"open"}`)
 		default:
@@ -517,6 +522,33 @@ func TestTryMergeAdoptsIntentFromLabelWhenNoneStored(t *testing.T) {
 	intent, _ := ext.store.GetMergeIntent(context.Background(), chatID)
 	if intent == nil || intent.RequestedBy != "alice" {
 		t.Errorf("intent = %+v; want it persisted from the timeline's actor", intent)
+	}
+}
+
+// TestTryMergeClosedPRDoesNotReachMerge: the PR closed (or merged) after
+// the intent was set and the approval stood - tryMerge must clear the
+// intent and stop with mergeNoIntent, never calling PUT /merge.
+func TestTryMergeClosedPRDoesNotReachMerge(t *testing.T) {
+	sim := &mergeSim{reviews: approvedOnHead1, checks: checksGreen, headSHA: "head1", prState: "closed"}
+	srv := sim.server(t)
+	ext, _ := newTestExtension(t, srv.URL, []string{"merge"})
+	chatID := globalChatID("github-acme-widgets-7")
+	if err := ext.store.SetMergeIntent(context.Background(), chatID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	outcome, err := ext.tryMerge(context.Background(), "acme", "widgets", 7)
+	if err != nil {
+		t.Fatalf("tryMerge: %v", err)
+	}
+	if outcome != mergeNoIntent {
+		t.Errorf("outcome = %v; want mergeNoIntent for a closed PR", outcome)
+	}
+	if sim.merges.Load() != 0 || sim.edits.Load() != 0 {
+		t.Errorf("closed PR: merges=%d edits=%d; want 0/0", sim.merges.Load(), sim.edits.Load())
+	}
+	if intent, _ := ext.store.GetMergeIntent(context.Background(), chatID); intent != nil {
+		t.Errorf("intent = %+v; want it cleared once the PR is closed", intent)
 	}
 }
 

@@ -166,44 +166,8 @@ func (e *Extension) finalize(chatID string, pr *pendingRun, outcome sdk.RunOutco
 	}()
 	owner, repo, number := pr.owner, pr.repo, pr.number
 
-	// Only post a summary when nothing was delivered — commitDelivery already
-	// posted the review/PR. A push that landed but left the head at the SHA it
-	// already was (a fix run that correctly found nothing to fix, #876/#880/
-	// #882) is NOT delivered work: GitHub shows no trace of the run, so the
-	// answer is the only place its analysis survives - fall through and post it.
-	if d, ok := takeDeliveryDetail(chatID); ok {
-		if d.err != nil {
-			// A worker's own report can't be trusted here (#714) — it may claim success it never had.
-			e.host.Log.Error("github: staged delivery failed", "repo", owner+"/"+repo, "issue", number, "err", d.err)
-			e.postDeliveryFailure(owner, repo, number, d)
-			return
-		}
-		e.host.Log.Info("github: delivery verified against GitHub", "repo", owner+"/"+repo, "issue", number,
-			"pr_number", d.prNumber, "pr_url", d.prURL, "pushed_sha", d.pushedSHA)
-		headUnchanged := d.pushedSHA != "" && d.pushedSHA == pr.gh.snap.HeadSHA
-		if d.reviewDelivered || !headUnchanged {
-			if d.reviewDelivered {
-				baselineCtx, baselineCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				e.advanceReviewBaseline(baselineCtx, chatID, pr.gh.snap.Commits)
-				baselineCancel()
-
-				mergeCtx, mergeCancel := context.WithTimeout(context.Background(), mergeTimeout)
-				mo, merr := e.tryMerge(mergeCtx, owner, repo, number)
-				if merr != nil {
-					e.host.Log.Warn("github: merge evaluation after review delivery failed", "repo", owner+"/"+repo, "pr", number, "err", merr)
-				}
-				if mo == mergeStale {
-					// Head moved under the approving review (#1142): re-review it.
-					pr.reReview = e.reReviewMovedHead(mergeCtx, pr)
-				}
-				mergeCancel()
-			}
-			e.persistGithubSnapshot(chatID, pr.gh)
-			e.host.Log.Info("github: work delivered on the PR; skipping the duplicate summary comment", "repo", owner+"/"+repo, "issue", number)
-			return
-		}
-		e.host.Log.Info("github: push left the PR head unchanged and no review was posted; posting the run's answer instead of a silent no-op",
-			"repo", owner+"/"+repo, "issue", number, "pushed_sha", d.pushedSHA)
+	if e.settleDelivery(chatID, pr) {
+		return
 	}
 
 	// User cancelled: Answer is mid-thought, not a finished product - post
@@ -228,6 +192,71 @@ func (e *Extension) finalize(chatID string, pr *pendingRun, outcome sdk.RunOutco
 		return
 	}
 
+	answer := e.shapeAnswer(pr, outcome, owner, repo, number)
+
+	tailCtx, tailCancel := context.WithTimeout(context.Background(), time.Minute)
+	defer tailCancel()
+	if err := e.app.postIssueComment(tailCtx, owner, repo, number, e.app.withFooter(answer, chatID)); err != nil {
+		e.host.Log.Error("github comment post failed", "repo", owner+"/"+repo, "issue", number, "err", err)
+		return
+	}
+	if !outcome.TimedOut {
+		e.persistGithubSnapshot(chatID, pr.gh)
+	}
+	e.host.Log.Info("github comment posted", "repo", owner+"/"+repo, "issue", number, "timed_out", outcome.TimedOut)
+}
+
+// settleDelivery settles a run with verified delivery detail: post a
+// failure report, or persist and (for a delivered review) settle the
+// merge. It returns true when nothing more should be posted.
+func (e *Extension) settleDelivery(chatID string, pr *pendingRun) bool {
+	// Only post a summary when nothing was delivered — commitDelivery already posted the review/PR.
+	// A push that landed but left the head at the SHA it already was (a fix run that correctly found nothing to fix, #876/#880/#882)
+	// is NOT delivered work: GitHub shows no trace of the run, so the answer is the only place its analysis survives - fall through and post it.
+	d, ok := takeDeliveryDetail(chatID)
+	if !ok {
+		return false
+	}
+	owner, repo, number := pr.owner, pr.repo, pr.number
+	if d.err != nil {
+		// A worker's own report can't be trusted here (#714) — it may claim success it never had.
+		e.host.Log.Error("github: staged delivery failed", "repo", owner+"/"+repo, "issue", number, "err", d.err)
+		e.postDeliveryFailure(owner, repo, number, d)
+		return true
+	}
+	e.host.Log.Info("github: delivery verified against GitHub", "repo", owner+"/"+repo, "issue", number,
+		"pr_number", d.prNumber, "pr_url", d.prURL, "pushed_sha", d.pushedSHA)
+	headUnchanged := d.pushedSHA != "" && d.pushedSHA == pr.gh.snap.HeadSHA
+	if d.reviewDelivered || !headUnchanged {
+		if d.reviewDelivered {
+			baselineCtx, baselineCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			e.advanceReviewBaseline(baselineCtx, chatID, pr.gh.snap.Commits)
+			baselineCancel()
+
+			mergeCtx, mergeCancel := context.WithTimeout(context.Background(), mergeTimeout)
+			mo, merr := e.tryMerge(mergeCtx, owner, repo, number)
+			if merr != nil {
+				e.host.Log.Warn("github: merge evaluation after review delivery failed", "repo", owner+"/"+repo, "pr", number, "err", merr)
+			}
+			if mo == mergeStale {
+				// Head moved under the approving review (#1142): re-review it.
+				pr.reReview = e.reReviewMovedHead(mergeCtx, pr)
+			}
+			mergeCancel()
+		}
+		e.persistGithubSnapshot(chatID, pr.gh)
+		e.host.Log.Info("github: work delivered on the PR; skipping the duplicate summary comment", "repo", owner+"/"+repo, "issue", number)
+		return true
+	}
+	e.host.Log.Info("github: push left the PR head unchanged and no review was posted; posting the run's answer instead of a silent no-op",
+		"repo", owner+"/"+repo, "issue", number, "pushed_sha", d.pushedSHA)
+	return false
+}
+
+// shapeAnswer turns a finished run's outcome into the text the closing
+// comment carries: the retry wording for the trigger that started the run,
+// plus the timed-out / failed / silent-gap / plan variants.
+func (e *Extension) shapeAnswer(pr *pendingRun, outcome sdk.RunOutcome, owner, repo string, number int) string {
 	answer := strings.TrimSpace(outcome.Answer)
 	retry := "Re-apply the label to retry."
 	if !pr.isLabelTrigger {
@@ -246,17 +275,7 @@ func (e *Extension) finalize(chatID string, pr *pendingRun, outcome sdk.RunOutco
 		e.app.collapsePriorComments(context.Background(), owner, repo, number, "plan")
 		answer += "\n\n" + deliveryMarker("plan")
 	}
-
-	tailCtx, tailCancel := context.WithTimeout(context.Background(), time.Minute)
-	defer tailCancel()
-	if err := e.app.postIssueComment(tailCtx, owner, repo, number, e.app.withFooter(answer, chatID)); err != nil {
-		e.host.Log.Error("github comment post failed", "repo", owner+"/"+repo, "issue", number, "err", err)
-		return
-	}
-	if !outcome.TimedOut {
-		e.persistGithubSnapshot(chatID, pr.gh)
-	}
-	e.host.Log.Info("github comment posted", "repo", owner+"/"+repo, "issue", number, "timed_out", outcome.TimedOut)
+	return answer
 }
 
 // postDeliveryFailure reports a failed delivery on GitHub, so a pushed-but-unopened branch is recoverable by hand instead of sitting silently invisible (#714).

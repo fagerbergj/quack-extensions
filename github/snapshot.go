@@ -230,82 +230,101 @@ func diffSnapshots(old, cur Snapshot, excludeCommentID int64) Delta {
 	if old.State != cur.State {
 		d.StateChanged, d.OldState, d.NewState = true, old.State, cur.State
 	}
-	oldLabels := map[string]bool{}
-	for _, l := range old.Labels {
-		oldLabels[l] = true
-	}
-	curLabels := map[string]bool{}
-	for _, l := range cur.Labels {
-		curLabels[l] = true
-	}
-	for _, l := range cur.Labels {
-		if !oldLabels[l] {
-			d.LabelsAdded = append(d.LabelsAdded, l)
-		}
-	}
-	for _, l := range old.Labels {
-		if !curLabels[l] {
-			d.LabelsRemoved = append(d.LabelsRemoved, l)
-		}
-	}
-
-	oldComments := make(map[int64]snapshotComment, len(old.Comments))
-	for _, c := range old.Comments {
-		oldComments[c.ID] = c
-	}
-	curIDs := make(map[int64]bool, len(cur.Comments))
-	for _, c := range cur.Comments {
-		curIDs[c.ID] = true
-		if excludeCommentID != 0 && c.ID == excludeCommentID {
-			continue
-		}
-		if prev, ok := oldComments[c.ID]; !ok {
-			d.CommentsAdded = append(d.CommentsAdded, c)
-		} else if prev.Body != c.Body {
-			d.CommentsEdited = append(d.CommentsEdited, c)
-		}
-	}
-	for _, c := range old.Comments {
-		if !curIDs[c.ID] {
-			d.CommentsDeleted = append(d.CommentsDeleted, c)
-		}
-	}
-
-	oldReviewIDs := map[int64]bool{}
-	for _, r := range old.Reviews {
-		oldReviewIDs[r.ID] = true
-	}
-	for _, r := range cur.Reviews {
-		if !oldReviewIDs[r.ID] {
-			d.ReviewsAdded = append(d.ReviewsAdded, r)
-		}
-	}
-
-	oldReviewCommentIDs := map[int64]bool{}
-	for _, c := range old.ReviewComments {
-		oldReviewCommentIDs[c.ID] = true
-	}
-	for _, c := range cur.ReviewComments {
-		if !oldReviewCommentIDs[c.ID] {
-			d.ReviewCommentsAdded = append(d.ReviewCommentsAdded, c)
-		}
-	}
-
-	oldPatchIDs := map[string]bool{}
-	for _, c := range old.Commits {
-		if c.PatchID != "" {
-			oldPatchIDs[c.PatchID] = true
-		}
-	}
-	for _, c := range cur.Commits {
-		if c.PatchID == "" || !oldPatchIDs[c.PatchID] {
-			d.NewCommits = append(d.NewCommits, c)
-		}
-	}
+	d.LabelsAdded, d.LabelsRemoved = labelDelta(old.Labels, cur.Labels)
+	d.CommentsAdded, d.CommentsEdited, d.CommentsDeleted = commentDelta(old.Comments, cur.Comments, excludeCommentID)
+	d.ReviewsAdded = addedSince(old.Reviews, cur.Reviews, func(r snapshotReview) int64 { return r.ID })
+	d.ReviewCommentsAdded = addedSince(old.ReviewComments, cur.ReviewComments, func(c snapshotReviewComment) int64 { return c.ID })
+	d.NewCommits = newCommitsSince(old.Commits, cur.Commits)
 
 	d.FilesChanged = len(old.Files) != len(cur.Files)
 
 	return d
+}
+
+// labelDelta: the labels present only in cur / only in old, in their list order.
+func labelDelta(oldLabels, curLabels []string) (added, removed []string) {
+	oldSet := map[string]bool{}
+	for _, l := range oldLabels {
+		oldSet[l] = true
+	}
+	curSet := map[string]bool{}
+	for _, l := range curLabels {
+		curSet[l] = true
+	}
+	for _, l := range curLabels {
+		if !oldSet[l] {
+			added = append(added, l)
+		}
+	}
+	for _, l := range oldLabels {
+		if !curSet[l] {
+			removed = append(removed, l)
+		}
+	}
+	return added, removed
+}
+
+// commentDelta: comments added/edited/deleted between two snapshots;
+// excludeCommentID drops one id from the added/edited sets (the triggering
+// comment, already quoted), never from deletion detection.
+func commentDelta(oldComments, curComments []snapshotComment, excludeCommentID int64) (added, edited, deleted []snapshotComment) {
+	oldCommentsMap := make(map[int64]snapshotComment, len(oldComments))
+	for _, c := range oldComments {
+		oldCommentsMap[c.ID] = c
+	}
+	curIDs := make(map[int64]bool, len(curComments))
+	for _, c := range curComments {
+		curIDs[c.ID] = true
+		if excludeCommentID != 0 && c.ID == excludeCommentID {
+			continue
+		}
+		if prev, ok := oldCommentsMap[c.ID]; !ok {
+			added = append(added, c)
+		} else if prev.Body != c.Body {
+			edited = append(edited, c)
+		}
+	}
+	for _, c := range oldComments {
+		if !curIDs[c.ID] {
+			deleted = append(deleted, c)
+		}
+	}
+	return added, edited, deleted
+}
+
+// addedSince: the items in cur whose stable ID is absent from old -
+// reviews and review comments key on their numeric ID.
+func addedSince[T any](oldItems, curItems []T, id func(T) int64) []T {
+	oldIDs := map[int64]bool{}
+	for _, item := range oldItems {
+		oldIDs[id(item)] = true
+	}
+	var out []T
+	for _, item := range curItems {
+		if !oldIDs[id(item)] {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+// newCommitsSince: cur's commits with a patch-id absent from old - keyed on
+// PatchID so a rebase doesn't re-surface unchanged work; a commit whose
+// patch-id couldn't be computed is conservatively treated as new.
+func newCommitsSince(oldCommits, curCommits []snapshotCommit) []snapshotCommit {
+	oldPatchIDs := map[string]bool{}
+	for _, c := range oldCommits {
+		if c.PatchID != "" {
+			oldPatchIDs[c.PatchID] = true
+		}
+	}
+	var out []snapshotCommit
+	for _, c := range curCommits {
+		if c.PatchID == "" || !oldPatchIDs[c.PatchID] {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // shortSHA truncates a commit SHA to its conventional 7-char display form;

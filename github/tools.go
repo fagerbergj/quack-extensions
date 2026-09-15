@@ -871,78 +871,100 @@ func gateCaveat(dc sdk.DeliveryContext, body string) string {
 func (a *App) deliverOne(ctx context.Context, owner, repo string, dc sdk.DeliveryContext, item sdk.StagedDelivery) (deliveryItemResult, error) {
 	switch item.Kind {
 	case sdk.KindPR:
-		if dc.Branch == "" {
-			return deliveryItemResult{}, fmt.Errorf("github: delivery: staged pull request %q has no branch to open it from", item.Title)
-		}
-		// item.Body is only wrapped with the gate caveat when it's actually going out - an
-		// omitted body (stage_push, #724) must reach updatePullRequest as "don't touch this key".
-		body := item.Body
-		if !item.BodyOmitted {
-			body = gateCaveat(dc, item.Body)
-		}
-		// Gate-failed → deliver as draft. issueNumber == closing target for a new PR (#575).
-		u, num, err := a.openOrUpdatePullRequest(ctx, owner, repo, item.Title, !item.TitleOmitted, dc.Branch, "", body, !item.BodyOmitted, nil, !dc.GatePassed, dc.IssueNumber)
-		if err != nil {
-			return deliveryItemResult{}, fmt.Errorf("github: delivery: open pull request: %w", err)
-		}
-		slog.Info("github: delivered a pull request", "component", "github", "repo", owner+"/"+repo, "pr", num, "url", u)
-		return deliveryItemResult{prNumber: num, prURL: u, url: u}, nil
+		return a.deliverPR(ctx, owner, repo, dc, item)
 	case sdk.KindReview:
-		if dc.IssueNumber == 0 {
-			return deliveryItemResult{}, fmt.Errorf("github: delivery: staged review has no pull request number to submit against")
-		}
-		// GitHub rejects approve/request_changes on own PR (422) — fall back to COMMENT-event review with inline comments.
-		if bot, berr := a.botLogin(ctx); berr == nil {
-			if author, aerr := a.prAuthor(ctx, owner, repo, dc.IssueNumber); aerr == nil && author == bot {
-				verdict := strings.ToLower(strings.TrimSpace(item.Event))
-				if !reviewEvents[strings.ToUpper(verdict)] {
-					verdict = "comment"
-				}
-				body := fmt.Sprintf("_Own PR: GitHub allows no self-review verdict. Verdict: %s. A maintainer decides._\n\n", verdict) + StripVerdictTail(item.Body)
-				body += "\n\n" + deliveryMarker("review:"+verdict) + deliveryKeyMarker(dc.IdempotencyKey)
-				// This is the head at DELIVERY time, not necessarily the head
-				// reviewed: sdk.DeliveryContext carries no reviewed-head field to
-				// thread through. Still strictly better than trusting the marker
-				// for any head; the synchronize re-review is the backstop.
-				if m, merr := a.pullMeta(ctx, owner, repo, dc.IssueNumber); merr == nil && m.HeadSHA != "" {
-					body += "\n" + deliveryMarker("head:"+m.HeadSHA)
-				}
-				a.collapsePriorReviews(ctx, owner, repo, dc.IssueNumber) // superseded prior attempts
-				inline, unanchored := a.validComments(ctx, owner, repo, dc.IssueNumber, item.Comments)
-				body += renderUnanchoredFindings(unanchored)
-				res, err := a.submitReview(ctx, submitReviewArgs{Owner: owner, Repo: repo, PullNumber: dc.IssueNumber, Body: gateCaveat(dc, body), Event: "COMMENT", Comments: inline, ChatID: dc.ChatID})
-				if err != nil {
-					return deliveryItemResult{}, fmt.Errorf("github: delivery: self-review: %w", err)
-				}
-				slog.Info("github: self-review delivered as a COMMENT-event review (no formal verdict - own PR)",
-					"component", "github", "repo", owner+"/"+repo, "pr", dc.IssueNumber, "verdict", verdict)
-				return deliveryItemResult{url: res.URL}, nil
-			}
-		}
-		event := strings.ToUpper(item.Event)
-		if !reviewEvents[event] {
-			return deliveryItemResult{}, fmt.Errorf("github: delivery: staged review event %q is not one of approve/request_changes/comment", item.Event)
-		}
-		a.collapsePriorReviews(ctx, owner, repo, dc.IssueNumber) // superseded prior attempts
-		// Validate inline findings before submit — one bad anchor 422s the whole review.
-		inline, unanchored := a.validComments(ctx, owner, repo, dc.IssueNumber, item.Comments)
-		body := item.Body + renderUnanchoredFindings(unanchored) + deliveryKeyMarker(dc.IdempotencyKey)
-		res, err := a.submitReview(ctx, submitReviewArgs{Owner: owner, Repo: repo, PullNumber: dc.IssueNumber, Body: gateCaveat(dc, body), Event: event, Comments: inline, ChatID: dc.ChatID})
-		if err != nil {
-			return deliveryItemResult{}, fmt.Errorf("github: delivery: submit review: %w", err)
-		}
-		slog.Info("github: delivered a review", "component", "github", "repo", owner+"/"+repo, "url", res.URL)
-		return deliveryItemResult{url: res.URL}, nil
+		return a.deliverReview(ctx, owner, repo, dc, item)
 	case sdk.KindComment:
-		if dc.IssueNumber == 0 {
-			return deliveryItemResult{}, fmt.Errorf("github: delivery: staged comment %q has no issue/PR number to post to", item.Slot)
-		}
-		// A comment has no draft-equivalent lever, so the banner is the only unvetted signal.
-		if err := a.deliverStagedComment(ctx, owner, repo, dc.IssueNumber, item.Slot, gateCaveat(dc, item.Body), dc.ChatID); err != nil {
-			return deliveryItemResult{}, fmt.Errorf("github: delivery: post comment %q: %w", item.Slot, err)
-		}
-		return deliveryItemResult{}, nil
+		return a.deliverComment(ctx, owner, repo, dc, item)
 	default:
 		return deliveryItemResult{}, fmt.Errorf("github: delivery: unknown staged kind %q", item.Kind)
 	}
+}
+
+// deliverPR opens the staged PR from its branch. The body is only wrapped
+// with the gate caveat when it's actually going out - an omitted body
+// (stage_push, #724) must reach updatePullRequest as "don't touch this key".
+func (a *App) deliverPR(ctx context.Context, owner, repo string, dc sdk.DeliveryContext, item sdk.StagedDelivery) (deliveryItemResult, error) {
+	if dc.Branch == "" {
+		return deliveryItemResult{}, fmt.Errorf("github: delivery: staged pull request %q has no branch to open it from", item.Title)
+	}
+	body := item.Body
+	if !item.BodyOmitted {
+		body = gateCaveat(dc, item.Body)
+	}
+	// Gate-failed → deliver as draft. issueNumber == closing target for a new PR (#575).
+	u, num, err := a.openOrUpdatePullRequest(ctx, owner, repo, item.Title, !item.TitleOmitted, dc.Branch, "", body, !item.BodyOmitted, nil, !dc.GatePassed, dc.IssueNumber)
+	if err != nil {
+		return deliveryItemResult{}, fmt.Errorf("github: delivery: open pull request: %w", err)
+	}
+	slog.Info("github: delivered a pull request", "component", "github", "repo", owner+"/"+repo, "pr", num, "url", u)
+	return deliveryItemResult{prNumber: num, prURL: u, url: u}, nil
+}
+
+// deliverReview submits the staged review against its PR, falling back to
+// the own-PR path when the author is the bot itself.
+func (a *App) deliverReview(ctx context.Context, owner, repo string, dc sdk.DeliveryContext, item sdk.StagedDelivery) (deliveryItemResult, error) {
+	if dc.IssueNumber == 0 {
+		return deliveryItemResult{}, fmt.Errorf("github: delivery: staged review has no pull request number to submit against")
+	}
+	// GitHub rejects approve/request_changes on own PR (422) — fall back to COMMENT-event review with inline comments.
+	if bot, berr := a.botLogin(ctx); berr == nil {
+		if author, aerr := a.prAuthor(ctx, owner, repo, dc.IssueNumber); aerr == nil && author == bot {
+			return a.deliverSelfReview(ctx, owner, repo, dc, item)
+		}
+	}
+	event := strings.ToUpper(item.Event)
+	if !reviewEvents[event] {
+		return deliveryItemResult{}, fmt.Errorf("github: delivery: staged review event %q is not one of approve/request_changes/comment", item.Event)
+	}
+	a.collapsePriorReviews(ctx, owner, repo, dc.IssueNumber) // superseded prior attempts
+	// Validate inline findings before submit — one bad anchor 422s the whole review.
+	inline, unanchored := a.validComments(ctx, owner, repo, dc.IssueNumber, item.Comments)
+	body := item.Body + renderUnanchoredFindings(unanchored) + deliveryKeyMarker(dc.IdempotencyKey)
+	res, err := a.submitReview(ctx, submitReviewArgs{Owner: owner, Repo: repo, PullNumber: dc.IssueNumber, Body: gateCaveat(dc, body), Event: event, Comments: inline, ChatID: dc.ChatID})
+	if err != nil {
+		return deliveryItemResult{}, fmt.Errorf("github: delivery: submit review: %w", err)
+	}
+	slog.Info("github: delivered a review", "component", "github", "repo", owner+"/"+repo, "url", res.URL)
+	return deliveryItemResult{url: res.URL}, nil
+}
+
+// deliverSelfReview posts the own-PR fallback: a COMMENT-event review that
+// carries the intended verdict as text, since GitHub allows no self-review
+// verdict (422).
+func (a *App) deliverSelfReview(ctx context.Context, owner, repo string, dc sdk.DeliveryContext, item sdk.StagedDelivery) (deliveryItemResult, error) {
+	verdict := strings.ToLower(strings.TrimSpace(item.Event))
+	if !reviewEvents[strings.ToUpper(verdict)] {
+		verdict = "comment"
+	}
+	body := fmt.Sprintf("_Own PR: GitHub allows no self-review verdict. Verdict: %s. A maintainer decides._\n\n", verdict) + StripVerdictTail(item.Body)
+	body += "\n\n" + deliveryMarker("review:"+verdict) + deliveryKeyMarker(dc.IdempotencyKey)
+	// This is the head at DELIVERY time, not necessarily the head reviewed:
+	// sdk.DeliveryContext carries no reviewed-head field to thread through. Still strictly better than trusting the marker
+	// for any head; the synchronize re-review is the backstop.
+	if m, merr := a.pullMeta(ctx, owner, repo, dc.IssueNumber); merr == nil && m.HeadSHA != "" {
+		body += "\n" + deliveryMarker("head:"+m.HeadSHA)
+	}
+	a.collapsePriorReviews(ctx, owner, repo, dc.IssueNumber) // superseded prior attempts
+	inline, unanchored := a.validComments(ctx, owner, repo, dc.IssueNumber, item.Comments)
+	body += renderUnanchoredFindings(unanchored)
+	res, err := a.submitReview(ctx, submitReviewArgs{Owner: owner, Repo: repo, PullNumber: dc.IssueNumber, Body: gateCaveat(dc, body), Event: "COMMENT", Comments: inline, ChatID: dc.ChatID})
+	if err != nil {
+		return deliveryItemResult{}, fmt.Errorf("github: delivery: self-review: %w", err)
+	}
+	slog.Info("github: self-review delivered as a COMMENT-event review (no formal verdict - own PR)",
+		"component", "github", "repo", owner+"/"+repo, "pr", dc.IssueNumber, "verdict", verdict)
+	return deliveryItemResult{url: res.URL}, nil
+}
+
+// deliverComment posts the staged comment. A comment has no draft-equivalent
+// lever, so the gate banner is the only unvetted signal.
+func (a *App) deliverComment(ctx context.Context, owner, repo string, dc sdk.DeliveryContext, item sdk.StagedDelivery) (deliveryItemResult, error) {
+	if dc.IssueNumber == 0 {
+		return deliveryItemResult{}, fmt.Errorf("github: delivery: staged comment %q has no issue/PR number to post to", item.Slot)
+	}
+	if err := a.deliverStagedComment(ctx, owner, repo, dc.IssueNumber, item.Slot, gateCaveat(dc, item.Body), dc.ChatID); err != nil {
+		return deliveryItemResult{}, fmt.Errorf("github: delivery: post comment %q: %w", item.Slot, err)
+	}
+	return deliveryItemResult{}, nil
 }

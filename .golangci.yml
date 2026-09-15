@@ -53,5 +53,3 @@ linters:
         linters:
           - errcheck
           - bodyclose
-formatters:
-  default: none
