@@ -1,9 +1,6 @@
-// coverdiff gates statement coverage on changed lines: `go test` runs with a
-// coverprofile, lines added in `diff <ref> <root> <module>` (ref...HEAD,
-// new-file numbering, files under <module>/) must sit at >= minPct covered
-// statements. Test files and lines with no statements (decls, imports,
-// comments) are outside the denominator, so a tests-only PR passes
-// trivially and legacy gaps never block.
+// coverdiff gates changed-line statement coverage: lines added in
+// `diff <ref> <root> <module>` must sit at >= minPct covered; test
+// files and statement-less lines are outside the denominator.
 package main
 
 import (
@@ -60,8 +57,8 @@ func gate(ref, root, module string) bool {
 		fmt.Fprintln(os.Stderr, "coverdiff:", err)
 		return false
 	}
-	tmp.Close()
-	defer os.Remove(tmp.Name())
+	_ = tmp.Close()
+	defer func() { _ = os.Remove(tmp.Name()) }()
 	cmd := exec.Command("go", "-C", root+"/"+module, "test", "-count=1", "-coverprofile="+tmp.Name(), "./...")
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -70,12 +67,21 @@ func gate(ref, root, module string) bool {
 	}
 	var num, den int
 	misses := map[string][]miss{}
-	f, err := os.Open(tmp.Name())
-	if err != nil {
+	if err := matchProfile(tmp.Name(), changed, &num, &den, misses); err != nil {
 		fmt.Fprintln(os.Stderr, "coverdiff:", err)
 		return false
 	}
-	defer f.Close()
+	return report(num, den, misses, module)
+}
+
+// matchProfile: walk the coverprofile, count statements that overlap
+// changed lines, collect the uncovered ones.
+func matchProfile(path string, changed map[string]map[int]bool, num, den *int, misses map[string][]miss) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		m := profileRe.FindStringSubmatch(strings.TrimSpace(sc.Text()))
@@ -103,13 +109,17 @@ func gate(ref, root, module string) bool {
 		if !hit {
 			continue
 		}
-		den += numStmts
+		*den += numStmts
 		if count > 0 {
-			num += numStmts
+			*num += numStmts
 		} else {
 			misses[path] = append(misses[path], miss{start, numStmts})
 		}
 	}
+	return nil
+}
+
+func report(num, den int, misses map[string][]miss, module string) bool {
 	if den == 0 {
 		fmt.Println("coverdiff: changed lines carry no statements")
 		return true
@@ -147,8 +157,9 @@ func changedFiles(diff, module string) map[string]map[int]bool {
 				cur = ""
 				continue
 			}
-			res[p] = map[int]bool{}
-			cur = p
+			k := strings.TrimSuffix(p, ".go")
+			res[k] = map[int]bool{}
+			cur = k
 			continue
 		}
 		if cur == "" {
