@@ -13,3 +13,7 @@ go.work.sum
 .vscode/
 sloplint
 .cccheck/
+
+# local build artifacts from `go build` in the tools modules
+tools/sloplint/sloplint
+tools/coverdiff/coverdiff
