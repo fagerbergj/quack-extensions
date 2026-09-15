@@ -56,6 +56,11 @@ jobs:
           # --max-same-issues=0: the default cap of 3 per identical message
           # would let a PR ship a 4th unchecked clone of the same kind.
           $(go env GOPATH)/bin/golangci-lint run --new-from-rev "$SLOP_BASE" --max-same-issues=0 --max-issues-per-linter=0 ./...
+      # Changed-line coverage gate: new code ships covered (>=70%).
+      - name: coverage gate (changed code only, ${{ matrix.module }})
+        env:
+          SLOP_BASE: ${{ github.event.pull_request.base.sha }}
+        run: go run -C tools/coverdiff . diff "$SLOP_BASE" "$GITHUB_WORKSPACE" "${{ matrix.module }}"
       # One repo-wide hunk-aware CC/comment gate; run once (the github leg)
       # - sloplint scans every module from the repo root it is handed.
       - name: slop gate (sloplint CC + comment runs, changed code only)
