@@ -1,8 +1,42 @@
 # sleeper
 
-Sleeper fantasy-football extension for quack. This slice (issue #93) ships only the OpenAPI
-spec, the generated client, recorded fixtures, and a cached wrapper - no tools, skills, or UI
-yet (see `~/workspace/wt/sleeper-requirements.md` for the full extension design).
+Sleeper fantasy-football extension for quack. The client slice (issue #93) shipped the OpenAPI
+spec, generated client, recorded fixtures, and a cached wrapper. This slice adds the extension
+UI (see `~/workspace/wt/sleeper-requirements.md` for the full extension design) - tools/skills
+land separately.
+
+## UI
+
+`sleeper/ui.go` mounts a vanilla HTML/CSS/JS page (embedded from `sleeper/ui/static/`, no build
+step) on the authed router at `GET /sleeper/`, plus four JSON routes:
+
+- `GET /sleeper/api/seasons?league_id=` - the season chain (walks `previous_league_id`,
+  tolerating a gap deeper in history instead of erroring the whole list), each with this
+  league's record for the configured `default_user`.
+- `GET /sleeper/api/season?league_id=` - one season's live league facts, "me"/opponent (from
+  rosters + the current week's matchups), standings, recent moves, and reserve-slot count -
+  built from the cached Sleeper client, never from job artifacts.
+- `GET /sleeper/api/artifacts?league_id=&stop=` - every job artifact for that stop
+  (`draft`, a week number, or `review`), season notes, and per-partner trade talks, each read
+  via `Host.ReadArtifact` by its `ext:sleeper:<league>:<stop>:<job>` chat id. Until a job has
+  run, its card is `found: false`; behind `extensions.sleeper.fixture: true` a miss instead
+  serves the reference example JSON under `sleeper/ui/fixtures/`, marked `example: true`.
+- `POST /sleeper/api/jobs` `{league_id, stop, job, args}` - calls `Host.Dispatch` with that same
+  chat id (a repeat call appends a turn) and returns the chat link.
+
+Artifact JSON schemas live in `sleeper/ui/schemas/*.json` (one per job: lineup, waivers, trade,
+digest, trends, retro, draft, history, season-notes) - the renderer in `sleeper/ui/static/
+render.js` reads exactly those shapes. `sleeper/ui/fixtures/*.json` are schema-conformant
+examples derived from the approved prototype's data (`~/workspace/wt/sleeper-ui-ref/`).
+
+### Storybook
+
+`sleeper/ui/storybook/` is a standalone `@storybook/html-vite` project (pinned exact versions;
+`npm install` then `npm run storybook` for `-p 6011`, `npm run build-storybook`). Stories live in
+`stories/*.stories.js`, one per card plus `FullPage`, each with `Default`/`Dark`/
+`MobileViewport390` variants, fed from `sleeper/ui/fixtures/`. `npm run render-check` builds
+Storybook and screenshots every story at 390/1280 width, light/dark, with Playwright, failing on
+a console error or horizontal overflow; CI runs it as the `sleeper-storybook` job.
 
 ## The spec is the source of truth
 

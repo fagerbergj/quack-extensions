@@ -36,6 +36,10 @@ type config struct {
 
 	// Season defaults to /v1/state/nfl's current season when zero.
 	Season int `yaml:"season"`
+
+	// Fixture serves the reference example JSON (marked Example) for any
+	// artifact-backed card with no real chat yet, for demoing/QA before jobs exist.
+	Fixture bool `yaml:"fixture"`
 }
 
 func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
@@ -73,7 +77,10 @@ type extension struct {
 	client *Client
 }
 
-var _ sdk.Extension = (*extension)(nil)
+var (
+	_ sdk.Extension = (*extension)(nil)
+	_ sdk.UI        = (*extension)(nil)
+)
 
 // Tools returns the read-only agent tools over the Sleeper client (issue #93).
 func (e *extension) Tools() []tool.Tool {
@@ -93,8 +100,14 @@ func (e *extension) Tools() []tool.Tool {
 	}
 }
 
-// RegisterRoutes is a no-op until the UI slice adds authed routes.
-func (e *extension) RegisterRoutes(authed chi.Router, public chi.Router) {}
+// RegisterRoutes mounts the UI slice's served page and JSON API (ui.go); see mountUI.
+func (e *extension) RegisterRoutes(authed chi.Router, public chi.Router) { e.mountUI(authed) }
+
+// UI names the extension's nav entry; the page it points at renders every
+// job's artifacts and launches new runs (docs/extensions/ui-kit.md).
+func (e *extension) UI() sdk.UIDescriptor {
+	return sdk.UIDescriptor{Title: "Sleeper", Href: "/sleeper/", Icon: "sports_football"}
+}
 
 var _ sdk.Starter = (*extension)(nil)
 

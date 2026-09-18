@@ -1,0 +1,240 @@
+{
+  "league": {
+    "id": "1356407594683482112",
+    "name": "Roger is a Clown",
+    "season": "2026",
+    "week_now": 2,
+    "status": "in_season"
+  },
+  "facts": [
+    "10 teams",
+    "Redraft",
+    "PPR",
+    "Rolling waivers",
+    "6 playoff spots \u00b7 week 15",
+    "Snapshot 06:00 daily"
+  ],
+  "me": {
+    "team": "Substation Supremacy",
+    "owner": "jffagerberg",
+    "wins": 0,
+    "losses": 1,
+    "fpts": 100.66,
+    "waiver_pos": 6
+  },
+  "opponent": {
+    "team": "Pitts and Giggles",
+    "owner": "nlanner",
+    "wins": 1,
+    "losses": 0
+  },
+  "standings": [
+    {
+      "team": "Brown Tuddies Likely ",
+      "owner": "pmaher",
+      "wins": 1,
+      "losses": 0,
+      "pf": 169.66,
+      "pa": 155.66,
+      "mine": false
+    },
+    {
+      "team": "Rice Cooker",
+      "owner": "pirates5",
+      "wins": 1,
+      "losses": 0,
+      "pf": 154.16,
+      "pa": 106.16,
+      "mine": false
+    },
+    {
+      "team": "Pitts and Giggles",
+      "owner": "nlanner",
+      "wins": 1,
+      "losses": 0,
+      "pf": 149.34,
+      "pa": 136.82,
+      "mine": false
+    },
+    {
+      "team": "Breece\u2019s Pieces",
+      "owner": "Kyleg1228",
+      "wins": 1,
+      "losses": 0,
+      "pf": 116.0,
+      "pa": 100.66,
+      "mine": false
+    },
+    {
+      "team": "I Think I\u2019\u2019m Gonna Puka",
+      "owner": "cmigs",
+      "wins": 1,
+      "losses": 0,
+      "pf": 104.62,
+      "pa": 96.86,
+      "mine": false
+    },
+    {
+      "team": "Achane Magic",
+      "owner": "cdelphin",
+      "wins": 0,
+      "losses": 1,
+      "pf": 155.66,
+      "pa": 169.66,
+      "mine": false
+    },
+    {
+      "team": "Gibbs Me Liberty",
+      "owner": "Shore69",
+      "wins": 0,
+      "losses": 1,
+      "pf": 136.82,
+      "pa": 149.34,
+      "mine": false
+    },
+    {
+      "team": "Bijan Mustard",
+      "owner": "mandayotte",
+      "wins": 0,
+      "losses": 1,
+      "pf": 106.16,
+      "pa": 154.16,
+      "mine": false
+    },
+    {
+      "team": "Substation Supremacy",
+      "owner": "jffagerberg",
+      "wins": 0,
+      "losses": 1,
+      "pf": 100.66,
+      "pa": 116.0,
+      "mine": true
+    },
+    {
+      "team": "Jockstrappers",
+      "owner": "Sharkins24",
+      "wins": 0,
+      "losses": 1,
+      "pf": 96.86,
+      "pa": 104.62,
+      "mine": false
+    }
+  ],
+  "recent_moves": [
+    {
+      "type": "free_agent",
+      "week": 2,
+      "label": "Add Emmett Johnson",
+      "adds": [
+        "Emmett Johnson"
+      ],
+      "drops": [
+        "De'Zhaun Stribling"
+      ],
+      "by": [
+        "Rice Cooker"
+      ]
+    },
+    {
+      "type": "free_agent",
+      "week": 2,
+      "label": "Add Matthew Golden",
+      "adds": [
+        "Matthew Golden"
+      ],
+      "drops": [
+        "Rachaad White"
+      ],
+      "by": [
+        "Rice Cooker"
+      ]
+    },
+    {
+      "type": "waiver",
+      "week": 2,
+      "label": "Add Bhayshul Tuten",
+      "adds": [
+        "Bhayshul Tuten"
+      ],
+      "drops": [
+        "Matthew Golden"
+      ],
+      "by": [
+        "Rice Cooker"
+      ]
+    },
+    {
+      "type": "free_agent",
+      "week": 2,
+      "label": "Add San Francisco 49ers DEF",
+      "adds": [
+        "San Francisco 49ers DEF"
+      ],
+      "drops": [
+        "Jacksonville Jaguars DEF"
+      ],
+      "by": [
+        "Pitts and Giggles"
+      ]
+    },
+    {
+      "type": "free_agent",
+      "week": 2,
+      "label": "Add Aaron Jones",
+      "adds": [
+        "Aaron Jones"
+      ],
+      "drops": [
+        "Mike Washington"
+      ],
+      "by": [
+        "I Think I\u2019\u2019m Gonna Puka"
+      ]
+    },
+    {
+      "type": "trade",
+      "week": 2,
+      "label": "Trade",
+      "adds": [
+        "Ladd McConkey",
+        "Omarion Hampton",
+        "Javonte Williams"
+      ],
+      "drops": [
+        "Ladd McConkey",
+        "Omarion Hampton",
+        "Javonte Williams"
+      ],
+      "by": [
+        "Jockstrappers",
+        "Pitts and Giggles"
+      ]
+    },
+    {
+      "type": "free_agent",
+      "week": 2,
+      "label": "Drop Brian Thomas",
+      "adds": [],
+      "drops": [
+        "Brian Thomas"
+      ],
+      "by": [
+        "Pitts and Giggles"
+      ]
+    },
+    {
+      "type": "free_agent",
+      "week": 2,
+      "label": "Add Tampa Bay Buccaneers DEF",
+      "adds": [
+        "Tampa Bay Buccaneers DEF"
+      ],
+      "drops": [],
+      "by": [
+        "Jockstrappers"
+      ]
+    }
+  ],
+  "reserve_slots": 1,
+  "playoff_line": 6
+}
