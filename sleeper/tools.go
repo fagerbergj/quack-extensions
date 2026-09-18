@@ -95,11 +95,19 @@ func rosterIDForUser(rosters []sleepergen.Roster, users []sleepergen.LeagueUser,
 // to their Sleeper display name.
 func teamName(u sleepergen.LeagueUser) string {
 	if u.Metadata != nil {
-		if n, ok := (*u.Metadata)["team_name"]; ok && n != "" {
-			return n
+		if n, ok := (*u.Metadata)["team_name"]; ok {
+			if trimmed := strings.TrimSpace(n); trimmed != "" {
+				return trimmed
+			}
 		}
 	}
-	return u.DisplayName
+	return ownerName(u)
+}
+
+// ownerName trims a Sleeper display name - some carry trailing spaces
+// ("Brown Tuddies Likely "), and every render surface must agree.
+func ownerName(u sleepergen.LeagueUser) string {
+	return strings.TrimSpace(u.DisplayName)
 }
 
 // teamNames maps roster_id -> team name for a league, joining rosters (for

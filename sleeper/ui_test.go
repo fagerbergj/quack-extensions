@@ -325,7 +325,7 @@ func TestHandleArtifactsNoFixtureLeavesEmpty(t *testing.T) {
 
 func TestHandleJobsDispatchesChatIDAndAppendsTurn(t *testing.T) {
 	host := &fakeHost{artifacts: map[string]map[string][]byte{}}
-	_, r := newTestExtension(t, host.sdkHost(), config{})
+	e, r := newTestExtension(t, host.sdkHost(), config{})
 	body := strings.NewReader(`{"league_id":"` + testLeague + `","stop":"2","job":"lineup"}`)
 
 	rec := httptest.NewRecorder()
@@ -346,6 +346,28 @@ func TestHandleJobsDispatchesChatIDAndAppendsTurn(t *testing.T) {
 	}
 	if host.dispatched[0].Run.Workflow != "sleeper-lineup" {
 		t.Errorf("workflow = %q, want sleeper-lineup (bound, no planner call)", host.dispatched[0].Run.Workflow)
+	}
+	origin := host.dispatched[0].Chat.Origin
+	if origin == nil {
+		t.Fatal("Chat.Origin is nil, want a sidebar chip")
+	}
+	if origin.Extension != extensionName || origin.Kind != "lineup" || origin.Label != "Lineup · week 2" {
+		t.Errorf("origin = %+v, want extension=sleeper kind=lineup label=%q", origin, "Lineup · week 2")
+	}
+	if origin.Badge != "Roger is a Clown" {
+		t.Errorf("origin.Badge = %q, want the league name", origin.Badge)
+	}
+	if origin.Href != "/sleeper/?league_id="+testLeague+"&stop=2" {
+		t.Errorf("origin.Href = %q, want a deep link back to this stop", origin.Href)
+	}
+	if got := origin.Labels["league"]; len(got) != 1 || got[0].Value != testLeague || got[0].Display != "Roger is a Clown" {
+		t.Errorf("origin.Labels[league] = %+v, want one value=%s display=Roger is a Clown", got, testLeague)
+	}
+	if got := origin.Labels["job"]; len(got) != 1 || got[0].Value != "lineup" {
+		t.Errorf("origin.Labels[job] = %+v, want one value=lineup", got)
+	}
+	if !e.isRunning(wantChatID) {
+		t.Error("chat should be marked running right after a successful dispatch")
 	}
 
 	// A second POST for the same job/stop must target the same LocalID, so
@@ -388,79 +410,80 @@ func TestHandleJobsEveryMappedJobBindsItsWorkflow(t *testing.T) {
 	}
 }
 
-func TestHandleJobsUnmappedJobUsesPlannerPath(t *testing.T) {
-	host := &fakeHost{artifacts: map[string]map[string][]byte{}}
-	_, r := newTestExtension(t, host.sdkHost(), config{})
-	body := `{"league_id":"` + testLeague + `","stop":"2","job":"digest"}`
+// TestHandleJobsUnmappedJobsAreConflict: a job absent from jobWorkflows
+// 409s before reaching Dispatch, instead of guessing via the planner.
+func TestHandleJobsUnmappedJobsAreConflict(t *testing.T) {
+	cases := []struct{ stop, job string }{
+		{"2", "digest"}, {"2", "retro"}, {"2", "trade"}, {"draft", "draft"}, {"review", "history"},
+	}
+	for _, c := range cases {
+		t.Run(c.job, func(t *testing.T) {
+			host := &fakeHost{artifacts: map[string]map[string][]byte{}}
+			_, r := newTestExtension(t, host.sdkHost(), config{})
+			body := `{"league_id":"` + testLeague + `","stop":"` + c.stop + `","job":"` + c.job + `","args":{"partner":"Rice Cooker"}}`
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/jobs", strings.NewReader(body)))
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want 409, body = %s", rec.Code, rec.Body)
+			}
+			if len(host.dispatched) != 0 {
+				t.Errorf("dispatched %d requests, want 0", len(host.dispatched))
+			}
+		})
+	}
+}
+
+func TestHandleRunnableJobsMatchesJobWorkflows(t *testing.T) {
+	_, r := newTestExtension(t, sdk.Host{}, config{})
 	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/jobs", strings.NewReader(body)))
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/jobs", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
-	if len(host.dispatched) != 1 {
-		t.Fatalf("dispatched %d requests, want 1", len(host.dispatched))
+	var resp runnableJobsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
 	}
-	if got := host.dispatched[0].Run.Workflow; got != "" {
-		t.Errorf("digest workflow = %q, want empty (no bound shape yet)", got)
+	if len(resp.Runnable) != len(jobWorkflows) {
+		t.Fatalf("runnable = %v, want exactly jobWorkflows' keys (%d)", resp.Runnable, len(jobWorkflows))
 	}
-}
-
-func TestHandleJobsTradeRequiresPartner(t *testing.T) {
-	host := &fakeHost{artifacts: map[string]map[string][]byte{}}
-	_, r := newTestExtension(t, host.sdkHost(), config{})
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/jobs", strings.NewReader(`{"league_id":"`+testLeague+`","stop":"2","job":"trade"}`)))
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", rec.Code)
-	}
-
-	rec2 := httptest.NewRecorder()
-	body := `{"league_id":"` + testLeague + `","stop":"2","job":"trade","args":{"partner":"Rice Cooker"}}`
-	r.ServeHTTP(rec2, httptest.NewRequest(http.MethodPost, "/api/jobs", strings.NewReader(body)))
-	if rec2.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rec2.Code, rec2.Body)
-	}
-	var resp jobResponse
-	_ = json.Unmarshal(rec2.Body.Bytes(), &resp)
-	want := "ext:sleeper:" + testLeague + ":trade:Rice Cooker"
-	if resp.ChatID != want {
-		t.Errorf("chat_id = %q, want %q", resp.ChatID, want)
+	for _, job := range resp.Runnable {
+		if _, ok := jobWorkflows[job]; !ok {
+			t.Errorf("runnable lists %q, not a jobWorkflows key", job)
+		}
 	}
 }
 
-// TestHandleJobsTradeKeysOnUserIDNotName pins the dispatch side of the
-// rename-safety contract (TestHandleArtifactsRealTradeTalkDiscovery pins
-// the read side): the chat id keys on the user_id in args.partner, and
-// args.partner_name (display-only) still reaches the chat title.
-func TestHandleJobsTradeKeysOnUserIDNotName(t *testing.T) {
+// These two pin localIDFor's trade-branch directly: handleJobs' 409 gate
+// now short-circuits trade before HTTP ever reaches it.
+func TestLocalIDForTradeRequiresPartner(t *testing.T) {
+	_, _, err := localIDFor(jobRequest{LeagueID: testLeague, Stop: "2", Job: "trade"})
+	if err == nil {
+		t.Error("want an error for a trade job with no args.partner")
+	}
+}
+
+func TestLocalIDForTradeKeysOnUserIDNotName(t *testing.T) {
 	const riceCookerOwnerID = "740613226189987840"
-	host := &fakeHost{artifacts: map[string]map[string][]byte{}}
-	_, r := newTestExtension(t, host.sdkHost(), config{})
-	body := `{"league_id":"` + testLeague + `","stop":"2","job":"trade","args":{"partner":"` + riceCookerOwnerID + `","partner_name":"Rice Cooker"}}`
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/jobs", strings.NewReader(body)))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	req := jobRequest{LeagueID: testLeague, Stop: "2", Job: "trade", Args: map[string]string{"partner": riceCookerOwnerID, "partner_name": "Rice Cooker"}}
+	localID, title, err := localIDFor(req)
+	if err != nil {
+		t.Fatalf("localIDFor: %v", err)
 	}
-	var resp jobResponse
-	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
-	wantChatID := "ext:sleeper:" + testLeague + ":trade:" + riceCookerOwnerID
-	if resp.ChatID != wantChatID {
-		t.Errorf("chat_id = %q, want %q (keyed on the user_id, not the display name)", resp.ChatID, wantChatID)
-	}
-	if len(host.dispatched) != 1 {
-		t.Fatalf("dispatched %d requests, want 1", len(host.dispatched))
+	wantLocalID := testLeague + ":trade:" + riceCookerOwnerID
+	if localID != wantLocalID {
+		t.Errorf("localID = %q, want %q (keyed on the user_id, not the display name)", localID, wantLocalID)
 	}
 	wantTitle := "Sleeper trade talk with Rice Cooker"
-	if host.dispatched[0].Chat.Title != wantTitle {
-		t.Errorf("title = %q, want %q", host.dispatched[0].Chat.Title, wantTitle)
+	if title != wantTitle {
+		t.Errorf("title = %q, want %q", title, wantTitle)
 	}
 }
 
 func TestHandleJobsArgsReachTheMessage(t *testing.T) {
 	host := &fakeHost{artifacts: map[string]map[string][]byte{}}
 	_, r := newTestExtension(t, host.sdkHost(), config{})
-	body := `{"league_id":"` + testLeague + `","stop":"2","job":"trade","args":{"partner":"Rice Cooker","give":"7594,8142","get":"9997"}}`
+	body := `{"league_id":"` + testLeague + `","stop":"2","job":"waivers","args":{"partner":"Rice Cooker","give":"7594,8142","get":"9997"}}`
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/jobs", strings.NewReader(body)))
 	if rec.Code != http.StatusOK {
@@ -498,6 +521,13 @@ func TestHandleJobsTrendsAlsoDispatchesSeasonNotes(t *testing.T) {
 	}
 	if host.dispatched[1].Run.Workflow != "sleeper-season-notes" {
 		t.Errorf("season-notes workflow = %q, want sleeper-season-notes", host.dispatched[1].Run.Workflow)
+	}
+	trendsOrigin, notesOrigin := host.dispatched[0].Chat.Origin, host.dispatched[1].Chat.Origin
+	if trendsOrigin == nil || trendsOrigin.Kind != "trends" || trendsOrigin.Label != "Trends · week 2" {
+		t.Errorf("trends origin = %+v, want kind=trends label=%q", trendsOrigin, "Trends · week 2")
+	}
+	if notesOrigin == nil || notesOrigin.Kind != "season-notes" || notesOrigin.Label != "Season notes" {
+		t.Errorf("season-notes origin = %+v, want kind=season-notes label=%q", notesOrigin, "Season notes")
 	}
 }
 

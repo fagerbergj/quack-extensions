@@ -50,6 +50,25 @@ func TestFactorySeasonValidation(t *testing.T) {
 	}
 }
 
+// TestUIDescriptor pins the nav entry quack's rail renders: an inline SVG
+// icon (not a name quack has to ship/recognize), themed via currentColor.
+func TestUIDescriptor(t *testing.T) {
+	e := &extension{}
+	got := e.UI()
+	if got.Href != "/sleeper/" {
+		t.Errorf("Href = %q, want /sleeper/", got.Href)
+	}
+	if got.Title != "Sleeper" {
+		t.Errorf("Title = %q, want Sleeper", got.Title)
+	}
+	if !strings.HasPrefix(got.Icon, "<svg") {
+		t.Errorf("Icon = %q, want it to start with <svg", got.Icon)
+	}
+	if !strings.Contains(got.Icon, `fill="currentColor"`) {
+		t.Error(`Icon must carry fill="currentColor" so it follows the rail's theme`)
+	}
+}
+
 // wantToolCount is every sleeper_* tool this slice registers.
 const wantToolCount = 12
 

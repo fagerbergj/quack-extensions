@@ -152,7 +152,7 @@ func buildSide(league *sleepergen.League, m sleepergen.Matchup, rosters []sleepe
 	}
 	record := ""
 	if r, ok := rosterFor(rosters, m.RosterId); ok {
-		record = fmt.Sprintf("%d-%d-%d", r.Settings["wins"], r.Settings["losses"], r.Settings["ties"])
+		record = recordString(r.Settings["wins"], r.Settings["losses"], r.Settings["ties"])
 	}
 	return side{RosterID: m.RosterId, Team: names[m.RosterId], Record: record, Points: m.Points, Starters: starters}
 }

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/fagerbergj/quack-extensions/sdk"
 	"github.com/go-chi/chi/v5"
@@ -75,11 +76,18 @@ type extension struct {
 	host   sdk.Host
 	cfg    config
 	client *Client
+
+	// runningMu guards running: the set of global chat ids dispatched by a
+	// job/season-notes run that hasn't RunEnded yet (in-memory only - see
+	// RunEnded's doc comment on why a restart losing this is acceptable).
+	runningMu sync.Mutex
+	running   map[string]struct{}
 }
 
 var (
-	_ sdk.Extension = (*extension)(nil)
-	_ sdk.UI        = (*extension)(nil)
+	_ sdk.Extension   = (*extension)(nil)
+	_ sdk.UI          = (*extension)(nil)
+	_ sdk.RunObserver = (*extension)(nil)
 )
 
 // Tools returns the read-only agent tools over the Sleeper client (issue #93).

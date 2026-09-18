@@ -25,7 +25,8 @@ const state = {
   seasonKey: null, // selected season string
   stop: qs.get('stop') || null,
   talkIdx: 0,
-  running: new Set(), // job ids currently polling
+  running: new Set(),      // job ids the server currently reports running
+  runnableJobs: new Set(), // job ids with an agent bound (GET /api/jobs)
   // "<season>:<stop>" -> artifact count, filled in as stops are visited (no
   // bulk endpoint exists to precompute every stop's dots up front).
   stopFoundCounts: {},
@@ -60,11 +61,29 @@ async function loadSeason() {
   if (!state.stop) state.stop = state.seasonKey === state.seasons.current_season ? String(state.season.league.week_now) : 'review'
 }
 
+async function loadRunnableJobs() {
+  const resp = await jget('api/jobs')
+  state.runnableJobs = new Set(resp.runnable || [])
+}
+
+// syncRunningFromServer resumes the Running badge (and polling) for any job
+// the server still reports running - fixes losing it on reload/navigation.
+function syncRunningFromServer() {
+  for (const [job, env] of Object.entries(state.artifacts.jobs || {})) {
+    if (env.running && !state.running.has(job)) { state.running.add(job); pollFor(job) }
+  }
+  if ((state.artifacts.talks || []).some(t => t.running) && !state.running.has('trade')) {
+    state.running.add('trade')
+    pollFor('trade')
+  }
+}
+
 async function loadArtifacts() {
   state.artifacts = await jget(`api/artifacts?league_id=${encodeURIComponent(state.leagueID)}&stop=${encodeURIComponent(state.stop)}`)
   state.talkIdx = Math.min(state.talkIdx, Math.max(0, (state.artifacts.talks || []).length - 1))
   const found = Object.values(state.artifacts.jobs || {}).filter(j => j.found).length
   state.stopFoundCounts[`${state.seasonKey}:${state.stop}`] = found
+  syncRunningFromServer()
 }
 
 function isCurrentSeason() { return state.seasonKey === state.seasons.current_season }
@@ -77,7 +96,7 @@ function jobEnvelope(job, title) {
   const what = state.stop === 'draft' ? `the ${state.seasonKey} draft` : state.stop === 'review' ? `${state.seasonKey}` : `week ${state.stop}`
   return {
     job: job.id, title: title || job.name, agent: job.agent, what,
-    running: state.running.has(job.id), found,
+    running: state.running.has(job.id), found, runnable: state.runnableJobs.has(job.id),
     example: !!a?.example, status: state.running.has(job.id) ? 'running' : found ? 'done' : 'not_run',
     chatHref: found ? `/chat/ext:sleeper:${state.leagueID}:${state.stop}:${job.id}` : undefined,
     data: a?.data,
@@ -90,8 +109,8 @@ function renderHeader() {
   const s = state.season
   $('league-name').textContent = s.league.name
   $('league-sub').textContent = isCurrentSeason()
-    ? `${s.me?.team ?? ''} · ${s.me ? `${s.me.wins}-${s.me.losses}` : ''} · ${s.me?.owner ?? ''} · ${s.league.season} season, week ${s.league.week_now} in progress`
-    : `${s.me?.team ?? ''} · ${s.me ? `${s.me.wins}-${s.me.losses}` : ''} · ${s.league.season} season, complete`
+    ? `${s.me?.team ?? ''} · ${s.me ? R.record(s.me) : ''} · ${s.me?.owner ?? ''} · ${s.league.season} season, week ${s.league.week_now} in progress`
+    : `${s.me?.team ?? ''} · ${s.me ? R.record(s.me) : ''} · ${s.league.season} season, complete`
   $('league-facts').innerHTML = (s.facts || []).map(f => `<span class="qk-chip">${R.esc(f)}</span>`).join('')
 }
 
@@ -108,16 +127,20 @@ function renderRail() {
   $('rail').innerHTML = R.renderTimeline(state.stop, weekNow(), isCurrentSeason(), counts)
 }
 
+// notRunnableTitle is the disabled-button tooltip for a job with no agent
+// bound yet (#C) - undefined lets renderMenuList skip the attribute.
+function notRunnableTitle(job) { return state.runnableJobs.has(job) ? undefined : 'no agent bound yet' }
+
 function renderMenu() {
   const list = $('menu-list')
   if (state.stop === 'draft') {
     const label = isCurrentSeason() ? 'Re-grade this draft' : 'Re-run draft report card'
-    list.innerHTML = R.renderMenuList(`${state.seasonKey} draft`, [{ job: 'draft', label, agent: DRAFT_JOB.agent }])
+    list.innerHTML = R.renderMenuList(`${state.seasonKey} draft`, [{ job: 'draft', label, agent: DRAFT_JOB.agent, disabled: !state.runnableJobs.has('draft'), title: notRunnableTitle('draft') }])
     return
   }
   if (state.stop === 'review') {
     const label = isCurrentSeason() ? 'Available after week 17' : 'Re-run season review'
-    list.innerHTML = R.renderMenuList(`${state.seasonKey} review`, [{ job: 'history', label, agent: REVIEW_JOB.agent, disabled: isCurrentSeason() }])
+    list.innerHTML = R.renderMenuList(`${state.seasonKey} review`, [{ job: 'history', label, agent: REVIEW_JOB.agent, disabled: isCurrentSeason() || !state.runnableJobs.has('history'), title: notRunnableTitle('history') }])
     return
   }
   const past = isPastWeek()
@@ -127,7 +150,7 @@ function renderMenu() {
   const items = jobs.map(j => {
     const env = jobEnvelope(j)
     const label = (env.running ? 'Running ' : env.found ? 'Re-run ' : 'Run ') + j.name.toLowerCase()
-    return { job: j.id, label, agent: j.agent, running: env.running }
+    return { job: j.id, label, agent: j.agent, running: env.running, disabled: !env.runnable, title: notRunnableTitle(j.id) }
   })
   list.innerHTML = R.renderMenuList(`${state.seasonKey} · week ${state.stop}`, items)
 }
@@ -179,7 +202,8 @@ async function loadReviewHistory() {
 }
 
 function currentSide() {
-  const notesEnv = { title: 'Season notes', agent: 'trend-scout', found: !!state.artifacts.season_notes?.found, example: !!state.artifacts.season_notes?.example, data: state.artifacts.season_notes?.data, invalid: !!state.artifacts.season_notes?.invalid, text: state.artifacts.season_notes?.text, status: state.artifacts.season_notes?.found ? 'done' : 'not_run' }
+  const found = !!state.artifacts.season_notes?.found
+  const notesEnv = { title: 'Season notes', agent: 'trend-scout', found, example: !!state.artifacts.season_notes?.example, data: state.artifacts.season_notes?.data, invalid: !!state.artifacts.season_notes?.invalid, text: state.artifacts.season_notes?.text, status: found ? 'done' : 'not_run', chatHref: found ? `/chat/ext:sleeper:${state.leagueID}:season-notes` : undefined }
   return R.renderStandingsSide(state.season) + R.renderSeasonNotes(notesEnv) + R.renderMovesSide(state.season)
 }
 
@@ -280,19 +304,25 @@ function mainHasOpenState() {
   return !!document.getElementById('main')?.querySelector('details[open]')
 }
 
-// Dispatch is async; poll the artifacts route until the job's artifact
-// shows up or a bound on attempts is hit (a stuck run must not poll forever).
+// pollTimers dedupes: syncRunningFromServer can call pollFor for a job a
+// click already started polling (or vice versa on the next load tick).
+const pollTimers = new Map()
+
+// Dispatch is async; poll until the server-side running flag clears (not
+// "found" - that fires before the run actually ends) or attempts run out.
 function pollFor(job) {
+  if (pollTimers.has(job)) return
   let attempts = 0
   const timer = setInterval(async () => {
     attempts++
     try { await loadArtifacts() } catch { /* keep polling; a transient fetch error isn't fatal */ }
-    const found = job === 'trade'
-      ? (state.artifacts.talks || []).some(t => t.found)
-      : !!(state.artifacts.jobs || {})[job]?.found
-    const done = found || attempts >= 20
+    const running = job === 'trade'
+      ? (state.artifacts.talks || []).some(t => t.running)
+      : !!(state.artifacts.jobs || {})[job]?.running
+    const done = !running || attempts >= 20
     if (done) {
       clearInterval(timer)
+      pollTimers.delete(job)
       state.running.delete(job)
     }
     renderMenu()
@@ -300,6 +330,7 @@ function pollFor(job) {
     // form/details - the guard exists only to protect an in-progress poll.
     if (done || !mainHasOpenState()) renderMain()
   }, 3000)
+  pollTimers.set(job, timer)
 }
 
 document.addEventListener('click', e => {
@@ -317,6 +348,7 @@ document.addEventListener('change', e => {
 
 async function boot() {
   try {
+    await loadRunnableJobs()
     await loadSeasons()
     await refresh()
   } catch (err) {

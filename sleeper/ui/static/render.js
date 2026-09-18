@@ -23,6 +23,10 @@ export const isSafeHref = url => /^https?:\/\//i.test(String(url ?? ''))
 // path enforces it, so a string value would otherwise pass esc()-free.
 export const int = n => (n != null && Number.isFinite(Number(n)) ? Number(n) : '')
 
+// Ties only when non-zero - mirrors sleeper.recordString (Go) so a team's
+// record never disagrees between the header and any per-team row.
+export const record = t => (t?.ties ? `${int(t.wins) || 0}-${int(t.losses) || 0}-${int(t.ties) || 0}` : `${int(t?.wins) || 0}-${int(t?.losses) || 0}`)
+
 // A Sleeper player_id is all digits; a DEF's id is its team code (e.g.
 // "NE") and has no player thumbnail, only a team logo.
 export function avatarUrl(id) {
@@ -84,9 +88,19 @@ export function jobHead(meta) {
   return `<div class="sl-sec__head"><h2>${esc(meta.title)}</h2><div class="sl-sec__meta">${m}</div></div>`
 }
 
-export function emptyBody(job, jobLabel, what, running) {
+// emptyNoun is the fixed, job-general noun for the "not run yet" copy - the
+// heading (jobHead) already carries the week/stop, so this must not repeat it.
+const emptyNoun = {
+  lineup: 'start / sit', waivers: 'waivers', trade: 'trade talks',
+  digest: 'preview', trends: 'trends and news', retro: 'hindsight',
+  draft: 'draft analysis', history: 'season review',
+}
+
+export function emptyBody(job, jobLabel, what, running, runnable = true) {
   if (running) return `<div class="sl-sec__body sl-empty"><span>${esc(jobLabel)} is working on ${esc(what)}. The card fills in when the run finishes.</span></div>`
-  return `<div class="sl-sec__body sl-empty"><span>No ${esc(jobLabel.toLowerCase())} for ${esc(what)} yet.</span><button class="qk-btn qk-btn--primary" data-run="${esc(job)}">Run ${esc(jobLabel.toLowerCase())}</button></div>`
+  const noun = emptyNoun[job] || jobLabel.toLowerCase()
+  const attrs = runnable ? '' : ' disabled title="no agent bound yet"'
+  return `<div class="sl-sec__body sl-empty"><span>No ${esc(noun)} yet.</span><button class="qk-btn qk-btn--primary" data-run="${esc(job)}"${attrs}>Run ${esc(noun)}</button></div>`
 }
 
 export function section(id, inner) {
@@ -103,7 +117,7 @@ export function invalidBody(text) {
 export function renderLineup(state) {
   const head = jobHead(state)
   if (state.invalid) return section('sec-lineup', head + invalidBody(state.text))
-  if (!state.found) return section('sec-lineup', head + emptyBody(state.job, state.title, state.what, state.running))
+  if (!state.found) return section('sec-lineup', head + emptyBody(state.job, state.title, state.what, state.running, state.runnable))
   const d = state.data
   const rows = d.starters.map(row => `<tr title="${esc(row.why || '')}"><td>${esc(row.slot)}</td><td class="cell">${personHTML(row.player)}</td><td class="num">${num(row.proj)}</td><td>${verdictBadge(row.verdict, row.confidence, row.why)}</td></tr>`).join('')
   const benchRows = (d.bench || []).map(b => `<tr title="${esc(b.why || '')}"><td>BN</td><td class="cell">${personHTML(b.player)}</td><td class="num">${num(b.proj)}</td><td>${verdictBadge('sit', null, b.why)}</td></tr>`).join('')
@@ -122,7 +136,7 @@ export function renderLineup(state) {
 export function renderWaivers(state) {
   const head = jobHead(state)
   if (state.invalid) return section('sec-waivers', head + invalidBody(state.text))
-  if (!state.found) return section('sec-waivers', head + emptyBody(state.job, state.title, state.what, state.running))
+  if (!state.found) return section('sec-waivers', head + emptyBody(state.job, state.title, state.what, state.running, state.runnable))
   const d = state.data
   const rows = d.candidates.map(c => `<tr><td>${int(c.rank)}</td><td class="cell">${personHTML(c.player)}<div class="why">${esc(c.why || '')}</div></td><td class="num">${num(c.proj)}</td><td class="num">${c.owned_pct == null ? '–' : num(c.owned_pct, 0) + '%'}</td><td class="num">${c.adds_24h ? int(c.adds_24h).toLocaleString() : '–'}</td><td>${esc(c.drop || '')}</td></tr>`).join('')
   return section('sec-waivers', head + `<div class="sl-sec__body">
@@ -139,9 +153,15 @@ function tradeOption(p) {
   return `<option value="${esc(p.id)}">${esc(p.name)} · ${esc(p.pos || '')} · ${num(p.proj)}</option>`
 }
 
-function tradeFinder(suggestions) {
+// runAttrs disables a Run action with a tooltip when its job has no agent
+// bound yet (#C) - reused everywhere a trade button can trigger a dispatch.
+function runAttrs(runnable) {
+  return runnable ? '' : ' disabled title="no agent bound yet"'
+}
+
+function tradeFinder(suggestions, runnable = true) {
   if (!suggestions?.length) return ''
-  return `<h3 class="sl-h3">Suggested trades <span class="qk-badge">Example</span></h3><ul class="sl-finds">${suggestions.map(f => `<li><div><b>${esc(f.partner)}</b> <span class="sl-keep">${esc(f.partner_owner || '')}${f.record ? ' · ' + esc(f.record) : ''}</span><div class="sl-keep">Give ${esc(f.give.name)} (${num(f.give_proj)}) for ${esc(f.get.name)} (${num(f.get_proj)}). ${esc(f.note || '')}</div></div><button class="qk-btn" data-run="trade" data-partner="${esc(f.partner_id || f.partner)}" data-partner-name="${esc(f.partner)}">Start talk</button></li>`).join('')}</ul>`
+  return `<h3 class="sl-h3">Suggested trades <span class="qk-badge">Example</span></h3><ul class="sl-finds">${suggestions.map(f => `<li><div><b>${esc(f.partner)}</b> <span class="sl-keep">${esc(f.partner_owner || '')}${f.record ? ' · ' + esc(f.record) : ''}</span><div class="sl-keep">Give ${esc(f.give.name)} (${num(f.give_proj)}) for ${esc(f.get.name)} (${num(f.get_proj)}). ${esc(f.note || '')}</div></div><button class="qk-btn" data-run="trade" data-partner="${esc(f.partner_id || f.partner)}" data-partner-name="${esc(f.partner)}"${runAttrs(runnable)}>Start talk</button></li>`).join('')}</ul>`
 }
 
 function talkPartnerSelect(partners) {
@@ -159,36 +179,37 @@ export function renderTrade(state, talks, talkIdx, partners) {
   const head = jobHead(state)
   const anyFound = talks.some(t => t.found)
   const suggestions = talks.find(t => t.found)?.data?.suggestions
+  const runnable = state.runnable !== false
   if (!anyFound) {
     // The talkbar (partner select + New talk) is the only way to start a
     // FIRST talk when no suggestions exist yet, so it has to render here too.
     return section('sec-trade', head + `<div class="sl-sec__body">
-    <div class="sl-talkbar">${talkPartnerSelect(partners)}<button class="qk-btn qk-btn--primary" data-run="trade">New talk</button></div>
-    ${tradeFinder(suggestions)}<div class="sl-empty" style="margin-top:1rem"><span>No trades talked yet - one opens as soon as you or a partner starts one.</span></div></div>`)
+    <div class="sl-talkbar">${talkPartnerSelect(partners)}<button class="qk-btn qk-btn--primary" data-run="trade"${runAttrs(runnable)}>New talk</button></div>
+    ${tradeFinder(suggestions, runnable)}<div class="sl-empty" style="margin-top:1rem"><span>Pick a team and start a talk.</span></div></div>`)
   }
   const cur = talks[Math.min(talkIdx, talks.length - 1)]
   const options = talks.map((t, i) => `<option value="${i}" ${i === talkIdx ? 'selected' : ''}>${esc(t.partner)} · ${esc(t.status || (t.found ? 'open' : 'new'))} · ${t.data?.offers?.length ?? 0} offer${(t.data?.offers?.length ?? 0) === 1 ? '' : 's'}</option>`).join('')
-  const talkbar = `<div class="sl-talkbar"><label for="talk-select" class="sl-keep" style="font-size:.75rem">Talk</label><select id="talk-select" class="sl-select">${options}</select>${talkPartnerSelect(partners)}<button class="qk-btn" data-run="trade">New talk</button></div>`
+  const talkbar = `<div class="sl-talkbar"><label for="talk-select" class="sl-keep" style="font-size:.75rem">Talk</label><select id="talk-select" class="sl-select">${options}</select>${talkPartnerSelect(partners)}<button class="qk-btn" data-run="trade"${runAttrs(runnable)}>New talk</button></div>`
   if (cur.invalid) return section('sec-trade', head + `<div class="sl-sec__body">${talkbar}</div>` + invalidBody(cur.text))
   const d = cur.data
   const offers = d?.offers?.length
     ? d.offers.map(o => `<li class="sl-offer ${o.by === 'You' ? 'mine' : ''}"><div class="sl-offer__who"><b>${esc(o.by)}</b>${esc(o.when)}</div><div><div class="sl-sides">${tradeSide('You give', o.give)}${tradeSide('You get', o.get)}</div><p class="sl-eval"><span class="qk-badge ${o.verdict === 'send' ? 'qk-badge--ok' : o.verdict === 'decline' ? 'qk-badge--err' : 'qk-badge--warn'}">${esc(o.verdict)}</span> <b>${esc(o.delta)}</b> · ${esc(o.why)}</p></div></li>`).join('')
     : `<li class="sl-empty">No offers yet.</li>`
   const compose = d
-    ? `<form class="sl-compose" id="compose" data-partner="${esc(cur.partner)}"><div><label for="give">You give</label><select id="give" class="sl-select sl-multi" multiple size="5">${(d.my_roster || []).map(tradeOption).join('')}</select></div><div><label for="get">You get from ${esc(cur.partner)}</label><select id="get" class="sl-select sl-multi" multiple size="5">${(d.partner_roster || []).map(tradeOption).join('')}</select></div><button class="qk-btn qk-btn--primary" data-run="trade" data-partner="${esc(cur.partner_id)}" data-partner-name="${esc(cur.partner)}" type="button">Evaluate counter</button></form>`
+    ? `<form class="sl-compose" id="compose" data-partner="${esc(cur.partner)}"><div><label for="give">You give</label><select id="give" class="sl-select sl-multi" multiple size="5">${(d.my_roster || []).map(tradeOption).join('')}</select></div><div><label for="get">You get from ${esc(cur.partner)}</label><select id="get" class="sl-select sl-multi" multiple size="5">${(d.partner_roster || []).map(tradeOption).join('')}</select></div><button class="qk-btn qk-btn--primary" data-run="trade" data-partner="${esc(cur.partner_id)}" data-partner-name="${esc(cur.partner)}" type="button"${runAttrs(runnable)}>Evaluate counter</button></form>`
     : ''
   return section('sec-trade', head + `<div class="sl-sec__body">
     ${talkbar}
     <ul class="sl-offers">${offers}</ul>
     ${compose}
-    <div style="margin-top:1.25rem;padding-top:1rem;border-top:1px solid var(--qk-border)">${tradeFinder(suggestions)}</div>
+    <div style="margin-top:1.25rem;padding-top:1rem;border-top:1px solid var(--qk-border)">${tradeFinder(suggestions, runnable)}</div>
     <p class="sl-src">One chat per talk; every offer or counter is a new turn, so the analyst keeps the whole negotiation in context.</p></div>`)
 }
 
 export function renderDigest(state) {
   const head = jobHead(state)
   if (state.invalid) return section('sec-digest', head + invalidBody(state.text))
-  if (!state.found) return section('sec-digest', head + emptyBody(state.job, state.title, state.what, state.running))
+  if (!state.found) return section('sec-digest', head + emptyBody(state.job, state.title, state.what, state.running, state.runnable))
   const d = state.data
   const rows = d.games.map(g => `<tr class="${g.mine ? 'sl-mine' : ''}"><td>${esc(g.home)}</td><td class="num">${num(g.home_pts, 2)}</td><td class="num">${num(g.away_pts, 2)}</td><td>${esc(g.away)}</td><td class="num">${num(g.margin, 2)}</td><td>${esc(g.top_scorers || '')}</td></tr>`).join('')
   return section('sec-digest', head + `<div class="sl-sec__body">
@@ -200,7 +221,7 @@ export function renderDigest(state) {
 export function renderTrends(state) {
   const head = jobHead(state)
   if (state.invalid) return section('sec-trends', head + invalidBody(state.text))
-  if (!state.found) return section('sec-trends', head + emptyBody(state.job, state.title, state.what, state.running))
+  if (!state.found) return section('sec-trends', head + emptyBody(state.job, state.title, state.what, state.running, state.runnable))
   const d = state.data
   const items = d.items.map(i => {
     const who = i.player ? `<span class="sl-p">${avatarHTML(i.player, true)}<span><b>${esc(i.player.name)}</b> ${esc(i.text)}</span></span>` : (isSafeHref(i.link) ? `${esc(i.text)} <a href="${esc(i.link)}" target="_blank" rel="noopener">source</a>` : esc(i.text))
@@ -213,7 +234,7 @@ export function renderTrends(state) {
 export function renderRetro(state) {
   const head = jobHead(state)
   if (state.invalid) return section('sec-retro', head + invalidBody(state.text))
-  if (!state.found) return section('sec-retro', head + emptyBody(state.job, state.title, state.what, state.running))
+  if (!state.found) return section('sec-retro', head + emptyBody(state.job, state.title, state.what, state.running, state.runnable))
   const r = state.data
   const misses = (r.misses || []).map(m => `<tr><td>${esc(m.slot)}</td><td>${esc(m.started_name)}</td><td class="num">${num(m.started_pts, 2)}</td><td>${esc(m.better_name)}</td><td class="num">${num(m.better_pts, 2)}</td><td class="num">+${num(m.swing, 2)}</td></tr>`).join('')
   const swing = r.left >= Math.abs((r.opp ?? 0) - r.started) && !r.won
@@ -226,7 +247,7 @@ export function renderRetro(state) {
 export function renderDraftBoard(state) {
   const head = jobHead(state)
   if (state.invalid) return section('sec-draft', head + invalidBody(state.text))
-  if (!state.found) return section('sec-draft', head + emptyBody(state.job, state.title, state.what, state.running))
+  if (!state.found) return section('sec-draft', head + emptyBody(state.job, state.title, state.what, state.running, state.runnable))
   const d = state.data
   if (d.report_card) return renderDraftReportCard(state)
   const slots = Object.keys(d.slots).map(Number).sort((a, b) => a - b)
@@ -252,7 +273,7 @@ export function renderDraftBoard(state) {
 export function renderDraftReportCard(state) {
   const head = jobHead(state)
   if (state.invalid) return section('sec-draft', head + invalidBody(state.text))
-  if (!state.found) return section('sec-draft', head + emptyBody(state.job, state.title, state.what, state.running))
+  if (!state.found) return section('sec-draft', head + emptyBody(state.job, state.title, state.what, state.running, state.runnable))
   const d = state.data
   const rows = (d.report_card || []).map(c => `<tr><td class="num">${int(c.round)}</td><td class="num">${int(c.pick)}</td><td><span class="sl-p">${avatarHTML(c.player, true)}<span>${esc(c.player.name)} <span class="sl-keep">${esc(c.player.pos || '')}</span></span></span></td><td class="num">${esc(c.drafted_as || '')}</td><td class="num">${esc(c.finished || '–')}</td><td class="num">${num(c.pts, 1)}</td><td><span class="qk-badge ${c.verdict === 'steal' ? 'qk-badge--ok' : c.verdict === 'reach' ? 'qk-badge--err' : ''}">${esc(c.verdict)}</span></td></tr>`).join('')
   const reaches = (d.report_card || []).filter(c => c.verdict === 'reach').length
@@ -267,7 +288,7 @@ export function renderDraftReportCard(state) {
 export function renderDraftSide(state) {
   const head = jobHead(state)
   if (state.invalid) return section('draft-side', head + invalidBody(state.text))
-  if (!state.found) return section('draft-side', head + emptyBody(state.job, state.title, state.what, state.running))
+  if (!state.found) return section('draft-side', head + emptyBody(state.job, state.title, state.what, state.running, state.runnable))
   const d = state.data
   if (!d.clock && !d.plan) return ''
   let html = ''
@@ -315,7 +336,10 @@ export function renderCrossSeason(x) {
 
 export function renderStandingsSide(season) {
   const s = season.standings || []
-  return section('side-standings', `<div class="sl-sec__head"><h2>Standings</h2><span class="sl-sec__meta">${int(season.playoff_line) || 6} make the playoffs</span></div><div class="sl-sec__body"><ol class="sl-rows">${s.map((t, i) => `<li class="${i === (int(season.playoff_line) || 6) - 1 ? 'line' : ''}"><span class="rank">${i + 1}</span><span class="main"><b>${esc(t.team)}${t.mine ? ' <span class="qk-badge">you</span>' : ''}</b><span>${esc(t.owner)}</span></span><span class="n"><b>${int(t.wins)}-${int(t.losses)}</b>${num(t.pf, 2)}</span></li>`).join('')}</ol></div>`)
+  const playoffLine = int(season.playoff_line) || 6
+  // The dashed marker sits on the row AFTER the last playoff team (border-top
+  // on that row draws it below team #playoffLine, not above it).
+  return section('side-standings', `<div class="sl-sec__head"><h2>Standings</h2><span class="sl-sec__meta">${playoffLine} make the playoffs</span></div><div class="sl-sec__body"><ol class="sl-rows">${s.map((t, i) => `<li class="${i === playoffLine ? 'line' : ''}"><span class="rank">${i + 1}</span><span class="main"><b>${esc(t.team)}${t.mine ? ' <span class="qk-badge">you</span>' : ''}</b><span>${esc(t.owner)}</span></span><span class="n"><b>${record(t)}</b>${num(t.pf, 2)}</span></li>`).join('')}</ol></div>`)
 }
 
 export function renderMovesSide(season) {
@@ -323,8 +347,8 @@ export function renderMovesSide(season) {
   return section('side-moves', `<div class="sl-sec__head"><h2>Recent moves</h2></div><div class="sl-sec__body"><ul class="sl-rows">${m.map(t => `<li class="two"><span class="main"><b>${esc(t.label)}</b><span>${esc((t.by || []).join(' and '))}</span></span><span class="n">wk ${int(t.week)}</span></li>`).join('')}</ul></div>`)
 }
 
-export function emptyState(job, title, agent, what) {
-  return section(`sec-${job}`, jobHead({ title, agent, status: 'not_run' }) + emptyBody(job, title, what, false))
+export function emptyState(job, title, agent, what, runnable = true) {
+  return section(`sec-${job}`, jobHead({ title, agent, status: 'not_run' }) + emptyBody(job, title, what, false, runnable))
 }
 
 // artifactCounts: {stop: number of artifacts found}, for the rail's dots.
@@ -348,7 +372,7 @@ export function renderYears(seasons, currentSeason) {
 // body, pulled out of main.js's renderMenu so it (and the whole menu) can
 // be storied without live app state.
 export function renderMenuList(heading, items) {
-  const rows = items.map(i => `<li><button data-run="${esc(i.job)}" ${i.disabled || i.running ? 'disabled' : ''}>${esc(i.label)}<span>${esc(i.agent || '')}</span></button></li>`).join('')
+  const rows = items.map(i => `<li><button data-run="${esc(i.job)}" ${i.disabled || i.running ? 'disabled' : ''}${i.title ? ` title="${esc(i.title)}"` : ''}>${esc(i.label)}<span>${esc(i.agent || '')}</span></button></li>`).join('')
   return `<li class="hd">${esc(heading)}</li>${rows}`
 }
 
