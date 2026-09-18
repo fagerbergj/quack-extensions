@@ -5,6 +5,7 @@ package sleeper
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 
 	"github.com/fagerbergj/quack-extensions/sdk"
@@ -55,19 +56,54 @@ func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
 		return nil, fmt.Errorf("sleeper: season must not be negative, got %d", cfg.Season)
 	}
 
-	return &extension{host: host, cfg: cfg}, nil
+	client, err := NewClient(sleeperBaseURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("sleeper: new client: %w", err)
+	}
+	return &extension{host: host, cfg: cfg, client: client}, nil
 }
 
+// sleeperBaseURL is the production API; tests build an extension directly
+// with a Client pointed at cmd/qa-mock instead of going through factory.
+const sleeperBaseURL = "https://api.sleeper.app"
+
 type extension struct {
-	host sdk.Host
-	cfg  config
+	host   sdk.Host
+	cfg    config
+	client *Client
 }
 
 var _ sdk.Extension = (*extension)(nil)
 
-// Tools returns nil until the tool slice lands (issue #93 covers only the
-// generated client and fixtures).
-func (e *extension) Tools() []tool.Tool { return nil }
+// Tools returns the read-only agent tools over the Sleeper client (issue #93).
+func (e *extension) Tools() []tool.Tool {
+	return []tool.Tool{
+		e.userTool(),
+		e.leagueTool(),
+		e.rosterTool(),
+		e.matchupTool(),
+		e.standingsTool(),
+		e.transactionsTool(),
+		e.freeAgentsTool(),
+		e.playerTool(),
+		e.scheduleTool(),
+		e.trendsTool(),
+		e.draftTool(),
+		e.historyTool(),
+	}
+}
 
 // RegisterRoutes is a no-op until the UI slice adds authed routes.
 func (e *extension) RegisterRoutes(authed chi.Router, public chi.Router) {}
+
+var _ sdk.Starter = (*extension)(nil)
+
+// Start runs the daily snapshot ticker when configured; it only ever
+// fetches, never dispatches. No default_league means nothing to snapshot.
+func (e *extension) Start(ctx context.Context) error {
+	if e.cfg.Snapshots != "daily" || e.cfg.DefaultLeague == "" {
+		return nil
+	}
+	go e.runSnapshotTicker(ctx)
+	return nil
+}
