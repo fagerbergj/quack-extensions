@@ -1,5 +1,5 @@
-// bestLineupPoints: fill strict-position slots with top scorers, then each
-// FLEX kind narrowest-to-widest from the best remaining eligible players.
+// bestLineupPoints fills strict-position slots with top scorers, then
+// solves the leftover flex slots as a max-weight bipartite assignment.
 package sleeper
 
 import (
@@ -8,8 +8,7 @@ import (
 	"github.com/fagerbergj/quack-extensions/sleeper/sleepergen"
 )
 
-// flexKindOrder: narrowest eligibility first - each kind's set nests in
-// the next, so an exchange argument makes narrowest-first-widest-last optimal.
+// flexKindOrder: every FLEX kind slotCounts recognizes.
 var flexKindOrder = []string{"WRRB_FLEX", "REC_FLEX", "FLEX", "SUPER_FLEX"}
 
 var flexKindEligible = map[string][]string{
@@ -24,7 +23,7 @@ func bestLineupPoints(rosterPositions []string, playerIDs []string, points map[s
 	byPos := groupByPosition(playerIDs, dump)
 	// Seed every candidate as flex-eligible leftover first - a position
 	// with no strict slot (e.g. TE in a QB/RB/WR/FLEX league) must still
-	// reach fillFlexKind, not just whatever counts happens to name.
+	// reach the flex solver, not just whatever counts happens to name.
 	leftover := map[string][]string{}
 	for pos, ids := range byPos {
 		leftover[pos] = sortedByPoints(ids, points)
@@ -40,47 +39,78 @@ func bestLineupPoints(rosterPositions []string, playerIDs []string, points map[s
 		}
 		leftover[pos] = group[n:]
 	}
+	return total + fillFlexSlots(flexCounts, leftover, points)
+}
+
+// flexCandidate is one leftover player eligible for at least one flex slot.
+type flexCandidate struct {
+	id  string
+	pos string
+}
+
+// fillFlexSlots solves every flex slot as one joint assignment, not
+// kind-by-kind, so a player eligible for two crossing kinds isn't wasted.
+func fillFlexSlots(flexCounts map[string]int, leftover map[string][]string, points map[string]float32) float32 {
+	var slotKinds []string
 	for _, kind := range flexKindOrder {
-		n := flexCounts[kind]
-		if n == 0 {
-			continue
-		}
-		total += fillFlexKind(kind, n, leftover, points)
-	}
-	return total
-}
-
-// fillFlexKind takes the top n players across kind's eligible positions'
-// current leftovers, and removes them so a wider flex kind can't reuse them.
-func fillFlexKind(kind string, n int, leftover map[string][]string, points map[string]float32) float32 {
-	var pool []string
-	for _, pos := range flexKindEligible[kind] {
-		pool = append(pool, leftover[pos]...)
-	}
-	pool = sortedByPoints(pool, points)
-	if n > len(pool) {
-		n = len(pool)
-	}
-	taken := map[string]bool{}
-	var total float32
-	for _, id := range pool[:n] {
-		total += points[id]
-		taken[id] = true
-	}
-	for _, pos := range flexKindEligible[kind] {
-		leftover[pos] = removeIDs(leftover[pos], taken)
-	}
-	return total
-}
-
-func removeIDs(ids []string, remove map[string]bool) []string {
-	out := ids[:0]
-	for _, id := range ids {
-		if !remove[id] {
-			out = append(out, id)
+		for i := 0; i < flexCounts[kind]; i++ {
+			slotKinds = append(slotKinds, kind)
 		}
 	}
-	return out
+	if len(slotKinds) == 0 {
+		return 0
+	}
+	posSet := map[string]bool{}
+	for _, kind := range slotKinds {
+		for _, pos := range flexKindEligible[kind] {
+			posSet[pos] = true
+		}
+	}
+	var candidates []flexCandidate
+	for pos := range posSet {
+		for _, id := range leftover[pos] {
+			candidates = append(candidates, flexCandidate{id: id, pos: pos})
+		}
+	}
+	return maxWeightAssignment(slotKinds, candidates, points)
+}
+
+// maxWeightAssignment bitmask-DPs the best assignment of distinct
+// candidates to slotKinds (a slot may go unfilled); exact, not greedy.
+func maxWeightAssignment(slotKinds []string, candidates []flexCandidate, points map[string]float32) float32 {
+	memo := map[uint64]float32{}
+	var solve func(slotIdx int, used uint32) float32
+	solve = func(slotIdx int, used uint32) float32 {
+		if slotIdx == len(slotKinds) {
+			return 0
+		}
+		key := uint64(slotIdx)<<32 | uint64(used)
+		if v, ok := memo[key]; ok {
+			return v
+		}
+		best := solve(slotIdx+1, used) // leave this slot unfilled
+		for i, c := range candidates {
+			bit := uint32(1) << uint(i)
+			if used&bit != 0 || !flexEligible(slotKinds[slotIdx], c.pos) {
+				continue
+			}
+			if v := points[c.id] + solve(slotIdx+1, used|bit); v > best {
+				best = v
+			}
+		}
+		memo[key] = best
+		return best
+	}
+	return solve(0, 0)
+}
+
+func flexEligible(kind, pos string) bool {
+	for _, p := range flexKindEligible[kind] {
+		if p == pos {
+			return true
+		}
+	}
+	return false
 }
 
 func sortedByPoints(ids []string, points map[string]float32) []string {

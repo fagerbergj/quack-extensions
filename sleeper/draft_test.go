@@ -135,14 +135,22 @@ func TestPickDraftFallsBackToLatestStartTime(t *testing.T) {
 	}
 }
 
-// TestDraftRoundsFallsBackToLeagueRosterSize drives e.draftRounds against
-// the real fixture: no settings.rounds means "count roster_positions".
-func TestDraftRoundsFallsBackToLeagueRosterSize(t *testing.T) {
+// TestDraftRoundsFallsBackToStartingSlotCount drives e.draftRounds against
+// the real fixture: no settings.rounds falls back to the starting-slot
+// count (roster_positions minus BN/IR/TAXI), not the full 14-slot roster.
+func TestDraftRoundsFallsBackToStartingSlotCount(t *testing.T) {
 	e := testExtension(t)
+	league, err := e.client.League(context.Background(), testLeague)
+	if err != nil {
+		t.Fatalf("League: %v", err)
+	}
+	if len(league.RosterPositions) != 14 {
+		t.Fatalf("fixture league roster_positions = %d, want 14 (test assumption changed)", len(league.RosterPositions))
+	}
 	d := &sleepergen.Draft{LeagueId: testLeague, Settings: map[string]int{"teams": 10}}
 	got := e.draftRounds(context.Background(), d)
-	if got != 14 {
-		t.Errorf("draftRounds = %d, want 14 (len(roster_positions))", got)
+	if got != 9 {
+		t.Errorf("draftRounds = %d, want 9 (len(nonBenchSlots), not the 14-slot full roster)", got)
 	}
 	d.Settings["rounds"] = 12
 	if got := e.draftRounds(context.Background(), d); got != 12 {

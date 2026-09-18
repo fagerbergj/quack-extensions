@@ -115,8 +115,8 @@ func (e *extension) getDraft(ctx context.Context, a draftArgs) (draftResult, err
 	return result, nil
 }
 
-// draftRounds falls back to the league's roster size when a draft's own
-// settings.rounds is unset - every roster slot is filled exactly once.
+// draftRounds falls back to the league's starting-slot count (excluding
+// BN/IR/TAXI) when a draft's own settings.rounds is unset.
 func (e *extension) draftRounds(ctx context.Context, d *sleepergen.Draft) int {
 	if r := d.Settings["rounds"]; r > 0 {
 		return r
@@ -125,7 +125,7 @@ func (e *extension) draftRounds(ctx context.Context, d *sleepergen.Draft) int {
 	if err != nil {
 		return 0
 	}
-	return len(league.RosterPositions)
+	return len(nonBenchSlots(league.RosterPositions))
 }
 
 // resolveDraftID picks a draft directly, or the league's own draft when

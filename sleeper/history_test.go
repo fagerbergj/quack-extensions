@@ -2,6 +2,8 @@ package sleeper
 
 import (
 	"context"
+	"fmt"
+	"math/rand"
 	"testing"
 )
 
@@ -108,7 +110,7 @@ func TestBestLineupPointsFlexPicksHighestRemaining(t *testing.T) {
 }
 
 // TestBestLineupPointsFlexReachesPositionWithNoStrictSlot is quack's probe:
-// TE has no strict slot here, only FLEX, so it must still reach fillFlexKind.
+// TE has no strict slot here, only FLEX, so it must still reach the flex solver.
 func TestBestLineupPointsFlexReachesPositionWithNoStrictSlot(t *testing.T) {
 	dump := playerDumpAt("qb1", "QB", "rb1", "RB", "wr1", "WR", "te1", "TE")
 	points := map[string]float32{"qb1": 20, "rb1": 15, "wr1": 18, "te1": 40}
@@ -133,4 +135,83 @@ func TestBestLineupPointsAllFlexLineup(t *testing.T) {
 	if got != want {
 		t.Errorf("bestLineupPoints = %v, want %v", got, want)
 	}
+}
+
+// TestBestLineupPointsCrossingFlexKindsIsExact is quack's counterexample:
+// narrowest-first greedy scores 94 (RB2 loses its only slot to a WR that
+// REC_FLEX could have taken instead); the exact assignment scores 96.
+func TestBestLineupPointsCrossingFlexKindsIsExact(t *testing.T) {
+	dump := playerDumpAt("qb1", "QB", "wr1", "WR", "wr2", "WR", "te1", "TE", "rb1", "RB")
+	points := map[string]float32{"qb1": 33, "wr1": 20, "wr2": 5, "te1": 36, "rb1": 2}
+	ids := []string{"qb1", "wr1", "wr2", "te1", "rb1"}
+	positions := []string{"TE", "WRRB_FLEX", "REC_FLEX", "REC_FLEX", "SUPER_FLEX"}
+	got := bestLineupPoints(positions, ids, points, dump)
+	want := float32(96)
+	if got != want {
+		t.Errorf("bestLineupPoints = %v, want %v (every player has a home: TE->TE, QB->SUPER_FLEX, RB->WRRB_FLEX, both WRs->REC_FLEX)", got, want)
+	}
+}
+
+// TestBestLineupPointsMatchesBruteForce enumerates small random rosters
+// (up to 5 flex-eligible players, up to 3 flex slots across kinds) and
+// checks the DP solver against brute-force enumeration of every assignment.
+func TestBestLineupPointsMatchesBruteForce(t *testing.T) {
+	rng := rand.New(rand.NewSource(42))
+	positions := []string{"QB", "RB", "WR", "TE"}
+	kinds := []string{"WRRB_FLEX", "REC_FLEX", "FLEX", "SUPER_FLEX"}
+	for trial := 0; trial < 200; trial++ {
+		n := 1 + rng.Intn(5)
+		var ids []string
+		dumpArgs := []string{}
+		points := map[string]float32{}
+		for i := 0; i < n; i++ {
+			id := fmt.Sprintf("p%d", i)
+			pos := positions[rng.Intn(len(positions))]
+			ids = append(ids, id)
+			dumpArgs = append(dumpArgs, id, pos)
+			points[id] = float32(rng.Intn(41))
+		}
+		dump := playerDumpAt(dumpArgs...)
+		slotCount := 1 + rng.Intn(3)
+		var slotPositions []string
+		for i := 0; i < slotCount; i++ {
+			slotPositions = append(slotPositions, kinds[rng.Intn(len(kinds))])
+		}
+		got := bestLineupPoints(slotPositions, ids, points, dump)
+		want := bruteForceFlexAssignment(slotPositions, ids, dumpArgs, points)
+		if got != want {
+			t.Fatalf("trial %d: slots=%v ids=%v points=%v: bestLineupPoints = %v, want %v (brute force)", trial, slotPositions, ids, points, got, want)
+		}
+	}
+}
+
+// bruteForceFlexAssignment enumerates every subset+permutation of players
+// into slots (no strict slots here, so it only has to solve the flex side).
+func bruteForceFlexAssignment(slotPositions, ids, dumpArgs []string, points map[string]float32) float32 {
+	posOf := map[string]string{}
+	for i := 0; i+1 < len(dumpArgs); i += 2 {
+		posOf[dumpArgs[i]] = dumpArgs[i+1]
+	}
+	used := make([]bool, len(ids))
+	var best float32
+	var rec func(slotIdx int, cur float32)
+	rec = func(slotIdx int, cur float32) {
+		if cur > best {
+			best = cur
+		}
+		if slotIdx == len(slotPositions) {
+			return
+		}
+		rec(slotIdx+1, cur) // leave this slot unfilled
+		for i, id := range ids {
+			if used[i] || !flexEligible(slotPositions[slotIdx], posOf[id]) {
+				continue
+			}
+			used[i] = true
+			rec(slotIdx+1, cur+points[id])
+			used[i] = false
+		}
+	}
+	rec(0, 0)
+	return best
 }

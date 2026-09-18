@@ -152,6 +152,10 @@ func writeSnapshot(dataDir, leagueID string, snap snapshot) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp: %w", err)
 	}
+	// os.CreateTemp mode is 0600; match the 0644 a plain os.WriteFile would give.
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		return fmt.Errorf("chmod temp: %w", err)
+	}
 	return os.Rename(tmp.Name(), snapshotPath(dataDir, leagueID, snap.Date))
 }
 

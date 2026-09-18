@@ -50,6 +50,13 @@ func TestWriteSnapshotLeavesNoTempFile(t *testing.T) {
 	if len(entries) != 1 || entries[0].Name() != "2026-09-18.json" {
 		t.Fatalf("dir entries = %v, want exactly [2026-09-18.json]", entries)
 	}
+	info, err := entries[0].Info()
+	if err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o644 {
+		t.Errorf("mode = %v, want 0644 (os.CreateTemp defaults to 0600, chmod must correct it)", got)
+	}
 	got, err := readSnapshot(dataDir, testLeague, "2026-09-18")
 	if err != nil || got.Players["a"].DepthChartOrder != 1 {
 		t.Errorf("readSnapshot = %+v, %v; want the written snapshot back", got, err)
