@@ -153,7 +153,7 @@ func changedFiles(diff, module string) map[string]map[int]bool {
 	for _, l := range strings.Split(diff, "\n") {
 		if strings.HasPrefix(l, "+++ b/") {
 			p := strings.TrimPrefix(l, "+++ b/")
-			if !strings.HasPrefix(p, prefix) || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+			if !strings.HasPrefix(p, prefix) || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") || strings.HasSuffix(p, ".gen.go") {
 				cur = ""
 				continue
 			}
