@@ -93,9 +93,16 @@ export function section(id, inner) {
   return `<section class="sl-sec" id="${esc(id)}">${inner}</section>`
 }
 
+// The artifact's bytes weren't JSON (readArtifact's server-side fallback) -
+// show the raw text rather than crashing on state.data being absent.
+export function invalidBody(text) {
+  return `<div class="sl-sec__body sl-invalid"><p class="sl-invalid__notice">Output is not in the expected format</p><pre class="sl-invalid__raw">${esc(text)}</pre></div>`
+}
+
 // state: {job, title, agent, status, example, chatHref, found, data, what, running}
 export function renderLineup(state) {
   const head = jobHead(state)
+  if (state.invalid) return section('sec-lineup', head + invalidBody(state.text))
   if (!state.found) return section('sec-lineup', head + emptyBody(state.job, state.title, state.what, state.running))
   const d = state.data
   const rows = d.starters.map(row => `<tr title="${esc(row.why || '')}"><td>${esc(row.slot)}</td><td class="cell">${personHTML(row.player)}</td><td class="num">${num(row.proj)}</td><td>${verdictBadge(row.verdict, row.confidence, row.why)}</td></tr>`).join('')
@@ -114,6 +121,7 @@ export function renderLineup(state) {
 
 export function renderWaivers(state) {
   const head = jobHead(state)
+  if (state.invalid) return section('sec-waivers', head + invalidBody(state.text))
   if (!state.found) return section('sec-waivers', head + emptyBody(state.job, state.title, state.what, state.running))
   const d = state.data
   const rows = d.candidates.map(c => `<tr><td>${int(c.rank)}</td><td class="cell">${personHTML(c.player)}<div class="why">${esc(c.why || '')}</div></td><td class="num">${num(c.proj)}</td><td class="num">${c.owned_pct == null ? '–' : num(c.owned_pct, 0) + '%'}</td><td class="num">${c.adds_24h ? int(c.adds_24h).toLocaleString() : '–'}</td><td>${esc(c.drop || '')}</td></tr>`).join('')
@@ -160,6 +168,8 @@ export function renderTrade(state, talks, talkIdx, partners) {
   }
   const cur = talks[Math.min(talkIdx, talks.length - 1)]
   const options = talks.map((t, i) => `<option value="${i}" ${i === talkIdx ? 'selected' : ''}>${esc(t.partner)} · ${esc(t.status || (t.found ? 'open' : 'new'))} · ${t.data?.offers?.length ?? 0} offer${(t.data?.offers?.length ?? 0) === 1 ? '' : 's'}</option>`).join('')
+  const talkbar = `<div class="sl-talkbar"><label for="talk-select" class="sl-keep" style="font-size:.75rem">Talk</label><select id="talk-select" class="sl-select">${options}</select>${talkPartnerSelect(partners)}<button class="qk-btn" data-run="trade">New talk</button></div>`
+  if (cur.invalid) return section('sec-trade', head + `<div class="sl-sec__body">${talkbar}</div>` + invalidBody(cur.text))
   const d = cur.data
   const offers = d?.offers?.length
     ? d.offers.map(o => `<li class="sl-offer ${o.by === 'You' ? 'mine' : ''}"><div class="sl-offer__who"><b>${esc(o.by)}</b>${esc(o.when)}</div><div><div class="sl-sides">${tradeSide('You give', o.give)}${tradeSide('You get', o.get)}</div><p class="sl-eval"><span class="qk-badge ${o.verdict === 'send' ? 'qk-badge--ok' : o.verdict === 'decline' ? 'qk-badge--err' : 'qk-badge--warn'}">${esc(o.verdict)}</span> <b>${esc(o.delta)}</b> · ${esc(o.why)}</p></div></li>`).join('')
@@ -168,7 +178,7 @@ export function renderTrade(state, talks, talkIdx, partners) {
     ? `<form class="sl-compose" id="compose" data-partner="${esc(cur.partner)}"><div><label for="give">You give</label><select id="give" class="sl-select sl-multi" multiple size="5">${(d.my_roster || []).map(tradeOption).join('')}</select></div><div><label for="get">You get from ${esc(cur.partner)}</label><select id="get" class="sl-select sl-multi" multiple size="5">${(d.partner_roster || []).map(tradeOption).join('')}</select></div><button class="qk-btn qk-btn--primary" data-run="trade" data-partner="${esc(cur.partner_id)}" data-partner-name="${esc(cur.partner)}" type="button">Evaluate counter</button></form>`
     : ''
   return section('sec-trade', head + `<div class="sl-sec__body">
-    <div class="sl-talkbar"><label for="talk-select" class="sl-keep" style="font-size:.75rem">Talk</label><select id="talk-select" class="sl-select">${options}</select>${talkPartnerSelect(partners)}<button class="qk-btn" data-run="trade">New talk</button></div>
+    ${talkbar}
     <ul class="sl-offers">${offers}</ul>
     ${compose}
     <div style="margin-top:1.25rem;padding-top:1rem;border-top:1px solid var(--qk-border)">${tradeFinder(suggestions)}</div>
@@ -177,6 +187,7 @@ export function renderTrade(state, talks, talkIdx, partners) {
 
 export function renderDigest(state) {
   const head = jobHead(state)
+  if (state.invalid) return section('sec-digest', head + invalidBody(state.text))
   if (!state.found) return section('sec-digest', head + emptyBody(state.job, state.title, state.what, state.running))
   const d = state.data
   const rows = d.games.map(g => `<tr class="${g.mine ? 'sl-mine' : ''}"><td>${esc(g.home)}</td><td class="num">${num(g.home_pts, 2)}</td><td class="num">${num(g.away_pts, 2)}</td><td>${esc(g.away)}</td><td class="num">${num(g.margin, 2)}</td><td>${esc(g.top_scorers || '')}</td></tr>`).join('')
@@ -188,6 +199,7 @@ export function renderDigest(state) {
 
 export function renderTrends(state) {
   const head = jobHead(state)
+  if (state.invalid) return section('sec-trends', head + invalidBody(state.text))
   if (!state.found) return section('sec-trends', head + emptyBody(state.job, state.title, state.what, state.running))
   const d = state.data
   const items = d.items.map(i => {
@@ -200,6 +212,7 @@ export function renderTrends(state) {
 
 export function renderRetro(state) {
   const head = jobHead(state)
+  if (state.invalid) return section('sec-retro', head + invalidBody(state.text))
   if (!state.found) return section('sec-retro', head + emptyBody(state.job, state.title, state.what, state.running))
   const r = state.data
   const misses = (r.misses || []).map(m => `<tr><td>${esc(m.slot)}</td><td>${esc(m.started_name)}</td><td class="num">${num(m.started_pts, 2)}</td><td>${esc(m.better_name)}</td><td class="num">${num(m.better_pts, 2)}</td><td class="num">+${num(m.swing, 2)}</td></tr>`).join('')
@@ -212,6 +225,7 @@ export function renderRetro(state) {
 
 export function renderDraftBoard(state) {
   const head = jobHead(state)
+  if (state.invalid) return section('sec-draft', head + invalidBody(state.text))
   if (!state.found) return section('sec-draft', head + emptyBody(state.job, state.title, state.what, state.running))
   const d = state.data
   if (d.report_card) return renderDraftReportCard(state)
@@ -237,6 +251,7 @@ export function renderDraftBoard(state) {
 
 export function renderDraftReportCard(state) {
   const head = jobHead(state)
+  if (state.invalid) return section('sec-draft', head + invalidBody(state.text))
   if (!state.found) return section('sec-draft', head + emptyBody(state.job, state.title, state.what, state.running))
   const d = state.data
   const rows = (d.report_card || []).map(c => `<tr><td class="num">${int(c.round)}</td><td class="num">${int(c.pick)}</td><td><span class="sl-p">${avatarHTML(c.player, true)}<span>${esc(c.player.name)} <span class="sl-keep">${esc(c.player.pos || '')}</span></span></span></td><td class="num">${esc(c.drafted_as || '')}</td><td class="num">${esc(c.finished || '–')}</td><td class="num">${num(c.pts, 1)}</td><td><span class="qk-badge ${c.verdict === 'steal' ? 'qk-badge--ok' : c.verdict === 'reach' ? 'qk-badge--err' : ''}">${esc(c.verdict)}</span></td></tr>`).join('')
@@ -251,6 +266,7 @@ export function renderDraftReportCard(state) {
 
 export function renderDraftSide(state) {
   const head = jobHead(state)
+  if (state.invalid) return section('draft-side', head + invalidBody(state.text))
   if (!state.found) return section('draft-side', head + emptyBody(state.job, state.title, state.what, state.running))
   const d = state.data
   if (!d.clock && !d.plan) return ''
@@ -264,6 +280,7 @@ export function renderDraftSide(state) {
 
 export function renderReview(state) {
   const head = jobHead(state)
+  if (state.invalid) return section('sec-review', head + invalidBody(state.text))
   if (!state.found) return section('sec-review', head + `<div class="sl-sec__body sl-empty"><span>Written after week 17. Until then, the week cards and hindsight carry the season.</span></div>`)
   const x = state.data
   const weeks = x.weeks || []
@@ -279,6 +296,7 @@ export function renderReview(state) {
 
 export function renderSeasonNotes(state) {
   const head = jobHead(state)
+  if (state.invalid) return section('side-notes', head + invalidBody(state.text))
   if (!state.found) return section('side-notes', head + `<div class="sl-sec__body sl-empty"><span>No season notes yet.</span></div>`)
   const d = state.data
   return section('side-notes', head + `<div class="sl-sec__body"><ul class="sl-notes">${(d.notes || []).map(n => `<li>${esc(n)}</li>`).join('')}</ul></div>`)

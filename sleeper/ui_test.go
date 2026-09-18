@@ -3,6 +3,7 @@ package sleeper
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -564,5 +565,98 @@ func TestUIServesUnderQuackMount(t *testing.T) {
 	}
 	if loc := rec.Header().Get("Location"); loc != "/sleeper/" {
 		t.Errorf("GET /sleeper Location = %q, want /sleeper/", loc)
+	}
+}
+
+// TestHandleArtifactsNonJSONArtifact reproduces the QA-rig bug: a job
+// artifact that is markdown (an agent didn't emit JSON) must still 200,
+// marked invalid with the raw text, never an empty body.
+func TestHandleArtifactsNonJSONArtifact(t *testing.T) {
+	wantChatID := "ext:sleeper:" + testLeague + ":2:lineup"
+	const md = "# Lineup\n\nStart Josh Allen.\n"
+	host := &fakeHost{artifacts: map[string]map[string][]byte{
+		wantChatID: {"lineup": []byte(md)},
+	}}
+	_, r := newTestExtension(t, host.sdkHost(), config{})
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/artifacts?league_id="+testLeague+"&stop=2", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if rec.Body.Len() == 0 {
+		t.Fatal("empty body (the original bug)")
+	}
+	var resp artifactsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	lineup := resp.Jobs["lineup"]
+	if !lineup.Found || !lineup.Invalid {
+		t.Fatalf("lineup = %+v, want found+invalid", lineup)
+	}
+	if lineup.Text != md {
+		t.Errorf("text = %q, want %q", lineup.Text, md)
+	}
+	if len(lineup.Data) != 0 {
+		t.Errorf("data = %s, want absent for an invalid artifact", lineup.Data)
+	}
+}
+
+// TestHandleArtifactsFencedJSONArtifact pins the agents-fence-JSON
+// tolerance: a ```json ... ``` block around otherwise-valid JSON parses as
+// Data, not Invalid.
+func TestHandleArtifactsFencedJSONArtifact(t *testing.T) {
+	wantChatID := "ext:sleeper:" + testLeague + ":2:lineup"
+	fenced := "```json\n{\"week\":2}\n```"
+	host := &fakeHost{artifacts: map[string]map[string][]byte{
+		wantChatID: {"lineup": []byte(fenced)},
+	}}
+	_, r := newTestExtension(t, host.sdkHost(), config{})
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/artifacts?league_id="+testLeague+"&stop=2", nil))
+	var resp artifactsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	lineup := resp.Jobs["lineup"]
+	if !lineup.Found || lineup.Invalid {
+		t.Fatalf("lineup = %+v, want found and not invalid (fence stripped)", lineup)
+	}
+	if string(lineup.Data) != `{"week":2}` {
+		t.Errorf("data = %s, want the unfenced JSON", lineup.Data)
+	}
+
+	// A bare ``` fence (no "json" tag) must strip the same way.
+	bareFenced := "```\n{\"week\":3}\n```"
+	host.artifacts[wantChatID]["lineup"] = []byte(bareFenced)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/artifacts?league_id="+testLeague+"&stop=2", nil))
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if lineup = resp.Jobs["lineup"]; !lineup.Found || lineup.Invalid || string(lineup.Data) != `{"week":3}` {
+		t.Errorf("bare-fence lineup = %+v, want found, not invalid, data {\"week\":3}", lineup)
+	}
+}
+
+// TestWriteJSONEncodeFailureIsNot200 pins writeJSON's fix: an unencodable
+// value (here, NaN - json.Marshal rejects non-finite floats) must 500 with
+// an error body, never silently ship the empty 200 the bug report found.
+func TestWriteJSONEncodeFailureIsNot200(t *testing.T) {
+	e := &extension{}
+	rec := httptest.NewRecorder()
+	e.writeJSON(rec, struct {
+		NaN float64 `json:"nan"`
+	}{NaN: math.NaN()})
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if rec.Body.Len() == 0 {
+		t.Fatal("empty body (the original bug: an encode failure must not ship an empty 200)")
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if body["error"] == "" {
+		t.Errorf("body = %v, want a non-empty error message", body)
 	}
 }

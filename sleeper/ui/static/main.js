@@ -81,6 +81,8 @@ function jobEnvelope(job, title) {
     example: !!a?.example, status: state.running.has(job.id) ? 'running' : found ? 'done' : 'not_run',
     chatHref: found ? `/chat/ext:sleeper:${state.leagueID}:${state.stop}:${job.id}` : undefined,
     data: a?.data,
+    invalid: !!a?.invalid,
+    text: a?.text,
   }
 }
 
@@ -177,7 +179,7 @@ async function loadReviewHistory() {
 }
 
 function currentSide() {
-  const notesEnv = { title: 'Season notes', agent: 'trend-scout', found: !!state.artifacts.season_notes?.found, example: !!state.artifacts.season_notes?.example, data: state.artifacts.season_notes?.data, status: state.artifacts.season_notes?.found ? 'done' : 'not_run' }
+  const notesEnv = { title: 'Season notes', agent: 'trend-scout', found: !!state.artifacts.season_notes?.found, example: !!state.artifacts.season_notes?.example, data: state.artifacts.season_notes?.data, invalid: !!state.artifacts.season_notes?.invalid, text: state.artifacts.season_notes?.text, status: state.artifacts.season_notes?.found ? 'done' : 'not_run' }
   return R.renderStandingsSide(state.season) + R.renderSeasonNotes(notesEnv) + R.renderMovesSide(state.season)
 }
 

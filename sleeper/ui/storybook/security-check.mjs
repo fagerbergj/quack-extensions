@@ -29,9 +29,16 @@ function poisonNumbers(data) {
 }
 
 const doneEnvelope = data => ({ job: 'x', title: 'x', agent: 'x', found: true, example: false, status: 'done', chatHref: '/chat/x', data })
+const invalidEnvelope = text => ({ job: 'x', title: 'x', agent: 'x', found: true, invalid: true, example: false, status: 'done', text })
 
 async function checks() {
   const out = []
+
+  // Invalid-artifact state: raw agent text lands in a <pre> via esc(), the
+  // only escaping path for state.text - covered once via renderLineup (the
+  // plain job-card shape) and once via renderTrade (the per-talk shape).
+  out.push(['renderLineup (invalid)', R.renderLineup(invalidEnvelope(PAYLOAD))])
+  out.push(['renderTrade (invalid)', R.renderTrade(doneEnvelope(null), [{ partner: 'x', partner_id: '1', found: true, example: false, invalid: true, text: PAYLOAD }], 0, [{ id: '1', name: 'Team' }])])
 
   const lineup = poisonNumbers(await loadFixture('lineup'))
   out.push(['renderLineup', R.renderLineup(doneEnvelope(lineup))])
