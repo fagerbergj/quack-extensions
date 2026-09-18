@@ -85,7 +85,7 @@ func (e *Extension) handleWorkflowRun(w http.ResponseWriter, body []byte) {
 		"conclusion", p.WorkflowRun.Conclusion, "head_sha", p.WorkflowRun.HeadSHA,
 		"installation", p.Installation.ID)
 	for _, pr := range p.WorkflowRun.PullRequests {
-		go e.autoHeal(p, pr.Number, body)
+		e.spawn(func() { e.autoHeal(p, pr.Number, body) })
 	}
 	w.WriteHeader(http.StatusAccepted)
 }

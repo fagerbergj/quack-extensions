@@ -309,6 +309,9 @@ func newTestExtension(t *testing.T, apiBase string, triggers []string) (*Extensi
 		allowedUsers: map[string]bool{"alice": true},
 		runTimeout:   time.Hour,
 	}
+	// Registered last so it runs first (t.Cleanup is LIFO): drain every
+	// webhook-spawned goroutine before the store/server it depends on close.
+	t.Cleanup(e.Wait)
 	return e, fh
 }
 

@@ -300,7 +300,9 @@ func TestMergeWaitsForChecksThenMerges(t *testing.T) {
 	for _, kind := range []string{"check_run", "check_suite", "workflow_run"} {
 		ext.handleWebhook(httptest.NewRecorder(), signedRequest(kind, checkEventBody(kind)))
 	}
-	waitFor(t, "the merge", func() bool { return sim.merges.Load() == 1 })
+	// Wait for the edit, not just the merge: clearMergeIntent's store write
+	// sits between them and can outlast a fixed sleep under load.
+	waitFor(t, "the merge", func() bool { return sim.edits.Load() == 1 })
 	settle()
 	if sim.merges.Load() != 1 {
 		t.Fatalf("merges = %d; want exactly 1 across three completion events", sim.merges.Load())
@@ -336,7 +338,8 @@ func TestMergeChecksGreenThenApproval(t *testing.T) {
 
 	sim.set(func(m *mergeSim) { m.reviews = approvedOnHead1 })
 	ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request_review", pullRequestReviewBody("approved", "quack[bot]", 7)))
-	waitFor(t, "the merge", func() bool { return sim.merges.Load() == 1 })
+	// Wait for the edit, not just the merge - see TestMergeWaitsForChecksThenMerges.
+	waitFor(t, "the merge", func() bool { return sim.edits.Load() == 1 })
 	settle()
 	if sim.merges.Load() != 1 || sim.edits.Load() != 1 || sim.comments.Load() != 0 {
 		t.Errorf("merges=%d edits=%d comments=%d; want 1/1/0", sim.merges.Load(), sim.edits.Load(), sim.comments.Load())

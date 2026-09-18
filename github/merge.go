@@ -483,7 +483,7 @@ func (e *Extension) mergeIfApproved(p pullRequestPayload, rawBody []byte) {
 	if _, live := e.inflightActive(sessionID); live {
 		return // the running review's delivery re-evaluates the merge
 	}
-	go e.dispatch(autoReviewPayload(p, rawBody), autoReviewTask)
+	e.spawn(func() { e.dispatch(autoReviewPayload(p, rawBody), autoReviewTask) })
 }
 
 // reviewOnMovedHeadUnderIntent dispatches a fresh review when a push moves
@@ -520,7 +520,7 @@ func (e *Extension) reviewOnMovedHeadUnderIntent(p pullRequestPayload, rawBody [
 		slog.Warn("github: recording the push re-review's head failed", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", err)
 		return
 	}
-	go e.dispatch(autoReviewPayload(p, rawBody), autoReviewTask)
+	e.spawn(func() { e.dispatch(autoReviewPayload(p, rawBody), autoReviewTask) })
 }
 
 // mergeOnEvent re-evaluates the merge after a state-changing webhook (check
@@ -642,6 +642,6 @@ func (e *Extension) mergeOnCheckEvent(event string, body []byte) {
 		return
 	}
 	for _, pr := range head.PullRequests {
-		go e.mergeOnEvent(p.Repository.Owner.Login, p.Repository.Name, pr.Number, event)
+		e.spawn(func() { e.mergeOnEvent(p.Repository.Owner.Login, p.Repository.Name, pr.Number, event) })
 	}
 }

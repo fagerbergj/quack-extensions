@@ -207,8 +207,8 @@ func (e *Extension) handleIssueComment(w http.ResponseWriter, body []byte) {
 		slog.Info("github webhook received", "component", "github",
 			"repo", p.Repository.Owner.Login+"/"+p.Repository.Name, "pr", p.Issue.Number,
 			"command", "/review", "user", p.Comment.User.Login, "installation", p.Installation.ID)
-		go e.ackReaction(p)
-		go e.dispatch(p, autoReviewTask)
+		e.spawn(func() { e.ackReaction(p) })
+		e.spawn(func() { e.dispatch(p, autoReviewTask) })
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
@@ -226,8 +226,9 @@ func (e *Extension) handleIssueComment(w http.ResponseWriter, body []byte) {
 	slog.Info("github webhook received", "component", "github",
 		"repo", p.Repository.Owner.Login+"/"+p.Repository.Name, "issue", p.Issue.Number,
 		"user", p.Comment.User.Login, "installation", p.Installation.ID)
-	go e.ackReaction(p) // instant 👀 "quack saw it", independent of the model run
-	go e.dispatch(p, task)
+	// Instant 👀 "quack saw it", independent of the model run.
+	e.spawn(func() { e.ackReaction(p) })
+	e.spawn(func() { e.dispatch(p, task) })
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -274,12 +275,12 @@ func (e *Extension) handlePullRequest(w http.ResponseWriter, body []byte, delive
 	}
 
 	// The merge label is a human authorization: recorded as a standing intent, merged once quack approves the head and CI is green.
-	if e.labeledTrigger(w, p, "merge", e.labels.Merge, func() { go e.mergeIfApproved(p, body) }) {
+	if e.labeledTrigger(w, p, "merge", e.labels.Merge, func() { e.spawn(func() { e.mergeIfApproved(p, body) }) }) {
 		return
 	}
 
 	// quack:fix is a persistent capability flag (#656) — re-arms auto-heal; fixes CI if currently failing.
-	if e.labeledTrigger(w, p, "ci_fix", e.labels.Fix, func() { go e.fixLabelApplied(p, body) }) {
+	if e.labeledTrigger(w, p, "ci_fix", e.labels.Fix, func() { e.spawn(func() { e.fixLabelApplied(p, body) }) }) {
 		return
 	}
 
@@ -287,8 +288,10 @@ func (e *Extension) handlePullRequest(w http.ResponseWriter, body []byte, delive
 	// that no longer exists on the branch; core decides if refreshing is safe.
 	if p.Action == "synchronize" {
 		e.invalidateSetup(p.Repository.Owner.Login, p.Repository.Name, p.Number)
-		go e.mergeOnEvent(p.Repository.Owner.Login, p.Repository.Name, p.Number, "pull_request.synchronize")
-		go e.reviewOnMovedHeadUnderIntent(p, body)
+		e.spawn(func() {
+			e.mergeOnEvent(p.Repository.Owner.Login, p.Repository.Name, p.Number, "pull_request.synchronize")
+		})
+		e.spawn(func() { e.reviewOnMovedHeadUnderIntent(p, body) })
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -303,7 +306,7 @@ func (e *Extension) handlePullRequest(w http.ResponseWriter, body []byte, delive
 	slog.Info("github webhook received", "component", "github",
 		"repo", p.Repository.Owner.Login+"/"+p.Repository.Name, "pr", p.Number,
 		"action", p.Action, "installation", p.Installation.ID)
-	go e.dispatch(autoReviewPayload(p, body), autoReviewTask)
+	e.spawn(func() { e.dispatch(autoReviewPayload(p, body), autoReviewTask) })
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -400,7 +403,9 @@ func (e *Extension) handlePullRequestReview(w http.ResponseWriter, body []byte) 
 		return
 	}
 	if p.Action == "submitted" {
-		go e.mergeOnEvent(p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number, "pull_request_review.submitted")
+		e.spawn(func() {
+			e.mergeOnEvent(p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number, "pull_request_review.submitted")
+		})
 	}
 	if p.Action != "submitted" || p.Review.State != "changes_requested" || !e.triggers["ci_fix"] {
 		w.WriteHeader(http.StatusOK)
@@ -416,7 +421,7 @@ func (e *Extension) handlePullRequestReview(w http.ResponseWriter, body []byte) 
 	slog.Info("github webhook received", "component", "github",
 		"repo", p.Repository.Owner.Login+"/"+p.Repository.Name, "pr", p.PullRequest.Number,
 		"user", p.Review.User.Login, "installation", p.Installation.ID)
-	go e.engageOwnPRReview(p, body)
+	e.spawn(func() { e.engageOwnPRReview(p, body) })
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -513,11 +518,12 @@ func (e *Extension) handleIssues(w http.ResponseWriter, body []byte) {
 	switch {
 	case e.triggers["issue_plan"] && p.Label.Name == e.labels.Plan:
 		synthetic.planOnly = true
-		go e.ackLabelReaction(p) // instant 👀 on the issue - the label path's equivalent of ackReaction
-		go e.dispatch(synthetic, planTask(p))
+		// Instant 👀 on the issue - the label path's equivalent of ackReaction.
+		e.spawn(func() { e.ackLabelReaction(p) })
+		e.spawn(func() { e.dispatch(synthetic, planTask(p)) })
 	case e.triggers["issue_implement"] && p.Label.Name == e.labels.Implement:
-		go e.ackLabelReaction(p)
-		go e.runImplement(p, synthetic)
+		e.spawn(func() { e.ackLabelReaction(p) })
+		e.spawn(func() { e.runImplement(p, synthetic) })
 	default:
 		w.WriteHeader(http.StatusOK)
 		return
@@ -926,9 +932,9 @@ func (e *Extension) claimOrAck(p issueCommentPayload, sessionID, owner, repo str
 		// its own comment - react there, not on the issue too, or the trigger
 		// gets two visibly different reactions (#1304).
 		if p.Comment.ID != 0 {
-			go e.ackReaction(p)
+			e.spawn(func() { e.ackReaction(p) })
 		} else {
-			go e.ackIssue(owner, repo, number)
+			e.spawn(func() { e.ackIssue(owner, repo, number) })
 		}
 		return claimedAt, false
 	}
