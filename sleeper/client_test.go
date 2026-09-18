@@ -181,7 +181,7 @@ func TestResolvePlayer(t *testing.T) {
 func TestChainErrorsOnBrokenLink(t *testing.T) {
 	c := newTestClient(t)
 	ctx := context.Background()
-	if _, err := c.Chain(ctx, testLeague); err == nil {
+	if _, err := c.Chain(ctx, testLeague, 0, false); err == nil {
 		t.Fatal("expected Chain to error when an older league in the walk has no fixture")
 	}
 	// The failed walk must not have cached a partial result.
@@ -190,6 +190,34 @@ func TestChainErrorsOnBrokenLink(t *testing.T) {
 	c.mu.Unlock()
 	if cached {
 		t.Error("a failed Chain walk must not populate the cache")
+	}
+}
+
+// TestChainStopsOnUnreachableWhenRequested covers the mode sleeper_history
+// uses: a broken hop stops the walk and returns the reachable prefix.
+func TestChainStopsOnUnreachableWhenRequested(t *testing.T) {
+	c := newTestClient(t)
+	got, err := c.Chain(context.Background(), testLeague, 0, true)
+	if err != nil {
+		t.Fatalf("Chain(stopOnUnreachable): %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("chain = %d leagues, want 2 (testLeague, pastLeague)", len(got))
+	}
+	if got[0].LeagueId != testLeague || got[1].LeagueId != pastLeague {
+		t.Errorf("chain = %v, want [testLeague, pastLeague]", got)
+	}
+}
+
+// TestChainSeasonsBackCaps proves the limit is honored before any walking.
+func TestChainSeasonsBackCaps(t *testing.T) {
+	c := newTestClient(t)
+	got, err := c.Chain(context.Background(), testLeague, 1, true)
+	if err != nil {
+		t.Fatalf("Chain: %v", err)
+	}
+	if len(got) != 1 || got[0].LeagueId != testLeague {
+		t.Errorf("chain = %v, want just [testLeague]", got)
 	}
 }
 

@@ -81,7 +81,10 @@ func (e *extension) getMatchup(ctx context.Context, a matchupArgs) (matchupResul
 	if err != nil {
 		return matchupResult{}, err
 	}
-	week := resolveWeek(a.Week, state)
+	week, err := resolveWeek(a.Week, season, state)
+	if err != nil {
+		return matchupResult{}, fmt.Errorf("sleeper_matchup: %w", err)
+	}
 	matchups, err := e.client.Matchups(ctx, leagueID, week)
 	if err != nil {
 		return matchupResult{}, fmt.Errorf("sleeper_matchup: %w", err)

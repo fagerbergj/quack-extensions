@@ -50,12 +50,23 @@ func (e *extension) season(ctx context.Context) (string, *sleepergen.NflState, e
 	return state.Season, state, nil
 }
 
-// resolveWeek returns arg if positive, else the state's current week.
-func resolveWeek(arg int, state *sleepergen.NflState) int {
+// resolveWeek returns arg if positive, else the live current week - but
+// only when season is that live season; a pinned past/future season has no
+// borrowable "current week", so it must be given explicitly.
+func resolveWeek(arg int, season string, state *sleepergen.NflState) (int, error) {
 	if arg > 0 {
-		return arg
+		return arg, nil
 	}
-	return state.Week
+	return weekForSeason(season, state)
+}
+
+// weekForSeason is resolveWeek's no-arg-given core, reused by tools with no
+// week argument of their own (roster byes, free agents/player projections).
+func weekForSeason(season string, state *sleepergen.NflState) (int, error) {
+	if season != state.Season {
+		return 0, fmt.Errorf("season %s is not the live NFL season (%s); week must be given explicitly", season, state.Season)
+	}
+	return state.Week, nil
 }
 
 // rosterIDForUser finds the roster a user_id (or, failing that, a

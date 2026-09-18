@@ -122,11 +122,15 @@ func (e *extension) getRoster(ctx context.Context, a rosterArgs) (rosterResult, 
 	if err != nil {
 		return rosterResult{}, err
 	}
+	week, err := weekForSeason(season, state)
+	if err != nil {
+		return rosterResult{}, fmt.Errorf("sleeper_roster: %w", err)
+	}
 	games, err := e.client.Schedule(ctx, season)
 	if err != nil {
 		return rosterResult{}, fmt.Errorf("sleeper_roster: schedule: %w", err)
 	}
-	playing := weekTeams(games, state.Week)
+	playing := weekTeams(games, week)
 	return buildRosterResult(league, r, dump, playing, teamNames(rosters, users)), nil
 }
 

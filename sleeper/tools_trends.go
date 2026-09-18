@@ -1,12 +1,16 @@
 package sleeper
 
 import (
+	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
+
+	"github.com/fagerbergj/quack-extensions/sleeper/sleepergen"
 )
 
 // defaultTrendDays: how far back sleeper_trends looks when days is omitted.
@@ -20,6 +24,7 @@ type trendsArgs struct {
 
 type playerTrend struct {
 	PlayerID            string  `json:"player_id"`
+	Name                string  `json:"name"`
 	InjuryStatusChanged bool    `json:"injury_status_changed,omitempty"`
 	InjuryStatus        string  `json:"injury_status,omitempty"`
 	PracticeChanged     bool    `json:"practice_changed,omitempty"`
@@ -39,6 +44,7 @@ type trendsResult struct {
 	FetchedAt string        `json:"fetched_at"`
 }
 
+//nolint:dupl // functiontool wrapper boilerplate: each tool differs only in name/description/handler
 func (e *extension) trendsTool() tool.Tool {
 	t, _ := functiontool.New[trendsArgs, trendsResult](
 		functiontool.Config{
@@ -47,12 +53,12 @@ func (e *extension) trendsTool() tool.Tool {
 				"changes, trending add/drop counts, ownership swings) over the last `days` (default 7). " +
 				"Optionally filter to `player_ids`. Needs snapshots: daily configured.",
 		},
-		func(ctx adkagent.Context, a trendsArgs) (trendsResult, error) { return e.getTrends(a) },
+		func(ctx adkagent.Context, a trendsArgs) (trendsResult, error) { return e.getTrends(ctx, a) },
 	)
 	return t
 }
 
-func (e *extension) getTrends(a trendsArgs) (trendsResult, error) {
+func (e *extension) getTrends(ctx context.Context, a trendsArgs) (trendsResult, error) {
 	leagueID, err := e.resolveLeagueID(a.LeagueID)
 	if err != nil {
 		return trendsResult{}, err
@@ -77,9 +83,13 @@ func (e *extension) getTrends(a trendsArgs) (trendsResult, error) {
 	if err != nil {
 		return trendsResult{}, fmt.Errorf("sleeper_trends: %w", err)
 	}
+	dump, err := e.client.PlayersDump(ctx)
+	if err != nil {
+		return trendsResult{}, fmt.Errorf("sleeper_trends: %w", err)
+	}
 	return trendsResult{
 		LeagueID: leagueID, FromDate: oldSnap.Date, ToDate: newSnap.Date,
-		Trends: diffSnapshots(oldSnap, newSnap, a.PlayerIDs), FetchedAt: nowRFC3339(),
+		Trends: diffSnapshots(oldSnap, newSnap, a.PlayerIDs, dump), FetchedAt: nowRFC3339(),
 	}, nil
 }
 
@@ -96,8 +106,9 @@ func withinDays(dates []string, days int) []string {
 }
 
 // diffSnapshots compares two snapshots player by player; playerIDs, when
-// non-empty, restricts the diff to those ids.
-func diffSnapshots(oldSnap, newSnap snapshot, playerIDs []string) []playerTrend {
+// non-empty, restricts the diff to those ids. Sorted by player_id so
+// identical inputs always produce the same JSON.
+func diffSnapshots(oldSnap, newSnap snapshot, playerIDs []string, dump map[string]sleepergen.Player) []playerTrend {
 	want := toIDSet(playerIDs)
 	var out []playerTrend
 	for pid, cur := range newSnap.Players {
@@ -105,7 +116,7 @@ func diffSnapshots(oldSnap, newSnap snapshot, playerIDs []string) []playerTrend 
 			continue
 		}
 		prev := oldSnap.Players[pid]
-		trend := playerTrend{PlayerID: pid}
+		trend := playerTrend{PlayerID: pid, Name: playerName(dump, pid)}
 		changed := false
 		if prev.InjuryStatus != cur.InjuryStatus {
 			trend.InjuryStatusChanged, trend.InjuryStatus, changed = true, cur.InjuryStatus, true
@@ -126,6 +137,7 @@ func diffSnapshots(oldSnap, newSnap snapshot, playerIDs []string) []playerTrend 
 			out = append(out, trend)
 		}
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].PlayerID < out[j].PlayerID })
 	return out
 }
 

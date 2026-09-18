@@ -41,9 +41,17 @@ func TestGetFreeAgents(t *testing.T) {
 	if len(got.FreeAgents) > 5 {
 		t.Errorf("free_agents = %d, want <=5 (limit)", len(got.FreeAgents))
 	}
+	rosters, err := e.client.Rosters(context.Background(), testLeague)
+	if err != nil {
+		t.Fatalf("Rosters: %v", err)
+	}
+	taken := rostered(rosters)
 	for i, fa := range got.FreeAgents {
 		if fa.Position != "RB" {
 			t.Errorf("free agent %+v has position %q, want RB", fa, fa.Position)
+		}
+		if taken[fa.PlayerID] {
+			t.Errorf("free agent %+v is rostered, should be excluded", fa)
 		}
 		if i > 0 && fa.Projection > got.FreeAgents[i-1].Projection {
 			t.Errorf("free agents not sorted by projection desc at index %d", i)

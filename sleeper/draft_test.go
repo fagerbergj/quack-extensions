@@ -84,3 +84,25 @@ func TestOnClockNilWhenNotDrafting(t *testing.T) {
 		t.Errorf("onClock = %+v, want nil for a non-drafting status", got)
 	}
 }
+
+func TestBestAvailableExcludesPickedAndCapsPerPosition(t *testing.T) {
+	dump := playerDumpAt("rb1", "RB", "rb2", "RB", "rb3", "RB", "qb1", "QB")
+	proj := map[string]sleepergen.StatMap{
+		"rb1": {"pts_ppr": 20}, "rb2": {"pts_ppr": 15}, "rb3": {"pts_ppr": 10}, "qb1": {"pts_ppr": 25},
+	}
+	picks := []sleepergen.DraftPick{{PlayerId: "rb1"}}
+	got := bestAvailable(dump, picks, proj)
+	rbs := got["RB"]
+	if len(rbs) != 2 {
+		t.Fatalf("RB best available = %+v, want 2 (rb1 picked)", rbs)
+	}
+	if rbs[0].PlayerID != "rb2" || rbs[1].PlayerID != "rb3" {
+		t.Errorf("RB order = %+v, want [rb2, rb3] by projection desc", rbs)
+	}
+	if len(got["QB"]) != 1 || got["QB"][0].PlayerID != "qb1" {
+		t.Errorf("QB best available = %+v, want [qb1]", got["QB"])
+	}
+	if len(got["WR"]) != 0 {
+		t.Errorf("WR best available = %+v, want none in the dump", got["WR"])
+	}
+}

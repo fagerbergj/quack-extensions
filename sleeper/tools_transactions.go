@@ -3,6 +3,7 @@ package sleeper
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
@@ -77,13 +78,17 @@ func (e *extension) getTransactions(ctx context.Context, a transactionsArgs) (tr
 	if err != nil {
 		return transactionsResult{}, fmt.Errorf("sleeper_transactions: %w", err)
 	}
-	_, state, err := e.season(ctx)
+	season, state, err := e.season(ctx)
 	if err != nil {
 		return transactionsResult{}, err
 	}
+	currentWeek, err := weekForSeason(season, state)
+	if err != nil {
+		return transactionsResult{}, fmt.Errorf("sleeper_transactions: %w", err)
+	}
 	names := teamNames(rosters, users)
 	var out []transactionEntry
-	for week := state.Week - weeksBack + 1; week <= state.Week; week++ {
+	for week := currentWeek - weeksBack + 1; week <= currentWeek; week++ {
 		if week < 1 {
 			continue
 		}
@@ -122,6 +127,7 @@ func playerMoves(m *map[string]int, names map[int]string, dump map[string]sleepe
 	for pid, rid := range *m {
 		out = append(out, moveEntry{PlayerID: pid, Name: playerName(dump, pid), Team: names[rid]})
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].PlayerID < out[j].PlayerID })
 	return out
 }
 
@@ -183,7 +189,11 @@ func (e *extension) getFreeAgents(ctx context.Context, a freeAgentsArgs) (freeAg
 	if err != nil {
 		return freeAgentsResult{}, err
 	}
-	proj, err := e.client.WeekProjections(ctx, season, state.Week)
+	week, err := weekForSeason(season, state)
+	if err != nil {
+		return freeAgentsResult{}, fmt.Errorf("sleeper_free_agents: %w", err)
+	}
+	proj, err := e.client.WeekProjections(ctx, season, week)
 	if err != nil {
 		return freeAgentsResult{}, fmt.Errorf("sleeper_free_agents: projections: %w", err)
 	}
@@ -191,7 +201,7 @@ func (e *extension) getFreeAgents(ctx context.Context, a freeAgentsArgs) (freeAg
 	if err != nil {
 		return freeAgentsResult{}, fmt.Errorf("sleeper_free_agents: trending: %w", err)
 	}
-	research, err := e.client.Research(ctx, season, state.Week)
+	research, err := e.client.Research(ctx, season, week)
 	if err != nil {
 		return freeAgentsResult{}, fmt.Errorf("sleeper_free_agents: research: %w", err)
 	}

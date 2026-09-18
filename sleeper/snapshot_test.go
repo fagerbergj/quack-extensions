@@ -50,13 +50,20 @@ func TestDiffSnapshotsDetectsEachFieldChange(t *testing.T) {
 		},
 		TrendingAdd: map[string]int{"11533": 4200},
 	}
-	trends := diffSnapshots(old, newer, nil)
+	dump, err := newTestClient(t).PlayersDump(context.Background())
+	if err != nil {
+		t.Fatalf("PlayersDump: %v", err)
+	}
+	trends := diffSnapshots(old, newer, nil, dump)
 	if len(trends) != 1 {
 		t.Fatalf("trends = %d, want 1 (only 11533 changed)", len(trends))
 	}
 	tr := trends[0]
 	if tr.PlayerID != "11533" {
 		t.Fatalf("player_id = %q, want 11533", tr.PlayerID)
+	}
+	if tr.Name != "Brandon Aubrey" {
+		t.Errorf("name = %q, want Brandon Aubrey (joined from the players dump)", tr.Name)
 	}
 	if !tr.InjuryStatusChanged || tr.InjuryStatus != "Questionable" {
 		t.Errorf("injury_status_changed/injury_status = %v/%q, want true/Questionable", tr.InjuryStatusChanged, tr.InjuryStatus)
@@ -78,9 +85,24 @@ func TestDiffSnapshotsDetectsEachFieldChange(t *testing.T) {
 func TestDiffSnapshotsFiltersByPlayerIDs(t *testing.T) {
 	old := snapshot{Players: map[string]playerSnapshot{"a": {InjuryStatus: ""}, "b": {InjuryStatus: ""}}}
 	newer := snapshot{Players: map[string]playerSnapshot{"a": {InjuryStatus: "Out"}, "b": {InjuryStatus: "Out"}}}
-	trends := diffSnapshots(old, newer, []string{"a"})
+	trends := diffSnapshots(old, newer, []string{"a"}, nil)
 	if len(trends) != 1 || trends[0].PlayerID != "a" {
 		t.Errorf("trends = %+v, want only player a", trends)
+	}
+}
+
+// TestDiffSnapshotsSortedByPlayerID proves output order is stable
+// regardless of Go's randomized map iteration.
+func TestDiffSnapshotsSortedByPlayerID(t *testing.T) {
+	old := snapshot{Players: map[string]playerSnapshot{}}
+	newer := snapshot{Players: map[string]playerSnapshot{
+		"z9": {InjuryStatus: "Out"}, "a1": {InjuryStatus: "Out"}, "m5": {InjuryStatus: "Out"},
+	}}
+	for i := 0; i < 20; i++ {
+		trends := diffSnapshots(old, newer, nil, nil)
+		if len(trends) != 3 || trends[0].PlayerID != "a1" || trends[1].PlayerID != "m5" || trends[2].PlayerID != "z9" {
+			t.Fatalf("trends = %+v, want sorted [a1, m5, z9]", trends)
+		}
 	}
 }
 
@@ -88,7 +110,7 @@ func TestDiffSnapshotsFiltersByPlayerIDs(t *testing.T) {
 // shape Start's ticker would have produced) and drives the tool end to end.
 func TestGetTrendsOverTwoSyntheticSnapshots(t *testing.T) {
 	dataDir := t.TempDir()
-	e := &extension{host: sdk.Host{DataDir: dataDir}, cfg: config{DefaultLeague: testLeague}}
+	e := &extension{client: newTestClient(t), host: sdk.Host{DataDir: dataDir}, cfg: config{DefaultLeague: testLeague}}
 	old := snapshot{Date: "2026-09-10", Players: map[string]playerSnapshot{"11533": {DepthChartOrder: 1}}}
 	newer := snapshot{Date: "2026-09-16", Players: map[string]playerSnapshot{"11533": {DepthChartOrder: 3}}}
 	if err := writeSnapshot(dataDir, testLeague, old); err != nil {
@@ -97,7 +119,7 @@ func TestGetTrendsOverTwoSyntheticSnapshots(t *testing.T) {
 	if err := writeSnapshot(dataDir, testLeague, newer); err != nil {
 		t.Fatalf("writeSnapshot: %v", err)
 	}
-	got, err := e.getTrends(trendsArgs{Days: 30})
+	got, err := e.getTrends(context.Background(), trendsArgs{Days: 30})
 	if err != nil {
 		t.Fatalf("getTrends: %v", err)
 	}
@@ -107,11 +129,14 @@ func TestGetTrendsOverTwoSyntheticSnapshots(t *testing.T) {
 	if len(got.Trends) != 1 || got.Trends[0].PlayerID != "11533" || !got.Trends[0].DepthChartChanged {
 		t.Errorf("trends = %+v, want one depth-chart change for 11533", got.Trends)
 	}
+	if got.Trends[0].Name != "Brandon Aubrey" {
+		t.Errorf("name = %q, want Brandon Aubrey", got.Trends[0].Name)
+	}
 }
 
 func TestGetTrendsNotesInsufficientHistory(t *testing.T) {
 	e := &extension{host: sdk.Host{DataDir: t.TempDir()}, cfg: config{DefaultLeague: testLeague}}
-	got, err := e.getTrends(trendsArgs{})
+	got, err := e.getTrends(context.Background(), trendsArgs{})
 	if err != nil {
 		t.Fatalf("getTrends: %v", err)
 	}

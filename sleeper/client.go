@@ -212,25 +212,39 @@ func (c *Client) ResolvePlayer(name string) []string {
 	return c.names[strings.ToLower(strings.TrimSpace(name))]
 }
 
-// Chain walks previous_league_id back through past seasons (newest first,
-// bounded to maxChainSeasons); any fetch failure errors the whole walk rather than caching a truncated chain for 24h.
-func (c *Client) Chain(ctx context.Context, leagueID string) ([]sleepergen.League, error) {
+// Chain walks previous_league_id back up to seasonsBack (0 = all); false
+// errors the whole walk on any broken hop, true stops there and returns the reachable prefix.
+func (c *Client) Chain(ctx context.Context, leagueID string, seasonsBack int, stopOnUnreachable bool) ([]sleepergen.League, error) {
+	limit := maxChainSeasons
+	if seasonsBack > 0 && seasonsBack < limit {
+		limit = seasonsBack
+	}
+	if stopOnUnreachable {
+		return c.walkChain(ctx, leagueID, limit, true)
+	}
 	return cached(c, "chain:"+leagueID, ttlChain, func() ([]sleepergen.League, error) {
-		var out []sleepergen.League
-		id := leagueID
-		for i := 0; i < maxChainSeasons && id != ""; i++ {
-			league, err := c.League(ctx, id)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, *league)
-			if league.PreviousLeagueId == nil {
+		return c.walkChain(ctx, leagueID, limit, false)
+	})
+}
+
+func (c *Client) walkChain(ctx context.Context, leagueID string, limit int, stopOnUnreachable bool) ([]sleepergen.League, error) {
+	var out []sleepergen.League
+	id := leagueID
+	for i := 0; i < limit && id != ""; i++ {
+		league, err := c.League(ctx, id)
+		if err != nil {
+			if stopOnUnreachable {
 				break
 			}
-			id = *league.PreviousLeagueId
+			return nil, err
 		}
-		return out, nil
-	})
+		out = append(out, *league)
+		if league.PreviousLeagueId == nil {
+			break
+		}
+		id = *league.PreviousLeagueId
+	}
+	return out, nil
 }
 
 //nolint:dupl // each single-value cached lookup differs only by type and endpoint
@@ -274,17 +288,6 @@ func (c *Client) WinnersBracket(ctx context.Context, leagueID string) ([]sleeper
 		resp, err := c.gen.GetWinnersBracketWithResponse(ctx, leagueID)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("sleeper: get winners bracket %s: %w", leagueID, err)
-		}
-		return resp.JSON200, resp.HTTPResponse, resp.Body, nil
-	})
-}
-
-//nolint:dupl // see Rosters
-func (c *Client) LosersBracket(ctx context.Context, leagueID string) ([]sleepergen.BracketMatch, error) {
-	return cachedList(c, "losers_bracket:"+leagueID, ttlLeague, func() (*[]sleepergen.BracketMatch, *http.Response, []byte, error) {
-		resp, err := c.gen.GetLosersBracketWithResponse(ctx, leagueID)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("sleeper: get losers bracket %s: %w", leagueID, err)
 		}
 		return resp.JSON200, resp.HTTPResponse, resp.Body, nil
 	})
@@ -343,16 +346,6 @@ func (c *Client) Player(ctx context.Context, playerID string) (*sleepergen.Playe
 			return nil, fmt.Errorf("sleeper: get player %s: %w", playerID, err)
 		}
 		return okJSON(resp.JSON200, resp.HTTPResponse, resp.Body)
-	})
-}
-
-func (c *Client) DepthChart(ctx context.Context, team string) (map[string][]string, error) {
-	return cachedList(c, "depth_chart:"+team, ttlStatMap, func() (*map[string][]string, *http.Response, []byte, error) {
-		resp, err := c.gen.GetTeamDepthChartWithResponse(ctx, team)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("sleeper: get depth chart %s: %w", team, err)
-		}
-		return resp.JSON200, resp.HTTPResponse, resp.Body, nil
 	})
 }
 

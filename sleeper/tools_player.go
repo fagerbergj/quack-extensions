@@ -52,7 +52,11 @@ func (e *extension) getPlayer(ctx context.Context, a playerArgs) (playerResult, 
 	if err != nil {
 		return playerResult{}, err
 	}
-	proj, err := e.client.WeekProjections(ctx, season, state.Week)
+	week, err := weekForSeason(season, state)
+	if err != nil {
+		return playerResult{}, fmt.Errorf("sleeper_player: %w", err)
+	}
+	proj, err := e.client.WeekProjections(ctx, season, week)
 	if err != nil {
 		return playerResult{}, fmt.Errorf("sleeper_player: projections: %w", err)
 	}

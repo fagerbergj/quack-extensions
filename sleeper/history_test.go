@@ -6,7 +6,7 @@ import (
 )
 
 // TestGetHistoryKnownValues pins derived numbers independently checked
-// against the raw fixtures: Barkley drafted RB3 finished RB14, 88.5% 2025 efficiency, 2 close losses.
+// against the raw fixtures: Barkley drafted RB3 finished RB14, 88.5% 2025 efficiency, 1 close loss (<10pt margin).
 func TestGetHistoryKnownValues(t *testing.T) {
 	e := testExtension(t)
 	got, err := e.getHistory(context.Background(), historyArgs{})
@@ -46,8 +46,17 @@ func TestGetHistoryKnownValues(t *testing.T) {
 	if barkley.Verdict != "reach" {
 		t.Errorf("Barkley verdict = %q, want reach (RB3 finishing RB14)", barkley.Verdict)
 	}
-	if got.TotalCloseLosses != 2 {
-		t.Errorf("total_close_losses = %d, want 2", got.TotalCloseLosses)
+	// 2025 wk14 (margin 1.46) is close; 2026 wk1 (margin 15.34) is not, and
+	// 2026 wk2 is in progress and excluded entirely.
+	if got.TotalCloseLosses != 1 {
+		t.Errorf("total_close_losses = %d, want 1", got.TotalCloseLosses)
+	}
+	for _, sh := range got.Seasons {
+		for _, w := range sh.Weeks {
+			if sh.Season == "2026" && w.Week >= 2 {
+				t.Errorf("season 2026 week %+v: in-progress weeks must be excluded from hindsight", w)
+			}
+		}
 	}
 }
 
@@ -62,6 +71,22 @@ func TestGetHistorySeasonsBackCapsChain(t *testing.T) {
 	}
 	if got.Seasons[0].Season != "2026" {
 		t.Errorf("season = %q, want 2026 (the current/most recent)", got.Seasons[0].Season)
+	}
+}
+
+func TestWeekResultCloseLossFixedMargin(t *testing.T) {
+	for _, tc := range []struct {
+		mine, opp float32
+		wantClose bool
+	}{
+		{134.48, 135.94, true},  // 2025 wk14: 1.46 margin, close
+		{100.66, 116.00, false}, // 2026 wk1: 15.34 margin, not close
+		{112.14, 108.86, false}, // a win is never a "close loss"
+	} {
+		result, close := weekResult(tc.mine, tc.opp)
+		if close != tc.wantClose {
+			t.Errorf("weekResult(%v, %v) close = %v, want %v (result %s)", tc.mine, tc.opp, close, tc.wantClose, result)
+		}
 	}
 }
 

@@ -14,9 +14,8 @@ import (
 	"github.com/fagerbergj/quack-extensions/sleeper/sleepergen"
 )
 
-// closeLossFraction: a loss decided within 10% of the two teams' combined
-// score reads as "close" - roughly one full player's output either way.
-const closeLossFraction = 0.10
+// closeLossMargin: a loss decided by fewer than this many points is "close".
+const closeLossMargin = 10.0
 
 // reachStealThreshold: a positional finish 5+ spots off the drafted-as
 // rank is worth calling a reach or a steal; smaller gaps are just variance.
@@ -77,8 +76,8 @@ func (e *extension) historyTool() tool.Tool {
 			Name: "sleeper_history",
 			Description: "Walk a league's chain (previous_league_id) and report, per season: a draft " +
 				"report card (drafted-as rank vs positional finish), lineup efficiency (started vs best " +
-				"possible), close losses, and the champion. `seasons_back` caps how many seasons back " +
-				"from league_id to include (default all available).",
+				"possible), close losses (decided by fewer than 10 points), and the champion. " +
+				"`seasons_back` caps how many seasons back from league_id to include (default all available).",
 		},
 		func(ctx adkagent.Context, a historyArgs) (historyResult, error) { return e.getHistory(ctx, a) },
 	)
@@ -94,9 +93,12 @@ func (e *extension) getHistory(ctx context.Context, a historyArgs) (historyResul
 	if err != nil {
 		return historyResult{}, err
 	}
-	chain, err := e.walkChain(ctx, leagueID, a.SeasonsBack)
+	chain, err := e.client.Chain(ctx, leagueID, a.SeasonsBack, true)
 	if err != nil {
 		return historyResult{}, fmt.Errorf("sleeper_history: %w", err)
+	}
+	if len(chain) == 0 {
+		return historyResult{}, fmt.Errorf("sleeper_history: no league found for %s", leagueID)
 	}
 	out := historyResult{FetchedAt: nowRFC3339()}
 	for _, league := range chain {
@@ -106,32 +108,6 @@ func (e *extension) getHistory(ctx context.Context, a historyArgs) (historyResul
 		}
 		out.Seasons = append(out.Seasons, sh)
 		out.TotalCloseLosses += sh.CloseLosses
-	}
-	return out, nil
-}
-
-// walkChain follows previous_league_id up to seasonsBack; unlike
-// Client.Chain, a broken hop stops the walk instead of erroring it.
-func (e *extension) walkChain(ctx context.Context, leagueID string, seasonsBack int) ([]sleepergen.League, error) {
-	limit := maxChainSeasons
-	if seasonsBack > 0 && seasonsBack < limit {
-		limit = seasonsBack
-	}
-	var out []sleepergen.League
-	id := leagueID
-	for i := 0; i < limit && id != ""; i++ {
-		league, err := e.client.League(ctx, id)
-		if err != nil {
-			break
-		}
-		out = append(out, *league)
-		if league.PreviousLeagueId == nil {
-			break
-		}
-		id = *league.PreviousLeagueId
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("no league found for %s", leagueID)
 	}
 	return out, nil
 }
@@ -202,9 +178,17 @@ func (e *extension) champion(ctx context.Context, leagueID string, rosters []sle
 // weeklyHindsight walks every week with matchup data; a missing week
 // (a fixture gap, or the season hasn't reached it yet) is skipped, not an error.
 func (e *extension) weeklyHindsight(ctx context.Context, league sleepergen.League, myRosterID int, dump map[string]sleepergen.Player) ([]weekHindsight, int) {
+	lastWeek := maxHistoryWeeks
+	// An in-progress season's current week isn't final yet (still accruing
+	// points), so hindsight only covers weeks strictly before it.
+	if league.Status != "complete" {
+		if state, err := e.client.State(ctx); err == nil && state.Week-1 < lastWeek {
+			lastWeek = state.Week - 1
+		}
+	}
 	var weeks []weekHindsight
 	closeLosses := 0
-	for week := 1; week <= maxHistoryWeeks; week++ {
+	for week := 1; week <= lastWeek; week++ {
 		matchups, err := e.client.Matchups(ctx, league.LeagueId, week)
 		if err != nil || len(matchups) == 0 {
 			continue
@@ -235,12 +219,11 @@ func weekResult(mine, opp float32) (result string, close bool) {
 	default:
 		result = "T"
 	}
-	total := mine + opp
 	margin := mine - opp
 	if margin < 0 {
 		margin = -margin
 	}
-	close = result == "L" && total > 0 && float64(margin) <= closeLossFraction*float64(total)
+	close = result == "L" && margin < closeLossMargin
 	return result, close
 }
 
@@ -261,11 +244,14 @@ func (e *extension) draftReportCard(ctx context.Context, league sleepergen.Leagu
 	if err != nil {
 		return nil, fmt.Errorf("draft picks: %w", err)
 	}
-	// A season still in progress has no season-total stats yet - positional
-	// finish isn't knowable until it ends, so the report card waits too.
+	// A season still in progress (league.Status != "complete") has no
+	// season-total stats yet, so positional finish isn't knowable.
+	if league.Status != "complete" {
+		return nil, nil
+	}
 	stats, err := e.client.SeasonStats(ctx, league.Season)
 	if err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("season stats: %w", err)
 	}
 	draftedRank := positionalDraftRank(picks)
 	finishRank := positionalFinishRank(picks, stats)

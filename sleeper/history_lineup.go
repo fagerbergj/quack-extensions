@@ -1,5 +1,5 @@
-// bestLineupPoints: fill strict-position slots with top scorers, then FLEX
-// with the best remaining RB/WR/TE - greedy is optimal with one shared slot.
+// bestLineupPoints: fill strict-position slots with top scorers, then each
+// FLEX kind narrowest-to-widest from the best remaining eligible players.
 package sleeper
 
 import (
@@ -8,58 +8,95 @@ import (
 	"github.com/fagerbergj/quack-extensions/sleeper/sleepergen"
 )
 
-// flexPositions: what a FLEX slot may hold, per the UI design doc.
-var flexPositions = map[string]bool{"RB": true, "WR": true, "TE": true}
+// flexKindOrder: narrowest eligibility first - each kind's set nests in
+// the next, so an exchange argument makes narrowest-first-widest-last optimal.
+var flexKindOrder = []string{"WRRB_FLEX", "REC_FLEX", "FLEX", "SUPER_FLEX"}
+
+var flexKindEligible = map[string][]string{
+	"WRRB_FLEX":  {"RB", "WR"},
+	"REC_FLEX":   {"WR", "TE"},
+	"FLEX":       {"RB", "WR", "TE"},
+	"SUPER_FLEX": {"QB", "RB", "WR", "TE"},
+}
 
 func bestLineupPoints(rosterPositions []string, playerIDs []string, points map[string]float32, dump map[string]sleepergen.Player) float32 {
-	counts, flexSlots := slotCounts(rosterPositions)
+	counts, flexCounts := slotCounts(rosterPositions)
 	byPos := groupByPosition(playerIDs, dump)
+	leftover := map[string][]string{}
 	var total float32
-	usedFlexPool := map[string]bool{}
 	for pos, n := range counts {
-		if flexPositions[pos] {
-			continue // filled after the flex-eligible minimums below
-		}
-		total += takeTop(byPos[pos], points, n)
-	}
-	var flexPool []string
-	for pos := range flexPositions {
-		group := byPos[pos]
-		sort.SliceStable(group, func(i, j int) bool { return points[group[i]] > points[group[j]] })
-		n := counts[pos]
+		group := sortedByPoints(byPos[pos], points)
 		if n > len(group) {
 			n = len(group)
 		}
 		for _, id := range group[:n] {
 			total += points[id]
-			usedFlexPool[id] = true
 		}
-		flexPool = append(flexPool, group[n:]...)
+		leftover[pos] = group[n:]
 	}
-	sort.SliceStable(flexPool, func(i, j int) bool { return points[flexPool[i]] > points[flexPool[j]] })
-	if flexSlots > len(flexPool) {
-		flexSlots = len(flexPool)
-	}
-	for _, id := range flexPool[:flexSlots] {
-		total += points[id]
+	for _, kind := range flexKindOrder {
+		n := flexCounts[kind]
+		if n == 0 {
+			continue
+		}
+		total += fillFlexKind(kind, n, leftover, points)
 	}
 	return total
 }
 
+// fillFlexKind takes the top n players across kind's eligible positions'
+// current leftovers, and removes them so a wider flex kind can't reuse them.
+func fillFlexKind(kind string, n int, leftover map[string][]string, points map[string]float32) float32 {
+	var pool []string
+	for _, pos := range flexKindEligible[kind] {
+		pool = append(pool, leftover[pos]...)
+	}
+	pool = sortedByPoints(pool, points)
+	if n > len(pool) {
+		n = len(pool)
+	}
+	taken := map[string]bool{}
+	var total float32
+	for _, id := range pool[:n] {
+		total += points[id]
+		taken[id] = true
+	}
+	for _, pos := range flexKindEligible[kind] {
+		leftover[pos] = removeIDs(leftover[pos], taken)
+	}
+	return total
+}
+
+func removeIDs(ids []string, remove map[string]bool) []string {
+	out := ids[:0]
+	for _, id := range ids {
+		if !remove[id] {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func sortedByPoints(ids []string, points map[string]float32) []string {
+	out := append([]string(nil), ids...)
+	sort.SliceStable(out, func(i, j int) bool { return points[out[i]] > points[out[j]] })
+	return out
+}
+
 // slotCounts tallies roster_positions into per-position minimums plus a
-// separate FLEX count, ignoring bench/reserve/taxi entries.
-func slotCounts(rosterPositions []string) (counts map[string]int, flex int) {
-	counts = map[string]int{}
+// count per FLEX kind, ignoring bench/reserve/taxi entries.
+func slotCounts(rosterPositions []string) (counts map[string]int, flexCounts map[string]int) {
+	counts, flexCounts = map[string]int{}, map[string]int{}
 	for _, p := range rosterPositions {
-		switch p {
-		case "BN", "IR", "TAXI":
-		case "FLEX":
-			flex++
+		switch {
+		case p == "BN" || p == "IR" || p == "TAXI":
+		case flexKindEligible[p] != nil:
+			flexCounts[p]++
 		default:
 			counts[p]++
 		}
 	}
-	return counts, flex
+	return counts, flexCounts
 }
 
 func groupByPosition(playerIDs []string, dump map[string]sleepergen.Player) map[string][]string {
@@ -72,16 +109,4 @@ func groupByPosition(playerIDs []string, dump map[string]sleepergen.Player) map[
 		out[pos] = append(out[pos], id)
 	}
 	return out
-}
-
-func takeTop(ids []string, points map[string]float32, n int) float32 {
-	sort.SliceStable(ids, func(i, j int) bool { return points[ids[i]] > points[ids[j]] })
-	if n > len(ids) {
-		n = len(ids)
-	}
-	var total float32
-	for _, id := range ids[:n] {
-		total += points[id]
-	}
-	return total
 }
