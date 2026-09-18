@@ -96,6 +96,29 @@ func TestHandleSeasonsUnknownLeague(t *testing.T) {
 	}
 }
 
+// TestHandleSeasonsUpstreamFailureIsBadGateway pins the 404-vs-502 split:
+// a genuine upstream 5xx (unlike Sleeper's real 404 or null-body
+// not-found) must not read as "unknown league".
+func TestHandleSeasonsUpstreamFailureIsBadGateway(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	client, err := NewClient(srv.URL, nil)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	e := &extension{client: client, cfg: config{DefaultUser: testUser}}
+	r := chi.NewRouter()
+	e.RegisterRoutes(r, chi.NewRouter())
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/seasons?league_id="+testLeague, nil))
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502, body = %s", rec.Code, rec.Body)
+	}
+}
+
 func TestHandleSeasonsMissingLeagueID(t *testing.T) {
 	_, r := newTestExtension(t, sdk.Host{}, config{})
 	rec := httptest.NewRecorder()
@@ -353,6 +376,35 @@ func TestHandleJobsTradeRequiresPartner(t *testing.T) {
 	want := "ext:sleeper:" + testLeague + ":trade:Rice Cooker"
 	if resp.ChatID != want {
 		t.Errorf("chat_id = %q, want %q", resp.ChatID, want)
+	}
+}
+
+// TestHandleJobsTradeKeysOnUserIDNotName pins the dispatch side of the
+// rename-safety contract (TestHandleArtifactsRealTradeTalkDiscovery pins
+// the read side): the chat id keys on the user_id in args.partner, and
+// args.partner_name (display-only) still reaches the chat title.
+func TestHandleJobsTradeKeysOnUserIDNotName(t *testing.T) {
+	const riceCookerOwnerID = "740613226189987840"
+	host := &fakeHost{artifacts: map[string]map[string][]byte{}}
+	_, r := newTestExtension(t, host.sdkHost(), config{})
+	body := `{"league_id":"` + testLeague + `","stop":"2","job":"trade","args":{"partner":"` + riceCookerOwnerID + `","partner_name":"Rice Cooker"}}`
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/jobs", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	var resp jobResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	wantChatID := "ext:sleeper:" + testLeague + ":trade:" + riceCookerOwnerID
+	if resp.ChatID != wantChatID {
+		t.Errorf("chat_id = %q, want %q (keyed on the user_id, not the display name)", resp.ChatID, wantChatID)
+	}
+	if len(host.dispatched) != 1 {
+		t.Fatalf("dispatched %d requests, want 1", len(host.dispatched))
+	}
+	wantTitle := "Sleeper trade talk with Rice Cooker"
+	if host.dispatched[0].Chat.Title != wantTitle {
+		t.Errorf("title = %q, want %q", host.dispatched[0].Chat.Title, wantTitle)
 	}
 }
 

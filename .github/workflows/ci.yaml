@@ -112,6 +112,7 @@ jobs:
           cache-dependency-path: sleeper/ui/storybook/package-lock.json
       - run: npm ci
       - run: npm run validate-schemas
+      - run: npm run security-check
       # No --with-deps: it runs apt-get update, which fails whenever Google's
       # chrome apt mirror is inconsistent, and the runner already ships every
       # library Chromium needs.

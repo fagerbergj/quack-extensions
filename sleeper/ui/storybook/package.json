@@ -6,7 +6,8 @@
     "storybook": "storybook dev -p 6011",
     "build-storybook": "storybook build",
     "render-check": "node render-check.mjs",
-    "validate-schemas": "node validate-schemas.mjs"
+    "validate-schemas": "node validate-schemas.mjs",
+    "security-check": "node security-check.mjs"
   },
   "devDependencies": {
     "@storybook/html-vite": "10.6.0",

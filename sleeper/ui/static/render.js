@@ -71,7 +71,7 @@ export function personHTML(player, sm) {
 export function verdictBadge(verdict, confidence, why) {
   const label = verdict === 'start' ? 'Start' : verdict === 'sit' ? 'Sit' : verdict
   const okCls = verdict === 'start' ? 'qk-badge--ok' : ''
-  const pct = confidence != null ? ` · ${confidence}%` : ''
+  const pct = confidence != null ? ` · ${int(confidence)}%` : ''
   return `<span class="qk-badge hint ${okCls}" title="${esc(why || '')}" tabindex="0">${esc(label)}${pct}</span>`
 }
 
@@ -107,7 +107,7 @@ export function renderLineup(state) {
     <div class="sl-score"><div><b>${num(d.my_proj)}</b><span>${esc(d.team)} · ${esc(d.team_record || '')}<br>projected</span></div><div class="vs">vs</div><div><b>${num(d.opp_proj)}</b><span>${esc(d.opponent)} · ${esc(d.opponent_record || '')}<br>projected</span></div></div>
     <div class="sl-sec__body">
     <p class="sl-summary">${esc(d.summary || '')}</p>
-    <div class="qk-table-wrap"><table class="qk-table"><thead><tr><th>Slot</th><th>Player</th><th class="num">Proj</th><th>Start / sit</th></tr></thead><tbody>${rows}<tr class="divider"><td colspan="4">Bench · ${(d.bench || []).length} of ${d.bench_slots || (d.bench || []).length}</td></tr>${benchRows}${irRows ? `<tr class="divider"><td colspan="4">Injured reserve · ${reserve.length} of ${d.reserve_slots || 1}, outside the roster count</td></tr>${irRows}` : ''}</tbody></table></div>
+    <div class="qk-table-wrap"><table class="qk-table"><thead><tr><th>Slot</th><th>Player</th><th class="num">Proj</th><th>Start / sit</th></tr></thead><tbody>${rows}<tr class="divider"><td colspan="4">Bench · ${(d.bench || []).length} of ${d.bench_slots ? int(d.bench_slots) : (d.bench || []).length}</td></tr>${benchRows}${irRows ? `<tr class="divider"><td colspan="4">Injured reserve · ${reserve.length} of ${d.reserve_slots ? int(d.reserve_slots) : 1}, outside the roster count</td></tr>${irRows}` : ''}</tbody></table></div>
     <details class="sl-fold"><summary>${esc(d.opponent)}'s lineup · ${num(d.opp_proj)} projected</summary><div class="qk-table-wrap"><table class="qk-table"><thead><tr><th>Slot</th><th>Starter</th><th class="num">Proj</th></tr></thead><tbody>${oppRows}</tbody></table></div></details>
     <p class="sl-src">${esc(d.source_note || '')}</p></div>`)
 }
@@ -137,8 +137,11 @@ function tradeFinder(suggestions) {
 }
 
 function talkPartnerSelect(partners) {
+  // A <select> always reports its first option as selected; a blank
+  // leading option is what makes "no team chosen yet" representable, so
+  // runJob's "Pick a team to trade with." guard can actually fire.
   const opts = (partners || []).map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')
-  return `<select id="talk-partner" class="sl-select" aria-label="Team to trade with">${opts}</select>`
+  return `<select id="talk-partner" class="sl-select" aria-label="Team to trade with"><option value="">Pick a team…</option>${opts}</select>`
 }
 
 // talks: [{partner, found, example, status, data}]; talkIdx selects which
@@ -149,10 +152,11 @@ export function renderTrade(state, talks, talkIdx, partners) {
   const anyFound = talks.some(t => t.found)
   const suggestions = talks.find(t => t.found)?.data?.suggestions
   if (!anyFound) {
-    // No partner input here (blocking review finding): with no talk and no
-    // suggestion, there's no partner to dispatch against yet - a suggestion's
-    // own "Start talk" button (which does carry data-partner) is the only path in.
-    return section('sec-trade', head + `<div class="sl-sec__body">${tradeFinder(suggestions)}<div class="sl-empty" style="margin-top:1rem"><span>No trades talked yet - one opens as soon as you or a partner starts one.</span></div></div>`)
+    // The talkbar (partner select + New talk) is the only way to start a
+    // FIRST talk when no suggestions exist yet, so it has to render here too.
+    return section('sec-trade', head + `<div class="sl-sec__body">
+    <div class="sl-talkbar">${talkPartnerSelect(partners)}<button class="qk-btn qk-btn--primary" data-run="trade">New talk</button></div>
+    ${tradeFinder(suggestions)}<div class="sl-empty" style="margin-top:1rem"><span>No trades talked yet - one opens as soon as you or a partner starts one.</span></div></div>`)
   }
   const cur = talks[Math.min(talkIdx, talks.length - 1)]
   const options = talks.map((t, i) => `<option value="${i}" ${i === talkIdx ? 'selected' : ''}>${esc(t.partner)} · ${esc(t.status || (t.found ? 'open' : 'new'))} · ${t.data?.offers?.length ?? 0} offer${(t.data?.offers?.length ?? 0) === 1 ? '' : 's'}</option>`).join('')
@@ -264,13 +268,13 @@ export function renderReview(state) {
   const x = state.data
   const weeks = x.weeks || []
   const max = Math.max(1, ...weeks.map(w => w.best))
-  const bars = weeks.map(w => `<div class="${w.won ? '' : 'loss'}" data-stop="${w.week}" title="Week ${w.week}: started ${num(w.started, 1)}, best ${num(w.best, 1)}${w.opp != null ? ', opponent ' + num(w.opp, 1) : ''}" style="height:${100 * w.best / max}%"><i style="height:${100 * w.started / w.best}%"></i></div>`).join('')
+  const bars = weeks.map(w => `<div class="${w.won ? '' : 'loss'}" data-stop="${int(w.week)}" title="Week ${int(w.week)}: started ${num(w.started, 1)}, best ${num(w.best, 1)}${w.opp != null ? ', opponent ' + num(w.opp, 1) : ''}" style="height:${100 * w.best / max}%"><i style="height:${100 * w.started / w.best}%"></i></div>`).join('')
   const worst = weeks.length ? weeks.slice().sort((a, b) => (b.left ?? 0) - (a.left ?? 0))[0] : null
   return section('sec-review', head + `<div class="sl-sec__body">
     <div class="sl-stats"><div class="sl-stat"><span>Record</span><b>${int(x.wins)}-${int(x.losses)}</b><small>from draft slot ${int(x.draft_slot)}</small></div><div class="sl-stat"><span>Points for</span><b>#${int(x.pf_rank)}</b><small>${num(x.pf, 0)} · rank</small></div><div class="sl-stat"><span>Points against</span><b>#${int(x.pa_rank)}</b><small>strength of schedule</small></div><div class="sl-stat"><span>Lineup efficiency</span><b>${num(x.eff, 1)}%</b><small>${num(x.left_total, 0)} pts left on the bench</small></div><div class="sl-stat"><span>Close losses</span><b>${int(x.close_losses)}</b><small>by fewer than 10</small></div><div class="sl-stat"><span>Moves</span><b>${int(x.moves)}</b><small>waivers and trades</small></div></div>
     <h3 style="font-size:.8125rem;margin:0 0 .25rem">Weekly: started (filled) vs best possible (bar); red is a loss.</h3>
-    <div class="sl-bars">${bars}</div><div class="sl-bars-x">${weeks.map(w => `<span>${w.week}</span>`).join('')}</div>
-    ${worst ? `<p class="sl-src">Worst week: ${worst.week}, ${num(worst.left, 1)} points left on the bench${worst.won ? '' : ' in a loss'}. Champion: ${esc(x.champion || '–')}.</p>` : ''}</div>`)
+    <div class="sl-bars">${bars}</div><div class="sl-bars-x">${weeks.map(w => `<span>${int(w.week)}</span>`).join('')}</div>
+    ${worst ? `<p class="sl-src">Worst week: ${int(worst.week)}, ${num(worst.left, 1)} points left on the bench${worst.won ? '' : ' in a loss'}. Champion: ${esc(x.champion || '–')}.</p>` : ''}</div>`)
 }
 
 export function renderSeasonNotes(state) {
@@ -293,12 +297,12 @@ export function renderCrossSeason(x) {
 
 export function renderStandingsSide(season) {
   const s = season.standings || []
-  return section('side-standings', `<div class="sl-sec__head"><h2>Standings</h2><span class="sl-sec__meta">${season.playoff_line || 6} make the playoffs</span></div><div class="sl-sec__body"><ol class="sl-rows">${s.map((t, i) => `<li class="${i === (season.playoff_line || 6) - 1 ? 'line' : ''}"><span class="rank">${i + 1}</span><span class="main"><b>${esc(t.team)}${t.mine ? ' <span class="qk-badge">you</span>' : ''}</b><span>${esc(t.owner)}</span></span><span class="n"><b>${t.wins}-${t.losses}</b>${num(t.pf, 2)}</span></li>`).join('')}</ol></div>`)
+  return section('side-standings', `<div class="sl-sec__head"><h2>Standings</h2><span class="sl-sec__meta">${int(season.playoff_line) || 6} make the playoffs</span></div><div class="sl-sec__body"><ol class="sl-rows">${s.map((t, i) => `<li class="${i === (int(season.playoff_line) || 6) - 1 ? 'line' : ''}"><span class="rank">${i + 1}</span><span class="main"><b>${esc(t.team)}${t.mine ? ' <span class="qk-badge">you</span>' : ''}</b><span>${esc(t.owner)}</span></span><span class="n"><b>${int(t.wins)}-${int(t.losses)}</b>${num(t.pf, 2)}</span></li>`).join('')}</ol></div>`)
 }
 
 export function renderMovesSide(season) {
   const m = season.recent_moves || []
-  return section('side-moves', `<div class="sl-sec__head"><h2>Recent moves</h2></div><div class="sl-sec__body"><ul class="sl-rows">${m.map(t => `<li class="two"><span class="main"><b>${esc(t.label)}</b><span>${esc((t.by || []).join(' and '))}</span></span><span class="n">wk ${t.week}</span></li>`).join('')}</ul></div>`)
+  return section('side-moves', `<div class="sl-sec__head"><h2>Recent moves</h2></div><div class="sl-sec__body"><ul class="sl-rows">${m.map(t => `<li class="two"><span class="main"><b>${esc(t.label)}</b><span>${esc((t.by || []).join(' and '))}</span></span><span class="n">wk ${int(t.week)}</span></li>`).join('')}</ul></div>`)
 }
 
 export function emptyState(job, title, agent, what) {
@@ -319,7 +323,7 @@ export function renderTimeline(currentStop, weekNow, isCurrentSeason, artifactCo
 }
 
 export function renderYears(seasons, currentSeason) {
-  return `<nav class="sl-years" aria-label="Seasons">${seasons.map(s => `<button class="sl-year" data-season="${esc(s.season)}" aria-pressed="${s.season === currentSeason}">${esc(s.season)}<small>${s.wins}-${s.losses}</small></button>`).join('')}</nav>`
+  return `<nav class="sl-years" aria-label="Seasons">${seasons.map(s => `<button class="sl-year" data-season="${esc(s.season)}" aria-pressed="${s.season === currentSeason}">${esc(s.season)}<small>${int(s.wins)}-${int(s.losses)}</small></button>`).join('')}</nav>`
 }
 
 // items: [{job, label, agent, running, disabled}] - the kebab menu's list

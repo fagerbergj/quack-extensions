@@ -22,7 +22,10 @@ function buildStorybook() {
 
 async function serveStatic() {
   const server = createServer(async (req, res) => {
-    let p = decodeURIComponent(req.url.split('?')[0])
+    // Malformed percent-encoding (e.g. "%%zz") throws URIError; caught here
+    // so it 404s as a literal path instead of crashing the async handler.
+    let p
+    try { p = decodeURIComponent(req.url.split('?')[0]) } catch { p = req.url.split('?')[0] }
     if (p === '/') p = '/index.html'
     // Reject a resolved path that escapes ROOT (e.g. an encoded ../) before
     // touching the filesystem - CI-only and single-client, but cheap to close.

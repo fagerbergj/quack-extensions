@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -65,6 +66,16 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// writeLeagueErr honors client.go's typed ErrNotFound (a real 404 or
+// Sleeper's HTTP-200-null-body) as 404; anything else is an upstream failure (502).
+func writeLeagueErr(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "unknown league")
+		return
+	}
+	writeErr(w, http.StatusBadGateway, err.Error())
 }
 
 func firstNonEmpty(a, b string) string {
@@ -392,7 +403,7 @@ func (e *extension) handleSeason(w http.ResponseWriter, r *http.Request) {
 	c := e.client
 	league, err := c.League(ctx, leagueID)
 	if err != nil {
-		writeErr(w, http.StatusNotFound, "unknown league")
+		writeLeagueErr(w, err)
 		return
 	}
 	rosters, err := c.Rosters(ctx, leagueID)
@@ -485,6 +496,13 @@ func (e *extension) handleSeasons(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := e.client
+	// A direct League() fetch first: Chain(stopOnUnreachable: true) below
+	// swallows every failure into an empty result, which would otherwise
+	// make a genuinely unknown league indistinguishable from an upstream 5xx.
+	if _, err := c.League(ctx, leagueID); err != nil {
+		writeLeagueErr(w, err)
+		return
+	}
 	// stopOnUnreachable: a UI wants whatever history is reachable, not
 	// all-or-nothing (the history job, Chain's other caller, wants the opposite).
 	chain, err := c.Chain(ctx, leagueID, 0, true)
@@ -564,19 +582,23 @@ func (e *extension) readTradeTalks(ctx context.Context, leagueID string) []trade
 	}
 	if len(out) == 0 && e.cfg.Fixture {
 		if fx, ok := fixtureBytes["trade"]; ok {
-			name := fixturePartner(fx)
-			out = append(out, tradeTalkEnvelope{Partner: name, PartnerID: name, artifactEnvelope: artifactEnvelope{Found: true, Example: true, Data: fx}})
+			name, id := fixturePartner(fx)
+			out = append(out, tradeTalkEnvelope{Partner: name, PartnerID: id, artifactEnvelope: artifactEnvelope{Found: true, Example: true, Data: fx}})
 		}
 	}
 	return out
 }
 
-func fixturePartner(fx json.RawMessage) string {
+// fixturePartner reads the fixture's own partner_id (a real user_id from
+// the recorded league) rather than standing in the display name for it -
+// keeping fixture-mode talks discoverable the same way real ones are.
+func fixturePartner(fx json.RawMessage) (name, id string) {
 	var v struct {
-		Partner string `json:"partner"`
+		Partner   string `json:"partner"`
+		PartnerID string `json:"partner_id"`
 	}
 	_ = json.Unmarshal(fx, &v)
-	return v.Partner
+	return v.Partner, v.PartnerID
 }
 
 // jobsForStop is the closed vocabulary of artifact-backed jobs each stop

@@ -288,12 +288,15 @@ function pollFor(job) {
     const found = job === 'trade'
       ? (state.artifacts.talks || []).some(t => t.found)
       : !!(state.artifacts.jobs || {})[job]?.found
-    if (found || attempts >= 20) {
+    const done = found || attempts >= 20
+    if (done) {
       clearInterval(timer)
       state.running.delete(job)
     }
     renderMenu()
-    if (!mainHasOpenState()) renderMain()
+    // On the final tick, show the finished card even with an open compose
+    // form/details - the guard exists only to protect an in-progress poll.
+    if (done || !mainHasOpenState()) renderMain()
   }, 3000)
 }
 
