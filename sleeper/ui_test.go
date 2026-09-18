@@ -359,6 +359,25 @@ func TestHandleJobsDispatchesChatIDAndAppendsTurn(t *testing.T) {
 	}
 }
 
+// TestHandleJobsUnmappedJobUsesPlannerPath pins jobWorkflows' zero-value
+// default: a job with no agent yet (e.g. digest) must not name a shape.
+func TestHandleJobsUnmappedJobUsesPlannerPath(t *testing.T) {
+	host := &fakeHost{artifacts: map[string]map[string][]byte{}}
+	_, r := newTestExtension(t, host.sdkHost(), config{})
+	body := `{"league_id":"` + testLeague + `","stop":"2","job":"digest"}`
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/jobs", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if len(host.dispatched) != 1 {
+		t.Fatalf("dispatched %d requests, want 1", len(host.dispatched))
+	}
+	if got := host.dispatched[0].Run.Workflow; got != "" {
+		t.Errorf("digest workflow = %q, want empty (no bound shape yet)", got)
+	}
+}
+
 func TestHandleJobsTradeRequiresPartner(t *testing.T) {
 	host := &fakeHost{artifacts: map[string]map[string][]byte{}}
 	_, r := newTestExtension(t, host.sdkHost(), config{})
@@ -508,5 +527,16 @@ func TestUIServesUnderQuackMount(t *testing.T) {
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sleeper/api/artifacts?stop=1", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /sleeper/api/artifacts?stop=1 status = %d, body = %s", rec.Code, rec.Body)
+	}
+
+	// Bare "/sleeper" (no trailing slash) must redirect, not serve index.html at a
+	// path where its relative asset/API refs would resolve wrong.
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sleeper", nil))
+	if rec.Code != http.StatusMovedPermanently {
+		t.Fatalf("GET /sleeper status = %d, want 301", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/sleeper/" {
+		t.Errorf("GET /sleeper Location = %q, want /sleeper/", loc)
 	}
 }
