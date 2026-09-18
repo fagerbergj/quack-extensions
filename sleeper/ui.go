@@ -567,11 +567,8 @@ type artifactEnvelope struct {
 // UI - an agent runaway shouldn't balloon the response.
 const maxInvalidTextBytes = 64 * 1024
 
-// readArtifact tries the real chat first; behind cfg.Fixture, a miss falls
-// back to the reference example JSON, marked Example so the UI can badge it.
-// A hit whose bytes aren't JSON (or a fenced-JSON block) comes back Invalid
-// with the raw text instead of Data, so the caller's json.Encoder never
-// fails on it and silently ships an empty 200.
+// readArtifact tries the real chat first (a non-JSON hit comes back Invalid
+// with the raw text); behind cfg.Fixture, a miss falls back to the reference example JSON, marked Example.
 func (e *extension) readArtifact(chatID, name string) artifactEnvelope {
 	if e.host.ReadArtifact != nil {
 		if data, ok := e.host.ReadArtifact(chatID, e.cfg.DefaultUser, name); ok {
