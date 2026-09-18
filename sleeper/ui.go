@@ -57,9 +57,7 @@ func (e *extension) mountUI(authed chi.Router) {
 	authed.Handle("/*", http.FileServer(http.FS(static)))
 }
 
-// uiClientOverride is a test-only seam (same package as ui_test.go): set it
-// directly to point every handler at a mock Sleeper server instead of the
-// real API.
+// uiClientOverride is a test-only seam: set directly to point handlers at a mock server.
 var uiClientOverride *Client
 
 var (
@@ -67,10 +65,8 @@ var (
 	defaultClientVal  *Client
 )
 
-// uiClient is a package-level singleton rather than an extension field:
-// the production base URL never varies per instance, and this avoids a
-// second sleeper.go edit to add a client field the tools slice may add
-// independently.
+// uiClient is package-level, not an extension field: the base URL never
+// varies per instance, and this avoids a second edit to sleeper.go's struct.
 func uiClient() *Client {
 	if uiClientOverride != nil {
 		return uiClientOverride
@@ -426,10 +422,8 @@ type seasonResponse struct {
 	PlayoffLine  int           `json:"playoff_line"`
 }
 
-// handleSeason serves GET /sleeper/api/season?league_id= - one season's
-// league facts, "me"/opponent, standings, and recent moves, built live from
-// the cached Sleeper client (never from job artifacts - see handleArtifacts
-// for those).
+// handleSeason serves GET /sleeper/api/season?league_id= - one season's live
+// league/me/opponent/standings/moves, never from job artifacts (see handleArtifacts).
 func (e *extension) handleSeason(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	leagueID := firstNonEmpty(r.URL.Query().Get("league_id"), e.cfg.DefaultLeague)
@@ -512,11 +506,8 @@ func (e *extension) seasonSummaryFor(ctx context.Context, c *Client, lg sleeperg
 	return out
 }
 
-// walkChain walks previous_league_id back through past seasons like
-// Client.Chain, but tolerates a gap instead of erroring the whole walk - a
-// UI wants whatever history is reachable, not an all-or-nothing chain (the
-// history job, Client.Chain's actual consumer, wants the opposite: a
-// silently truncated chain there would misreport "no past seasons").
+// walkChain mirrors Client.Chain but tolerates a gap instead of erroring the
+// whole walk - a UI wants whatever history is reachable, not all-or-nothing.
 func (e *extension) walkChain(ctx context.Context, c *Client, leagueID string) []sleepergen.League {
 	var out []sleepergen.League
 	id := leagueID
