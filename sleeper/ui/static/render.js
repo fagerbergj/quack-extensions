@@ -97,7 +97,7 @@ export function renderLineup(state) {
     <div class="sl-score"><div><b>${num(d.my_proj)}</b><span>${esc(d.team)} · ${esc(d.team_record || '')}<br>projected</span></div><div class="vs">vs</div><div><b>${num(d.opp_proj)}</b><span>${esc(d.opponent)} · ${esc(d.opponent_record || '')}<br>projected</span></div></div>
     <div class="sl-sec__body">
     <p class="sl-summary">${esc(d.summary || '')}</p>
-    <div class="qk-table-wrap"><table class="qk-table"><thead><tr><th>Slot</th><th>Player</th><th class="num">Proj</th><th>Start / sit</th></tr></thead><tbody>${rows}<tr class="divider"><td colspan="4">Bench · ${(d.bench || []).length} of 5</td></tr>${benchRows}${irRows ? `<tr class="divider"><td colspan="4">Injured reserve · ${reserve.length} of ${d.reserve_slots || 1}, outside the roster count</td></tr>${irRows}` : ''}</tbody></table></div>
+    <div class="qk-table-wrap"><table class="qk-table"><thead><tr><th>Slot</th><th>Player</th><th class="num">Proj</th><th>Start / sit</th></tr></thead><tbody>${rows}<tr class="divider"><td colspan="4">Bench · ${(d.bench || []).length} of ${d.bench_slots || (d.bench || []).length}</td></tr>${benchRows}${irRows ? `<tr class="divider"><td colspan="4">Injured reserve · ${reserve.length} of ${d.reserve_slots || 1}, outside the roster count</td></tr>${irRows}` : ''}</tbody></table></div>
     <details class="sl-fold"><summary>${esc(d.opponent)}'s lineup · ${num(d.opp_proj)} projected</summary><div class="qk-table-wrap"><table class="qk-table"><thead><tr><th>Slot</th><th>Starter</th><th class="num">Proj</th></tr></thead><tbody>${oppRows}</tbody></table></div></details>
     <p class="sl-src">${esc(d.source_note || '')}</p></div>`)
 }

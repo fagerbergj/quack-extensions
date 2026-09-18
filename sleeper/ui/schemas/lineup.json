@@ -234,6 +234,9 @@
     "reserve_slots": {
       "type": "integer"
     },
+    "bench_slots": {
+      "type": "integer"
+    },
     "opponent_starters": {
       "type": "array",
       "items": {
