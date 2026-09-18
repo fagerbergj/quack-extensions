@@ -48,6 +48,7 @@ func (e *extension) mountUI(authed chi.Router) {
 	authed.Get("/api/seasons", e.handleSeasons)
 	authed.Get("/api/season", e.handleSeason)
 	authed.Get("/api/artifacts", e.handleArtifacts)
+	authed.Get("/api/jobs", e.handleRunnableJobs)
 	authed.Post("/api/jobs", e.handleJobs)
 
 	static, err := fs.Sub(uiStaticFS, "ui/static")
@@ -176,6 +177,15 @@ func waiverTypeLabel(wt int) string {
 	return "Rolling waivers"
 }
 
+// recordString shows ties only when non-zero, so a team's record reads the
+// same everywhere it's formatted (the season API and every sleeper_* tool).
+func recordString(wins, losses, ties int) string {
+	if ties != 0 {
+		return fmt.Sprintf("%d-%d-%d", wins, losses, ties)
+	}
+	return fmt.Sprintf("%d-%d", wins, losses)
+}
+
 func buildFacts(league *sleepergen.League) []string {
 	facts := []string{fmt.Sprintf("%d teams", league.TotalRosters)}
 	if s := scoringType(league.ScoringSettings); s != "" {
@@ -220,6 +230,7 @@ type standingRow struct {
 	Owner  string  `json:"owner"`
 	Wins   int     `json:"wins"`
 	Losses int     `json:"losses"`
+	Ties   int     `json:"ties"`
 	PF     float64 `json:"pf"`
 	PA     float64 `json:"pa"`
 	Mine   bool    `json:"mine"`
@@ -233,8 +244,8 @@ func standingRowFor(ro sleepergen.Roster, usersByOwner map[string]sleepergen.Lea
 		id = *ro.OwnerId
 	}
 	return standingRow{
-		ID: id, Team: teamName(u), Owner: u.DisplayName,
-		Wins: ro.Settings["wins"], Losses: ro.Settings["losses"],
+		ID: id, Team: teamName(u), Owner: ownerName(u),
+		Wins: ro.Settings["wins"], Losses: ro.Settings["losses"], Ties: ro.Settings["ties"],
 		PF: rosterPoints(ro, "fpts"), PA: rosterPoints(ro, "fpts_against"),
 		Mine: myRoster != nil && ro.RosterId == myRoster.RosterId,
 	}
@@ -307,7 +318,7 @@ func (e *extension) findOpponent(ctx context.Context, c *Client, league *sleeper
 		return nil
 	}
 	u := usersByOwner[*oppRoster.OwnerId]
-	return &opponentInfo{Team: teamName(u), Owner: u.DisplayName, Wins: oppRoster.Settings["wins"], Losses: oppRoster.Settings["losses"]}
+	return &opponentInfo{Team: teamName(u), Owner: ownerName(u), Wins: oppRoster.Settings["wins"], Losses: oppRoster.Settings["losses"]}
 }
 
 func playerLabel(id string, players map[string]sleepergen.Player) string {
@@ -412,6 +423,7 @@ type meInfo struct {
 	Owner     string `json:"owner"`
 	Wins      int    `json:"wins"`
 	Losses    int    `json:"losses"`
+	Ties      int    `json:"ties"`
 	WaiverPos int    `json:"waiver_pos"`
 }
 
@@ -468,7 +480,7 @@ func (e *extension) handleSeason(w http.ResponseWriter, r *http.Request) {
 	}
 	if myRoster != nil {
 		u := usersByOwner[*myRoster.OwnerId]
-		resp.Me = &meInfo{Team: teamName(u), Owner: u.DisplayName, Wins: myRoster.Settings["wins"], Losses: myRoster.Settings["losses"], WaiverPos: myRoster.Settings["waiver_position"]}
+		resp.Me = &meInfo{Team: teamName(u), Owner: ownerName(u), Wins: myRoster.Settings["wins"], Losses: myRoster.Settings["losses"], Ties: myRoster.Settings["ties"], WaiverPos: myRoster.Settings["waiver_position"]}
 		resp.Opponent = e.findOpponent(ctx, c, league, rosters, usersByOwner, myRoster)
 	}
 	e.writeJSON(w, resp)
@@ -556,6 +568,7 @@ func (e *extension) handleSeasons(w http.ResponseWriter, r *http.Request) {
 type artifactEnvelope struct {
 	Found   bool            `json:"found"`
 	Example bool            `json:"example"`
+	Running bool            `json:"running"`
 	Data    json.RawMessage `json:"data,omitempty"`
 	// Invalid marks an artifact whose bytes aren't JSON (an agent wrote
 	// markdown/prose); Text carries the raw content instead, and Data is omitted.
@@ -653,7 +666,9 @@ func (e *extension) readTradeTalks(ctx context.Context, leagueID string) []trade
 	var out []tradeTalkEnvelope
 	for _, t := range e.otherTeams(ctx, leagueID) {
 		chatID := fmt.Sprintf("ext:sleeper:%s:trade:%s", leagueID, t.ID)
-		if env := e.readArtifact(chatID, "trade"); env.Found && !env.Example {
+		env := e.readArtifact(chatID, "trade")
+		if env.Found && !env.Example {
+			env.Running = e.isRunning(chatID)
 			out = append(out, tradeTalkEnvelope{Partner: t.Name, PartnerID: t.ID, artifactEnvelope: env})
 		}
 	}
@@ -723,9 +738,13 @@ func (e *extension) handleArtifacts(w http.ResponseWriter, r *http.Request) {
 	out := artifactsResponse{Stop: stop, Jobs: make(map[string]artifactEnvelope, len(jobs))}
 	for _, job := range jobs {
 		chatID := fmt.Sprintf("ext:sleeper:%s:%s:%s", leagueID, stop, job)
-		out.Jobs[job] = e.readArtifact(chatID, job)
+		env := e.readArtifact(chatID, job)
+		env.Running = e.isRunning(chatID)
+		out.Jobs[job] = env
 	}
-	notes := e.readArtifact(fmt.Sprintf("ext:sleeper:%s:season-notes", leagueID), "season-notes")
+	notesChatID := fmt.Sprintf("ext:sleeper:%s:season-notes", leagueID)
+	notes := e.readArtifact(notesChatID, "season-notes")
+	notes.Running = e.isRunning(notesChatID)
 	out.SeasonNotes = &notes
 	if talksAllowed {
 		out.Talks = e.readTradeTalks(ctx, leagueID)
@@ -801,19 +820,26 @@ func formatArgs(args map[string]string) string {
 	return " " + strings.Join(parts, "; ") + "."
 }
 
-// dispatchSeasonNotes: only trends writes notes, into their own chat id
-// separate from the per-week trends chat - a trends run dispatches twice.
-func (e *extension) dispatchSeasonNotes(ctx context.Context, leagueID string) {
-	localID := leagueID + ":season-notes"
-	err := e.host.Dispatch(ctx, sdk.DispatchRequest{
-		Chat: sdk.ChatRef{LocalID: localID, User: e.cfg.DefaultUser, Title: "Sleeper season notes"},
-		Ask:  sdk.Ask{Message: fmt.Sprintf("Update the running season notes for league %s from this week's trends findings.", leagueID)},
-		// Fixed shape: bound to skip the planner LLM call; quack's workflow catalog owns it.
-		Run: sdk.RunConfig{ReadOnly: true, Workflow: "sleeper-season-notes"},
-	})
-	if err != nil && e.host.Log != nil {
-		e.host.Log.Error("sleeper: season-notes dispatch failed", "league_id", leagueID, "err", err)
+// jobRunnable is the only kind of job handleJobs will dispatch - an unbound
+// job left the planner guessing what "digest" even means.
+func jobRunnable(job string) bool {
+	_, ok := jobWorkflows[job]
+	return ok
+}
+
+type runnableJobsResponse struct {
+	Runnable []string `json:"runnable"`
+}
+
+// handleRunnableJobs serves GET /sleeper/api/jobs - the jobWorkflows keys,
+// so the UI can disable a Run action with no agent bound yet.
+func (e *extension) handleRunnableJobs(w http.ResponseWriter, r *http.Request) {
+	jobs := make([]string, 0, len(jobWorkflows))
+	for job := range jobWorkflows {
+		jobs = append(jobs, job)
 	}
+	sort.Strings(jobs)
+	e.writeJSON(w, runnableJobsResponse{Runnable: jobs})
 }
 
 // handleJobs serves POST /sleeper/api/jobs {league_id, stop, job, args} -
@@ -839,6 +865,10 @@ func (e *extension) handleJobs(w http.ResponseWriter, r *http.Request) {
 		e.writeErr(w, http.StatusBadRequest, fmt.Sprintf("job %q is not valid for stop %q", req.Job, req.Stop))
 		return
 	}
+	if !jobRunnable(req.Job) {
+		e.writeErr(w, http.StatusConflict, fmt.Sprintf("no agent is bound for the %s job yet", req.Job))
+		return
+	}
 	localID, title, err := localIDFor(req)
 	if err != nil {
 		e.writeErr(w, http.StatusBadRequest, err.Error())
@@ -849,9 +879,14 @@ func (e *extension) handleJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	partnerName := ""
+	if req.Job == "trade" {
+		partnerName = firstNonEmpty(req.Args["partner_name"], req.Args["partner"])
+	}
+	origin := e.jobOrigin(ctx, req.LeagueID, req.Stop, req.Job, originLabel(req.Stop, req.Job, partnerName))
 	message := fmt.Sprintf("Run the %s job for league %s, stop %s.%s", req.Job, req.LeagueID, req.Stop, formatArgs(req.Args))
 	err = e.host.Dispatch(ctx, sdk.DispatchRequest{
-		Chat: sdk.ChatRef{LocalID: localID, User: e.cfg.DefaultUser, Title: title},
+		Chat: sdk.ChatRef{LocalID: localID, User: e.cfg.DefaultUser, Title: title, Origin: origin},
 		Ask:  sdk.Ask{Message: message},
 		Run:  sdk.RunConfig{ReadOnly: true, Workflow: jobWorkflows[req.Job]},
 	})
@@ -859,9 +894,10 @@ func (e *extension) handleJobs(w http.ResponseWriter, r *http.Request) {
 		e.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	chatID := globalChatID(localID)
+	e.markRunning(chatID)
 	if req.Job == "trends" {
 		e.dispatchSeasonNotes(ctx, req.LeagueID)
 	}
-	chatID := "ext:sleeper:" + localID
 	e.writeJSON(w, jobResponse{ChatID: chatID, ChatURL: "/chat/" + chatID})
 }
