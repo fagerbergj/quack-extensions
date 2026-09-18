@@ -362,7 +362,12 @@ func TestHandleJobsDispatchesChatIDAndAppendsTurn(t *testing.T) {
 // TestHandleJobsUnmappedJobUsesPlannerPath pins jobWorkflows' zero-value
 // default: a job with no agent yet (e.g. digest) must not name a shape.
 func TestHandleJobsEveryMappedJobBindsItsWorkflow(t *testing.T) {
-	for job, want := range jobWorkflows {
+	// Literal expectations, not jobWorkflows itself: the shape names are quack config keys (PR #1501).
+	want := map[string]string{"lineup": "sleeper-lineup", "waivers": "sleeper-waivers", "trends": "sleeper-trends"}
+	if len(want) != len(jobWorkflows) {
+		t.Fatalf("jobWorkflows has %d entries, this test pins %d", len(jobWorkflows), len(want))
+	}
+	for job, want := range want {
 		t.Run(job, func(t *testing.T) {
 			host := &fakeHost{artifacts: map[string]map[string][]byte{}}
 			_, r := newTestExtension(t, host.sdkHost(), config{})
