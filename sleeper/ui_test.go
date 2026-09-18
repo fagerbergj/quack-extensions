@@ -343,6 +343,9 @@ func TestHandleJobsDispatchesChatIDAndAppendsTurn(t *testing.T) {
 	if resp.ChatURL != "/chat/"+wantChatID {
 		t.Errorf("chat_url = %q, want /chat/%s", resp.ChatURL, wantChatID)
 	}
+	if host.dispatched[0].Run.Workflow != "sleeper-lineup" {
+		t.Errorf("workflow = %q, want sleeper-lineup (bound, no planner call)", host.dispatched[0].Run.Workflow)
+	}
 
 	// A second POST for the same job/stop must target the same LocalID, so
 	// the host appends a turn instead of starting a second chat.
@@ -353,6 +356,51 @@ func TestHandleJobsDispatchesChatIDAndAppendsTurn(t *testing.T) {
 	}
 	if host.dispatched[0].Chat.LocalID != host.dispatched[1].Chat.LocalID {
 		t.Errorf("repeat dispatch used a different LocalID: %q vs %q", host.dispatched[0].Chat.LocalID, host.dispatched[1].Chat.LocalID)
+	}
+}
+
+// TestHandleJobsUnmappedJobUsesPlannerPath pins jobWorkflows' zero-value
+// default: a job with no agent yet (e.g. digest) must not name a shape.
+func TestHandleJobsEveryMappedJobBindsItsWorkflow(t *testing.T) {
+	// Literal expectations, not jobWorkflows itself: the shape names are quack config keys (PR #1501).
+	want := map[string]string{"lineup": "sleeper-lineup", "waivers": "sleeper-waivers", "trends": "sleeper-trends"}
+	if len(want) != len(jobWorkflows) {
+		t.Fatalf("jobWorkflows has %d entries, this test pins %d", len(jobWorkflows), len(want))
+	}
+	for job, want := range want {
+		t.Run(job, func(t *testing.T) {
+			host := &fakeHost{artifacts: map[string]map[string][]byte{}}
+			_, r := newTestExtension(t, host.sdkHost(), config{})
+			body := `{"league_id":"` + testLeague + `","stop":"2","job":"` + job + `"}`
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/jobs", strings.NewReader(body)))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+			}
+			if len(host.dispatched) == 0 {
+				t.Fatal("nothing dispatched")
+			}
+			if got := host.dispatched[0].Run.Workflow; got != want {
+				t.Errorf("%s workflow = %q, want %q", job, got, want)
+			}
+		})
+	}
+}
+
+func TestHandleJobsUnmappedJobUsesPlannerPath(t *testing.T) {
+	host := &fakeHost{artifacts: map[string]map[string][]byte{}}
+	_, r := newTestExtension(t, host.sdkHost(), config{})
+	body := `{"league_id":"` + testLeague + `","stop":"2","job":"digest"}`
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/jobs", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if len(host.dispatched) != 1 {
+		t.Fatalf("dispatched %d requests, want 1", len(host.dispatched))
+	}
+	if got := host.dispatched[0].Run.Workflow; got != "" {
+		t.Errorf("digest workflow = %q, want empty (no bound shape yet)", got)
 	}
 }
 
@@ -444,6 +492,12 @@ func TestHandleJobsTrendsAlsoDispatchesSeasonNotes(t *testing.T) {
 	if host.dispatched[1].Chat.LocalID != wantLocalID {
 		t.Errorf("second dispatch LocalID = %q, want %q", host.dispatched[1].Chat.LocalID, wantLocalID)
 	}
+	if host.dispatched[0].Run.Workflow != "sleeper-trends" {
+		t.Errorf("trends workflow = %q, want sleeper-trends", host.dispatched[0].Run.Workflow)
+	}
+	if host.dispatched[1].Run.Workflow != "sleeper-season-notes" {
+		t.Errorf("season-notes workflow = %q, want sleeper-season-notes", host.dispatched[1].Run.Workflow)
+	}
 }
 
 func TestHandleJobsBadJobForStop(t *testing.T) {
@@ -467,14 +521,48 @@ func TestHandleJobsBadInput(t *testing.T) {
 	}
 }
 
-func TestIndexPageServes(t *testing.T) {
-	_, r := newTestExtension(t, sdk.Host{}, config{})
+// TestUIServesUnderQuackMount mounts the extension the way quack's router
+// does (internal/server/router.go: r.Mount("/"+name, combined), which chi
+// does not strip) - the page and its assets must still resolve under it.
+func TestUIServesUnderQuackMount(t *testing.T) {
+	e := &extension{host: sdk.Host{}, cfg: config{Fixture: true, DefaultUser: testUser, DefaultLeague: testLeague}, client: newTestClient(t)}
+	combined := chi.NewRouter()
+	e.RegisterRoutes(combined, combined)
+	r := chi.NewRouter()
+	r.Mount("/"+extensionName, combined)
+
 	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sleeper/", nil))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d", rec.Code)
+		t.Fatalf("GET /sleeper/ status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Errorf("GET /sleeper/ content-type = %q, want text/html", ct)
 	}
 	if !strings.Contains(rec.Body.String(), "<title>Sleeper") {
 		t.Errorf("index page missing expected title, got: %s", rec.Body.String()[:min(200, rec.Body.Len())])
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sleeper/main.js", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /sleeper/main.js status = %d, body = %s", rec.Code, rec.Body)
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sleeper/api/artifacts?stop=1", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /sleeper/api/artifacts?stop=1 status = %d, body = %s", rec.Code, rec.Body)
+	}
+
+	// Bare "/sleeper" (no trailing slash) must redirect, not serve index.html at a
+	// path where its relative asset/API refs would resolve wrong.
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sleeper", nil))
+	if rec.Code != http.StatusMovedPermanently {
+		t.Fatalf("GET /sleeper status = %d, want 301", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/sleeper/" {
+		t.Errorf("GET /sleeper Location = %q, want /sleeper/", loc)
 	}
 }

@@ -54,7 +54,18 @@ func (e *extension) mountUI(authed chi.Router) {
 		// build-time bug (a renamed/missing directory), never a runtime state.
 		panic("sleeper: embedded UI assets missing: " + err.Error())
 	}
-	authed.Handle("/*", http.FileServer(http.FS(static)))
+	// chi's r.Mount("/"+name, combined) in quack's router does not strip the
+	// prefix, so the file server must strip it itself or every asset 404s.
+	fileServer := http.StripPrefix("/"+extensionName, http.FileServer(http.FS(static)))
+	authed.Handle("/*", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Bare "/sleeper" (no trailing slash) would serve index.html at a path where
+		// its relative asset/API refs resolve wrong; send it to the real page root.
+		if r.URL.Path == "/"+extensionName {
+			http.Redirect(w, r, r.URL.Path+"/", http.StatusMovedPermanently)
+			return
+		}
+		fileServer.ServeHTTP(w, r)
+	}))
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -656,6 +667,15 @@ func (e *extension) handleArtifacts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
+// jobWorkflows maps a job id to its bound workflow-catalog shape name (quack
+// config, PR #1501). A job with no agent yet is absent, so it keeps the
+// planner path (Workflow == "") until one exists.
+var jobWorkflows = map[string]string{
+	"lineup":  "sleeper-lineup",
+	"waivers": "sleeper-waivers",
+	"trends":  "sleeper-trends",
+}
+
 type jobRequest struct {
 	LeagueID string            `json:"league_id"`
 	Stop     string            `json:"stop"`
@@ -722,7 +742,8 @@ func (e *extension) dispatchSeasonNotes(ctx context.Context, leagueID string) {
 	err := e.host.Dispatch(ctx, sdk.DispatchRequest{
 		Chat: sdk.ChatRef{LocalID: localID, User: e.cfg.DefaultUser, Title: "Sleeper season notes"},
 		Ask:  sdk.Ask{Message: fmt.Sprintf("Update the running season notes for league %s from this week's trends findings.", leagueID)},
-		Run:  sdk.RunConfig{ReadOnly: true},
+		// Fixed shape: bound to skip the planner LLM call; quack's workflow catalog owns it.
+		Run: sdk.RunConfig{ReadOnly: true, Workflow: "sleeper-season-notes"},
 	})
 	if err != nil && e.host.Log != nil {
 		e.host.Log.Error("sleeper: season-notes dispatch failed", "league_id", leagueID, "err", err)
@@ -766,7 +787,7 @@ func (e *extension) handleJobs(w http.ResponseWriter, r *http.Request) {
 	err = e.host.Dispatch(ctx, sdk.DispatchRequest{
 		Chat: sdk.ChatRef{LocalID: localID, User: e.cfg.DefaultUser, Title: title},
 		Ask:  sdk.Ask{Message: message},
-		Run:  sdk.RunConfig{ReadOnly: true},
+		Run:  sdk.RunConfig{ReadOnly: true, Workflow: jobWorkflows[req.Job]},
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
