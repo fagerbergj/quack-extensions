@@ -46,6 +46,10 @@ linters:
     generated: disable
     paths:
       - third_party
+      # oapi-codegen output (sleeper/sleepergen, and any future generated
+      # client): its ParseGetXResponse boilerplate repeats per operation and
+      # DO NOT EDIT anyway, so dupl/bodyclose findings there aren't actionable.
+      - '\.gen\.go$'
     rules:
       # Table-driven test scaffolding (identical t.Run blocks) is
       # intentional structure, triage-dead in Wave 2-F: deduplicating it
