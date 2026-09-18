@@ -13,7 +13,10 @@ const SCHEMAS_DIR = path.join(ROOT, 'schemas')
 const FIXTURES_DIR = path.join(ROOT, 'fixtures')
 
 async function main() {
-  const ajv = new Ajv2020({ strict: false })
+  // strict:false first (ajv's sub-flags default true otherwise), then only
+  // strictSchema back on - catches a misspelled keyword/$ref without
+  // rejecting the nullable unions (type: ["integer","null"]) these schemas rely on.
+  const ajv = new Ajv2020({ strict: false, strictSchema: true })
   const schemaNames = (await readdir(SCHEMAS_DIR)).filter(f => f.endsWith('.json'))
   const fixtureNames = (await readdir(FIXTURES_DIR)).filter(f => f.endsWith('.json'))
 

@@ -119,7 +119,9 @@ function renderMenu() {
     return
   }
   const past = isPastWeek()
-  const jobs = JOBS.filter(j => (past ? (j.id === 'retro' || j.id === 'digest') : !j.past))
+  // Trade is excluded: it targets one specific counterparty chat, and only
+  // the trade card itself (its partner select) knows which one to dispatch.
+  const jobs = JOBS.filter(j => j.id !== 'trade' && (past ? (j.id === 'retro' || j.id === 'digest') : !j.past))
   const items = jobs.map(j => {
     const env = jobEnvelope(j)
     const label = (env.running ? 'Running ' : env.found ? 'Re-run ' : 'Run ') + j.name.toLowerCase()
@@ -158,8 +160,9 @@ function renderMain() {
     return
   }
   const talks = state.artifacts.talks || []
+  const partners = (state.season.standings || []).filter(t => !t.mine).map(t => ({ id: t.id, name: t.team }))
   main.innerHTML = R.renderLineup(jobEnvelope(JOBS[0], 'Start / sit')) + R.renderWaivers(jobEnvelope(JOBS[1], 'Waivers')) +
-    R.renderTrade(jobEnvelope(JOBS[2], 'Trade talks'), talks, state.talkIdx) +
+    R.renderTrade(jobEnvelope(JOBS[2], 'Trade talks'), talks, state.talkIdx, partners) +
     R.renderDigest(jobEnvelope(JOBS[3], `Week ${state.stop} preview`)) + R.renderTrends(jobEnvelope(JOBS[4], 'Trends and news'))
   side.innerHTML = currentSide()
 }
@@ -208,9 +211,13 @@ async function switchSeason(season) {
 async function switchStop(stop) {
   state.stop = stop
   state.talkIdx = 0
-  await loadArtifacts()
-  renderAll()
-  window.scrollTo({ top: 0 })
+  try {
+    await loadArtifacts()
+    renderAll()
+    window.scrollTo({ top: 0 })
+  } catch (err) {
+    banner(`Could not load this stop: ${err.message}`)
+  }
 }
 
 function selectedValues(id) {
@@ -218,17 +225,34 @@ function selectedValues(id) {
   return el ? Array.from(el.selectedOptions).map(o => o.value) : []
 }
 
-async function runJob(job, partner) {
+// The talkbar's own <select id="talk-partner">: value is the partner's
+// stable id, the selected option's text is the display name for the title.
+function selectedTalkPartner() {
+  const el = document.getElementById('talk-partner')
+  if (!el || !el.value) return null
+  return { id: el.value, name: el.selectedOptions[0]?.textContent || el.value }
+}
+
+async function runJob(job, partner, partnerName) {
   $('menu').removeAttribute('open')
   const args = {}
-  if (partner) args.partner = partner
   if (job === 'trade') {
+    // "New talk"/the suggestion CTAs carry no data-partner; fall back to the talkbar's own select.
+    if (!partner) {
+      const sel = selectedTalkPartner()
+      if (sel) { partner = sel.id; partnerName = sel.name }
+    }
+    if (!partner) { banner('Pick a team to trade with.'); return }
+    args.partner = partner
+    if (partnerName) args.partner_name = partnerName
     // The compose form's two multi-selects (mine/partner's roster), when present
     // for the talk being acted on - so the analyst gets the actual offer, not just who.
     const give = selectedValues('give')
     const get = selectedValues('get')
     if (give.length) args.give = give.join(',')
     if (get.length) args.get = get.join(',')
+  } else if (partner) {
+    args.partner = partner
   }
   const body = { league_id: state.leagueID, stop: state.stop, job, args: Object.keys(args).length ? args : undefined }
   state.running.add(job)
@@ -245,6 +269,15 @@ async function runJob(job, partner) {
   pollFor(job)
 }
 
+// True while the compose form (or any open <details>) has state a blind
+// renderMain() would silently wipe - a poll tick must not reset an
+// in-progress give/get selection before the user clicks "Evaluate counter".
+function mainHasOpenState() {
+  const give = document.getElementById('give'), get = document.getElementById('get')
+  if (give?.selectedOptions.length || get?.selectedOptions.length) return true
+  return !!document.getElementById('main')?.querySelector('details[open]')
+}
+
 // Dispatch is async; poll the artifacts route until the job's artifact
 // shows up or a bound on attempts is hit (a stuck run must not poll forever).
 function pollFor(job) {
@@ -259,7 +292,8 @@ function pollFor(job) {
       clearInterval(timer)
       state.running.delete(job)
     }
-    renderMenu(); renderMain()
+    renderMenu()
+    if (!mainHasOpenState()) renderMain()
   }, 3000)
 }
 
@@ -269,7 +303,7 @@ document.addEventListener('click', e => {
   const st = e.target.closest('[data-stop]')
   if (st) { switchStop(st.dataset.stop); return }
   const rb = e.target.closest('[data-run]')
-  if (rb) { runJob(rb.dataset.run, rb.dataset.partner); return }
+  if (rb) { runJob(rb.dataset.run, rb.dataset.partner, rb.dataset.partnerName); return }
   if (!e.target.closest('#menu')) $('menu').removeAttribute('open')
 })
 document.addEventListener('change', e => {

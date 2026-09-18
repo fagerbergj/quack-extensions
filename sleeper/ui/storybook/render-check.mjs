@@ -1,8 +1,8 @@
-// Builds Storybook, then screenshots every story at 390/1280 x light/dark
-// with Playwright, failing on a console error or horizontal overflow -
-// mirrors quack/frontend's own render-check discipline (see its
-// src/render-check.browser.test.tsx) but as a standalone script, since this
-// package has no test runner of its own.
+// Builds Storybook, then loads every story at 390/1280 x light/dark with
+// Playwright, failing on a console error or horizontal overflow - no
+// screenshots taken. Mirrors quack/frontend's own render-check discipline
+// (see its src/render-check.browser.test.tsx) but as a standalone script,
+// since this package has no test runner of its own.
 import { execFileSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { readFile, stat } from 'node:fs/promises'
@@ -24,7 +24,14 @@ async function serveStatic() {
   const server = createServer(async (req, res) => {
     let p = decodeURIComponent(req.url.split('?')[0])
     if (p === '/') p = '/index.html'
-    const full = path.join(ROOT, p)
+    // Reject a resolved path that escapes ROOT (e.g. an encoded ../) before
+    // touching the filesystem - CI-only and single-client, but cheap to close.
+    const full = path.resolve(path.join(ROOT, p))
+    if (full !== ROOT && !full.startsWith(ROOT + path.sep)) {
+      res.statusCode = 404
+      res.end('not found')
+      return
+    }
     try {
       const s = await stat(full)
       if (s.isFile()) {
@@ -36,7 +43,8 @@ async function serveStatic() {
     res.statusCode = 404
     res.end('not found')
   })
-  await new Promise(resolve => server.listen(0, resolve))
+  // Loopback only - this server has no reason to accept non-local connections.
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   return server
 }
 
@@ -45,9 +53,17 @@ function contentType(file) {
   return { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.woff2': 'font/woff2' }[ext] || 'application/octet-stream'
 }
 
+// Pinned so a renamed story file, a deleted variant export, or a broken
+// glob (which would otherwise just shrink the loop silently) fails loudly.
+const EXPECTED_STORIES = 48
+
 async function storyIDs() {
   const index = JSON.parse(await readFile(path.join(ROOT, 'index.json'), 'utf8'))
-  return Object.values(index.entries).filter(e => e.type === 'story').map(e => e.id)
+  const ids = Object.values(index.entries).filter(e => e.type === 'story').map(e => e.id)
+  if (ids.length !== EXPECTED_STORIES) {
+    throw new Error(`found ${ids.length} stories, expected ${EXPECTED_STORIES} - update EXPECTED_STORIES if this is a deliberate story change`)
+  }
+  return ids
 }
 
 async function checkStory(page, base, id, viewport, theme) {
@@ -73,7 +89,6 @@ async function main() {
   const base = `http://127.0.0.1:${server.address().port}`
   const browser = await chromium.launch()
   const ids = await storyIDs()
-  if (ids.length === 0) throw new Error('no stories found in storybook-static/index.json')
 
   let failed = 0
   const page = await browser.newPage()

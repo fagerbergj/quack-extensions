@@ -237,6 +237,54 @@ func TestHandleArtifactsFixtureFallback(t *testing.T) {
 	}
 }
 
+// TestHandleArtifactsRealTradeTalkDiscovery exercises readTradeTalks'
+// actual discovery path (candidate chat ids built from real league
+// members), not just the fixture fallback TestHandleArtifactsFixtureFallback covers.
+func TestHandleArtifactsRealTradeTalkDiscovery(t *testing.T) {
+	const riceCookerOwnerID = "740613226189987840" // pirates5 / "Rice Cooker" in testLeague's fixture users
+	chatID := "ext:sleeper:" + testLeague + ":trade:" + riceCookerOwnerID
+	host := &fakeHost{artifacts: map[string]map[string][]byte{
+		chatID: {"trade": []byte(`{"partner":"Rice Cooker","partner_id":"` + riceCookerOwnerID + `","status":"open","offers":[]}`)},
+	}}
+	_, r := newTestExtension(t, host.sdkHost(), config{})
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/artifacts?league_id="+testLeague+"&stop=2", nil))
+	var resp artifactsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Talks) != 1 {
+		t.Fatalf("talks = %+v, want exactly the one stored talk", resp.Talks)
+	}
+	got := resp.Talks[0]
+	if got.PartnerID != riceCookerOwnerID || got.Partner != "Rice Cooker" || !got.Found || got.Example {
+		t.Errorf("talk = %+v, want partner_id=%q partner=Rice Cooker found=true example=false", got, riceCookerOwnerID)
+	}
+}
+
+// TestHandleArtifactsFixtureDoesNotShadowRealArtifact pins readArtifact's
+// real-first order: with Fixture on AND a real chat, the real one must win.
+func TestHandleArtifactsFixtureDoesNotShadowRealArtifact(t *testing.T) {
+	chatID := "ext:sleeper:" + testLeague + ":2:lineup"
+	host := &fakeHost{artifacts: map[string]map[string][]byte{
+		chatID: {"lineup": []byte(`{"week":2,"team":"real"}`)},
+	}}
+	_, r := newTestExtension(t, host.sdkHost(), config{Fixture: true})
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/artifacts?league_id="+testLeague+"&stop=2", nil))
+	var resp artifactsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	lineup := resp.Jobs["lineup"]
+	if !lineup.Found || lineup.Example {
+		t.Errorf("lineup = %+v, want Found && !Example (real artifact must win over the fixture)", lineup)
+	}
+	if string(lineup.Data) != `{"week":2,"team":"real"}` {
+		t.Errorf("data = %s, want the real stored bytes, not the fixture", lineup.Data)
+	}
+}
+
 func TestHandleArtifactsNoFixtureLeavesEmpty(t *testing.T) {
 	_, r := newTestExtension(t, sdk.Host{}, config{Fixture: false})
 	rec := httptest.NewRecorder()

@@ -8,6 +8,10 @@
     "partner": {
       "type": "string"
     },
+    "partner_id": {
+      "type": "string",
+      "description": "The owner's Sleeper user_id - what the chat id and dispatch actually key on."
+    },
     "partner_owner": {
       "type": "string"
     },
@@ -260,6 +264,9 @@
           "partner": {
             "type": "string"
           },
+          "partner_id": {
+            "type": "string"
+          },
           "partner_owner": {
             "type": "string"
           },
@@ -371,6 +378,7 @@
   },
   "required": [
     "partner",
+    "partner_id",
     "status",
     "offers"
   ]

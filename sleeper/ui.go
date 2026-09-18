@@ -204,6 +204,7 @@ func rosterByID(rosters []sleepergen.Roster, id int) *sleepergen.Roster {
 }
 
 type standingRow struct {
+	ID     string  `json:"id"` // the owner's Sleeper user_id - stable, unlike team name
 	Team   string  `json:"team"`
 	Owner  string  `json:"owner"`
 	Wins   int     `json:"wins"`
@@ -215,11 +216,13 @@ type standingRow struct {
 
 func standingRowFor(ro sleepergen.Roster, usersByOwner map[string]sleepergen.LeagueUser, myRoster *sleepergen.Roster) standingRow {
 	var u sleepergen.LeagueUser
+	var id string
 	if ro.OwnerId != nil {
 		u = usersByOwner[*ro.OwnerId]
+		id = *ro.OwnerId
 	}
 	return standingRow{
-		Team: teamName(u), Owner: u.DisplayName,
+		ID: id, Team: teamName(u), Owner: u.DisplayName,
 		Wins: ro.Settings["wins"], Losses: ro.Settings["losses"],
 		PF: rosterPoints(ro, "fpts"), PA: rosterPoints(ro, "fpts_against"),
 		Mine: myRoster != nil && ro.RosterId == myRoster.RosterId,
@@ -506,15 +509,24 @@ func (e *extension) seasonSummaryFor(ctx context.Context, c *Client, lg sleeperg
 	return out
 }
 
+// isNotFoundErr matches Client's "not found" (a literal null body) errors,
+// the only signal that distinguishes a bad league id from an upstream 5xx.
+func isNotFoundErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "not found")
+}
+
 // uiChain mirrors Client.Chain but tolerates a gap instead of erroring the
 // whole walk - a UI wants whatever history is reachable, not all-or-nothing.
-// Named distinctly from #95's own history.go walkChain (same receiver, different signature).
-func (e *extension) uiChain(ctx context.Context, c *Client, leagueID string) []sleepergen.League {
+// Only the first hop's error is returned; a deeper gap is the tolerated case.
+func (e *extension) uiChain(ctx context.Context, c *Client, leagueID string) ([]sleepergen.League, error) {
 	var out []sleepergen.League
 	id := leagueID
 	for i := 0; i < maxChainSeasons && id != ""; i++ {
 		lg, err := c.League(ctx, id)
 		if err != nil {
+			if i == 0 {
+				return nil, err
+			}
 			break
 		}
 		out = append(out, *lg)
@@ -523,7 +535,7 @@ func (e *extension) uiChain(ctx context.Context, c *Client, leagueID string) []s
 		}
 		id = *lg.PreviousLeagueId
 	}
-	return out
+	return out, nil
 }
 
 // reverseLeagues returns the chain oldest-first (uiChain/Client.Chain both
@@ -547,9 +559,13 @@ func (e *extension) handleSeasons(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := uiClient()
-	chain := e.uiChain(ctx, c, leagueID)
-	if len(chain) == 0 {
-		writeErr(w, http.StatusNotFound, "unknown league")
+	chain, err := e.uiChain(ctx, c, leagueID)
+	if err != nil {
+		if isNotFoundErr(err) {
+			writeErr(w, http.StatusNotFound, "unknown league")
+		} else {
+			writeErr(w, http.StatusBadGateway, err.Error())
+		}
 		return
 	}
 	resp := seasonsResponse{CurrentSeason: chain[0].Season}
@@ -583,24 +599,32 @@ func (e *extension) readArtifact(chatID, name string) artifactEnvelope {
 }
 
 type tradeTalkEnvelope struct {
-	Partner string `json:"partner"`
+	Partner   string `json:"partner"`    // display team name
+	PartnerID string `json:"partner_id"` // owner's Sleeper user_id - what the chat id and dispatch actually key on
 	artifactEnvelope
 }
 
-func (e *extension) otherTeamNames(ctx context.Context, leagueID string) []string {
+// teamRef is one other league member: ID is the owner's Sleeper user_id -
+// stable across a team rename, unlike the display name a chat id used to embed.
+type teamRef struct {
+	ID   string
+	Name string
+}
+
+func (e *extension) otherTeams(ctx context.Context, leagueID string) []teamRef {
 	users, err := uiClient().LeagueUsers(ctx, leagueID)
 	if err != nil {
 		return nil
 	}
 	myID, haveMe := e.resolveUserID(ctx)
-	names := make([]string, 0, len(users))
+	out := make([]teamRef, 0, len(users))
 	for _, u := range users {
 		if haveMe && u.UserId == myID {
 			continue
 		}
-		names = append(names, teamName(u))
+		out = append(out, teamRef{ID: u.UserId, Name: teamName(u)})
 	}
-	return names
+	return out
 }
 
 // readTradeTalks tries every other team as a candidate trade partner (the
@@ -608,15 +632,16 @@ func (e *extension) otherTeamNames(ctx context.Context, leagueID string) []strin
 // per-partner chats exist) and keeps the ones that actually have a chat.
 func (e *extension) readTradeTalks(ctx context.Context, leagueID string) []tradeTalkEnvelope {
 	var out []tradeTalkEnvelope
-	for _, partner := range e.otherTeamNames(ctx, leagueID) {
-		chatID := fmt.Sprintf("ext:sleeper:%s:trade:%s", leagueID, partner)
+	for _, t := range e.otherTeams(ctx, leagueID) {
+		chatID := fmt.Sprintf("ext:sleeper:%s:trade:%s", leagueID, t.ID)
 		if env := e.readArtifact(chatID, "trade"); env.Found && !env.Example {
-			out = append(out, tradeTalkEnvelope{Partner: partner, artifactEnvelope: env})
+			out = append(out, tradeTalkEnvelope{Partner: t.Name, PartnerID: t.ID, artifactEnvelope: env})
 		}
 	}
 	if len(out) == 0 && e.cfg.Fixture {
 		if fx, ok := fixtureBytes["trade"]; ok {
-			out = append(out, tradeTalkEnvelope{Partner: fixturePartner(fx), artifactEnvelope: artifactEnvelope{Found: true, Example: true, Data: fx}})
+			name := fixturePartner(fx)
+			out = append(out, tradeTalkEnvelope{Partner: name, PartnerID: name, artifactEnvelope: artifactEnvelope{Found: true, Example: true, Data: fx}})
 		}
 	}
 	return out
@@ -715,7 +740,10 @@ func localIDFor(req jobRequest) (localID, title string, err error) {
 		if partner == "" {
 			return "", "", fmt.Errorf("args.partner is required for the trade job")
 		}
-		return fmt.Sprintf("%s:trade:%s", req.LeagueID, partner), fmt.Sprintf("Sleeper trade talk with %s", partner), nil
+		// partner is the stable id the chat id keys on; partner_name (when the
+		// UI has it) is display-only, for a readable chat title.
+		name := firstNonEmpty(req.Args["partner_name"], partner)
+		return fmt.Sprintf("%s:trade:%s", req.LeagueID, partner), fmt.Sprintf("Sleeper trade talk with %s", name), nil
 	}
 	return fmt.Sprintf("%s:%s:%s", req.LeagueID, req.Stop, req.Job), fmt.Sprintf("Sleeper %s, %s", req.Job, req.Stop), nil
 }

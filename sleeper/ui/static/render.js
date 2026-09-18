@@ -13,6 +13,16 @@ export const num = (n, d = 1) => Number(n ?? 0).toFixed(d)
 // value, so callers must check this instead of `p.adp` directly.
 export const hasADP = adp => adp != null && adp < 999
 
+// Agent-written link fields (e.g. a trends item's news URL) are the only
+// untrusted href source; the serve path never schema-validates artifacts,
+// so esc() alone would still let a javascript: URL through onclick.
+export const isSafeHref = url => /^https?:\/\//i.test(String(url ?? ''))
+
+// Coerces an agent-written "numeric" field to a real number (or '' if it
+// isn't one) - the schemas type these as numbers but nothing on the serve
+// path enforces it, so a string value would otherwise pass esc()-free.
+export const int = n => (n != null && Number.isFinite(Number(n)) ? Number(n) : '')
+
 // A Sleeper player_id is all digits; a DEF's id is its team code (e.g.
 // "NE") and has no player thumbnail, only a team logo.
 export function avatarUrl(id) {
@@ -106,7 +116,7 @@ export function renderWaivers(state) {
   const head = jobHead(state)
   if (!state.found) return section('sec-waivers', head + emptyBody(state.job, state.title, state.what, state.running))
   const d = state.data
-  const rows = d.candidates.map(c => `<tr><td>${c.rank ?? ''}</td><td class="cell">${personHTML(c.player)}<div class="why">${esc(c.why || '')}</div></td><td class="num">${num(c.proj)}</td><td class="num">${c.owned_pct == null ? '–' : num(c.owned_pct, 0) + '%'}</td><td class="num">${c.adds_24h ? c.adds_24h.toLocaleString() : '–'}</td><td>${esc(c.drop || '')}</td></tr>`).join('')
+  const rows = d.candidates.map(c => `<tr><td>${int(c.rank)}</td><td class="cell">${personHTML(c.player)}<div class="why">${esc(c.why || '')}</div></td><td class="num">${num(c.proj)}</td><td class="num">${c.owned_pct == null ? '–' : num(c.owned_pct, 0) + '%'}</td><td class="num">${c.adds_24h ? int(c.adds_24h).toLocaleString() : '–'}</td><td>${esc(c.drop || '')}</td></tr>`).join('')
   return section('sec-waivers', head + `<div class="sl-sec__body">
     <p class="sl-summary">${esc(d.summary || '')}</p>
     <div class="qk-table-wrap"><table class="qk-table"><thead><tr><th>#</th><th>Add and reasoning</th><th class="num">Proj</th><th class="num">Owned</th><th class="num">Adds 24h</th><th>Drop</th></tr></thead><tbody>${rows}</tbody></table></div>
@@ -123,17 +133,26 @@ function tradeOption(p) {
 
 function tradeFinder(suggestions) {
   if (!suggestions?.length) return ''
-  return `<h3 class="sl-h3">Suggested trades <span class="qk-badge">Example</span></h3><ul class="sl-finds">${suggestions.map(f => `<li><div><b>${esc(f.partner)}</b> <span class="sl-keep">${esc(f.partner_owner || '')}${f.record ? ' · ' + esc(f.record) : ''}</span><div class="sl-keep">Give ${esc(f.give.name)} (${num(f.give_proj)}) for ${esc(f.get.name)} (${num(f.get_proj)}). ${esc(f.note || '')}</div></div><button class="qk-btn" data-run="trade" data-partner="${esc(f.partner)}">Start talk</button></li>`).join('')}</ul>`
+  return `<h3 class="sl-h3">Suggested trades <span class="qk-badge">Example</span></h3><ul class="sl-finds">${suggestions.map(f => `<li><div><b>${esc(f.partner)}</b> <span class="sl-keep">${esc(f.partner_owner || '')}${f.record ? ' · ' + esc(f.record) : ''}</span><div class="sl-keep">Give ${esc(f.give.name)} (${num(f.give_proj)}) for ${esc(f.get.name)} (${num(f.get_proj)}). ${esc(f.note || '')}</div></div><button class="qk-btn" data-run="trade" data-partner="${esc(f.partner_id || f.partner)}" data-partner-name="${esc(f.partner)}">Start talk</button></li>`).join('')}</ul>`
+}
+
+function talkPartnerSelect(partners) {
+  const opts = (partners || []).map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')
+  return `<select id="talk-partner" class="sl-select" aria-label="Team to trade with">${opts}</select>`
 }
 
 // talks: [{partner, found, example, status, data}]; talkIdx selects which
-// one the dropdown shows.
-export function renderTrade(state, talks, talkIdx) {
+// one the dropdown shows. partners: every other team's name, for the "New
+// talk" select - runJob reads it when a click carries no data-partner.
+export function renderTrade(state, talks, talkIdx, partners) {
   const head = jobHead(state)
   const anyFound = talks.some(t => t.found)
   const suggestions = talks.find(t => t.found)?.data?.suggestions
   if (!anyFound) {
-    return section('sec-trade', head + `<div class="sl-sec__body">${tradeFinder(suggestions)}<div class="sl-empty" style="margin-top:1rem"><span>No talks open. Pick a suggestion or name an offer.</span><button class="qk-btn qk-btn--primary" data-run="trade">Evaluate a trade</button></div></div>`)
+    // No partner input here (blocking review finding): with no talk and no
+    // suggestion, there's no partner to dispatch against yet - a suggestion's
+    // own "Start talk" button (which does carry data-partner) is the only path in.
+    return section('sec-trade', head + `<div class="sl-sec__body">${tradeFinder(suggestions)}<div class="sl-empty" style="margin-top:1rem"><span>No trades talked yet - one opens as soon as you or a partner starts one.</span></div></div>`)
   }
   const cur = talks[Math.min(talkIdx, talks.length - 1)]
   const options = talks.map((t, i) => `<option value="${i}" ${i === talkIdx ? 'selected' : ''}>${esc(t.partner)} · ${esc(t.status || (t.found ? 'open' : 'new'))} · ${t.data?.offers?.length ?? 0} offer${(t.data?.offers?.length ?? 0) === 1 ? '' : 's'}</option>`).join('')
@@ -142,10 +161,10 @@ export function renderTrade(state, talks, talkIdx) {
     ? d.offers.map(o => `<li class="sl-offer ${o.by === 'You' ? 'mine' : ''}"><div class="sl-offer__who"><b>${esc(o.by)}</b>${esc(o.when)}</div><div><div class="sl-sides">${tradeSide('You give', o.give)}${tradeSide('You get', o.get)}</div><p class="sl-eval"><span class="qk-badge ${o.verdict === 'send' ? 'qk-badge--ok' : o.verdict === 'decline' ? 'qk-badge--err' : 'qk-badge--warn'}">${esc(o.verdict)}</span> <b>${esc(o.delta)}</b> · ${esc(o.why)}</p></div></li>`).join('')
     : `<li class="sl-empty">No offers yet.</li>`
   const compose = d
-    ? `<form class="sl-compose" id="compose" data-partner="${esc(cur.partner)}"><div><label for="give">You give</label><select id="give" class="sl-select sl-multi" multiple size="5">${(d.my_roster || []).map(tradeOption).join('')}</select></div><div><label for="get">You get from ${esc(cur.partner)}</label><select id="get" class="sl-select sl-multi" multiple size="5">${(d.partner_roster || []).map(tradeOption).join('')}</select></div><button class="qk-btn qk-btn--primary" data-run="trade" data-partner="${esc(cur.partner)}" type="button">Evaluate counter</button></form>`
+    ? `<form class="sl-compose" id="compose" data-partner="${esc(cur.partner)}"><div><label for="give">You give</label><select id="give" class="sl-select sl-multi" multiple size="5">${(d.my_roster || []).map(tradeOption).join('')}</select></div><div><label for="get">You get from ${esc(cur.partner)}</label><select id="get" class="sl-select sl-multi" multiple size="5">${(d.partner_roster || []).map(tradeOption).join('')}</select></div><button class="qk-btn qk-btn--primary" data-run="trade" data-partner="${esc(cur.partner_id)}" data-partner-name="${esc(cur.partner)}" type="button">Evaluate counter</button></form>`
     : ''
   return section('sec-trade', head + `<div class="sl-sec__body">
-    <div class="sl-talkbar"><label for="talk-select" class="sl-keep" style="font-size:.75rem">Talk</label><select id="talk-select" class="sl-select">${options}</select><button class="qk-btn" data-run="trade">New talk</button></div>
+    <div class="sl-talkbar"><label for="talk-select" class="sl-keep" style="font-size:.75rem">Talk</label><select id="talk-select" class="sl-select">${options}</select>${talkPartnerSelect(partners)}<button class="qk-btn" data-run="trade">New talk</button></div>
     <ul class="sl-offers">${offers}</ul>
     ${compose}
     <div style="margin-top:1.25rem;padding-top:1rem;border-top:1px solid var(--qk-border)">${tradeFinder(suggestions)}</div>
@@ -168,7 +187,7 @@ export function renderTrends(state) {
   if (!state.found) return section('sec-trends', head + emptyBody(state.job, state.title, state.what, state.running))
   const d = state.data
   const items = d.items.map(i => {
-    const who = i.player ? `<span class="sl-p">${avatarHTML(i.player, true)}<span><b>${esc(i.player.name)}</b> ${esc(i.text)}</span></span>` : (i.link ? `${esc(i.text)} <a href="${esc(i.link)}" target="_blank" rel="noopener">source</a>` : esc(i.text))
+    const who = i.player ? `<span class="sl-p">${avatarHTML(i.player, true)}<span><b>${esc(i.player.name)}</b> ${esc(i.text)}</span></span>` : (isSafeHref(i.link) ? `${esc(i.text)} <a href="${esc(i.link)}" target="_blank" rel="noopener">source</a>` : esc(i.text))
     return `<li><time>${esc(i.time)}</time><div>${who}<span class="qk-chip src">${esc(i.source)}</span></div></li>`
   }).join('')
   return section('sec-trends', head + `<div class="sl-sec__body"><ul class="sl-timeline">${items}</ul>
@@ -209,14 +228,14 @@ export function renderDraftBoard(state) {
   return section('sec-draft', head + `<div class="sl-sec__body">
     <p class="sl-summary">Your column is highlighted. Green: the player fell 8 or more picks past ADP; red: a reach of 8 or more. ${fell} value picks, ${reach} reaches.</p>
     <div class="qk-table-wrap"><table class="qk-table sl-board"><thead><tr><th>Rd</th>${slots.map(s => `<th class="${s === d.my_slot ? 'me' : ''}">${s}. ${esc(d.slots[s])}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>
-    <p class="sl-src">ADP: Sleeper PPR ADP at draft time; players Sleeper had no ADP for show none. ${esc(d.type || '')} · ${d.rounds || ''} rounds.</p></div>`)
+    <p class="sl-src">ADP: Sleeper PPR ADP at draft time; players Sleeper had no ADP for show none. ${esc(d.type || '')} · ${int(d.rounds)} rounds.</p></div>`)
 }
 
 export function renderDraftReportCard(state) {
   const head = jobHead(state)
   if (!state.found) return section('sec-draft', head + emptyBody(state.job, state.title, state.what, state.running))
   const d = state.data
-  const rows = (d.report_card || []).map(c => `<tr><td class="num">${c.round}</td><td class="num">${c.pick}</td><td><span class="sl-p">${avatarHTML(c.player, true)}<span>${esc(c.player.name)} <span class="sl-keep">${esc(c.player.pos || '')}</span></span></span></td><td class="num">${esc(c.drafted_as || '')}</td><td class="num">${esc(c.finished || '–')}</td><td class="num">${num(c.pts, 1)}</td><td><span class="qk-badge ${c.verdict === 'steal' ? 'qk-badge--ok' : c.verdict === 'reach' ? 'qk-badge--err' : ''}">${esc(c.verdict)}</span></td></tr>`).join('')
+  const rows = (d.report_card || []).map(c => `<tr><td class="num">${int(c.round)}</td><td class="num">${int(c.pick)}</td><td><span class="sl-p">${avatarHTML(c.player, true)}<span>${esc(c.player.name)} <span class="sl-keep">${esc(c.player.pos || '')}</span></span></span></td><td class="num">${esc(c.drafted_as || '')}</td><td class="num">${esc(c.finished || '–')}</td><td class="num">${num(c.pts, 1)}</td><td><span class="qk-badge ${c.verdict === 'steal' ? 'qk-badge--ok' : c.verdict === 'reach' ? 'qk-badge--err' : ''}">${esc(c.verdict)}</span></td></tr>`).join('')
   const reaches = (d.report_card || []).filter(c => c.verdict === 'reach').length
   const steals = (d.report_card || []).filter(c => c.verdict === 'steal').length
   const allocText = d.pos_alloc ? Object.entries(d.pos_alloc).filter(([, n]) => n).map(([p, n]) => `${n} ${p}`).join(', ') : ''
@@ -233,7 +252,7 @@ export function renderDraftSide(state) {
   if (!d.clock && !d.plan) return ''
   let html = ''
   if (d.clock) html = section('draft-clock', `<div class="sl-sec__head"><h2>On the clock</h2><div class="sl-sec__meta">${state.example ? '<span class="qk-badge">Example</span>' : ''}<span>${esc(state.agent || '')}</span></div></div><div class="sl-sec__body">
-    <div class="sl-clock"><b>Pick ${d.clock.pick_no} (${esc(d.clock.pick_label || '')}) · ${d.clock.seconds_left}s left</b>${esc(d.clock.note)}</div>
+    <div class="sl-clock"><b>Pick ${int(d.clock.pick_no)} (${esc(d.clock.pick_label || '')}) · ${int(d.clock.seconds_left)}s left</b>${esc(d.clock.note)}</div>
     <p class="sl-src">Live drafts poll the picks feed every few seconds while you are within three picks of the clock.</p></div>`)
   if (d.plan) html += section('draft-plan', `<div class="sl-sec__head"><h2>Draft plan</h2><div class="sl-sec__meta">${state.example ? '<span class="qk-badge">Example</span>' : ''}<span>${esc(state.agent || '')} · pre-draft</span></div></div><div class="sl-sec__body"><div class="sl-tiers">${d.plan.map(p => `<div><b>${esc(p.title)}</b><span>${esc(p.note)}</span></div>`).join('')}</div></div>`)
   return html
@@ -248,7 +267,7 @@ export function renderReview(state) {
   const bars = weeks.map(w => `<div class="${w.won ? '' : 'loss'}" data-stop="${w.week}" title="Week ${w.week}: started ${num(w.started, 1)}, best ${num(w.best, 1)}${w.opp != null ? ', opponent ' + num(w.opp, 1) : ''}" style="height:${100 * w.best / max}%"><i style="height:${100 * w.started / w.best}%"></i></div>`).join('')
   const worst = weeks.length ? weeks.slice().sort((a, b) => (b.left ?? 0) - (a.left ?? 0))[0] : null
   return section('sec-review', head + `<div class="sl-sec__body">
-    <div class="sl-stats"><div class="sl-stat"><span>Record</span><b>${x.wins}-${x.losses}</b><small>from draft slot ${x.draft_slot}</small></div><div class="sl-stat"><span>Points for</span><b>#${x.pf_rank}</b><small>${num(x.pf, 0)} · rank</small></div><div class="sl-stat"><span>Points against</span><b>#${x.pa_rank}</b><small>strength of schedule</small></div><div class="sl-stat"><span>Lineup efficiency</span><b>${num(x.eff, 1)}%</b><small>${num(x.left_total, 0)} pts left on the bench</small></div><div class="sl-stat"><span>Close losses</span><b>${x.close_losses}</b><small>by fewer than 10</small></div><div class="sl-stat"><span>Moves</span><b>${x.moves}</b><small>waivers and trades</small></div></div>
+    <div class="sl-stats"><div class="sl-stat"><span>Record</span><b>${int(x.wins)}-${int(x.losses)}</b><small>from draft slot ${int(x.draft_slot)}</small></div><div class="sl-stat"><span>Points for</span><b>#${int(x.pf_rank)}</b><small>${num(x.pf, 0)} · rank</small></div><div class="sl-stat"><span>Points against</span><b>#${int(x.pa_rank)}</b><small>strength of schedule</small></div><div class="sl-stat"><span>Lineup efficiency</span><b>${num(x.eff, 1)}%</b><small>${num(x.left_total, 0)} pts left on the bench</small></div><div class="sl-stat"><span>Close losses</span><b>${int(x.close_losses)}</b><small>by fewer than 10</small></div><div class="sl-stat"><span>Moves</span><b>${int(x.moves)}</b><small>waivers and trades</small></div></div>
     <h3 style="font-size:.8125rem;margin:0 0 .25rem">Weekly: started (filled) vs best possible (bar); red is a loss.</h3>
     <div class="sl-bars">${bars}</div><div class="sl-bars-x">${weeks.map(w => `<span>${w.week}</span>`).join('')}</div>
     ${worst ? `<p class="sl-src">Worst week: ${worst.week}, ${num(worst.left, 1)} points left on the bench${worst.won ? '' : ' in a loss'}. Champion: ${esc(x.champion || '–')}.</p>` : ''}</div>`)
@@ -263,7 +282,7 @@ export function renderSeasonNotes(state) {
 
 export function renderSeasonAtGlance(x) {
   if (!x) return ''
-  return section('side-season', `<div class="sl-sec__head"><h2>${esc(x.season)} at a glance</h2></div><div class="sl-sec__body"><dl class="sl-kv"><dt>Record</dt><dd>${x.wins}-${x.losses}</dd><dt>Points for</dt><dd>${num(x.pf, 0)} · #${x.pf_rank}</dd><dt>Points against</dt><dd>${num(x.pa, 0)} · #${x.pa_rank}</dd><dt>Lineup eff.</dt><dd>${num(x.eff, 1)}%</dd><dt>Champion</dt><dd>${esc(x.champion || '–')}</dd></dl></div>`)
+  return section('side-season', `<div class="sl-sec__head"><h2>${esc(x.season)} at a glance</h2></div><div class="sl-sec__body"><dl class="sl-kv"><dt>Record</dt><dd>${int(x.wins)}-${int(x.losses)}</dd><dt>Points for</dt><dd>${num(x.pf, 0)} · #${int(x.pf_rank)}</dd><dt>Points against</dt><dd>${num(x.pa, 0)} · #${int(x.pa_rank)}</dd><dt>Lineup eff.</dt><dd>${num(x.eff, 1)}%</dd><dt>Champion</dt><dd>${esc(x.champion || '–')}</dd></dl></div>`)
 }
 
 export function renderCrossSeason(x) {

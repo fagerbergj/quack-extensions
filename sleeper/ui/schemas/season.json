@@ -113,6 +113,9 @@
           }
         ],
         "properties": {
+          "id": {
+            "type": "string"
+          },
           "pf": {
             "type": "number"
           },

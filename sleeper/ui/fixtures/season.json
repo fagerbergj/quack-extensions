@@ -11,7 +11,7 @@
     "Redraft",
     "PPR",
     "Rolling waivers",
-    "6 playoff spots \u00b7 week 15",
+    "6 playoff spots · week 15",
     "Snapshot 06:00 daily"
   ],
   "me": {
@@ -36,7 +36,8 @@
       "losses": 0,
       "pf": 169.66,
       "pa": 155.66,
-      "mine": false
+      "mine": false,
+      "id": "860221058236657664"
     },
     {
       "team": "Rice Cooker",
@@ -45,7 +46,8 @@
       "losses": 0,
       "pf": 154.16,
       "pa": 106.16,
-      "mine": false
+      "mine": false,
+      "id": "740613226189987840"
     },
     {
       "team": "Pitts and Giggles",
@@ -54,25 +56,28 @@
       "losses": 0,
       "pf": 149.34,
       "pa": 136.82,
-      "mine": false
+      "mine": false,
+      "id": "860265672989609984"
     },
     {
-      "team": "Breece\u2019s Pieces",
+      "team": "Breece’s Pieces",
       "owner": "Kyleg1228",
       "wins": 1,
       "losses": 0,
       "pf": 116.0,
       "pa": 100.66,
-      "mine": false
+      "mine": false,
+      "id": "864173965508202496"
     },
     {
-      "team": "I Think I\u2019\u2019m Gonna Puka",
+      "team": "I Think I’’m Gonna Puka",
       "owner": "cmigs",
       "wins": 1,
       "losses": 0,
       "pf": 104.62,
       "pa": 96.86,
-      "mine": false
+      "mine": false,
+      "id": "517804893141327872"
     },
     {
       "team": "Achane Magic",
@@ -81,7 +86,8 @@
       "losses": 1,
       "pf": 155.66,
       "pa": 169.66,
-      "mine": false
+      "mine": false,
+      "id": "860209887672635392"
     },
     {
       "team": "Gibbs Me Liberty",
@@ -90,7 +96,8 @@
       "losses": 1,
       "pf": 136.82,
       "pa": 149.34,
-      "mine": false
+      "mine": false,
+      "id": "860317606291283968"
     },
     {
       "team": "Bijan Mustard",
@@ -99,7 +106,8 @@
       "losses": 1,
       "pf": 106.16,
       "pa": 154.16,
-      "mine": false
+      "mine": false,
+      "id": "860241266494013440"
     },
     {
       "team": "Substation Supremacy",
@@ -108,7 +116,8 @@
       "losses": 1,
       "pf": 100.66,
       "pa": 116.0,
-      "mine": true
+      "mine": true,
+      "id": "860211057418018816"
     },
     {
       "team": "Jockstrappers",
@@ -117,7 +126,8 @@
       "losses": 1,
       "pf": 96.86,
       "pa": 104.62,
-      "mine": false
+      "mine": false,
+      "id": "859928030787866624"
     }
   ],
   "recent_moves": [
@@ -188,7 +198,7 @@
         "Mike Washington"
       ],
       "by": [
-        "I Think I\u2019\u2019m Gonna Puka"
+        "I Think I’’m Gonna Puka"
       ]
     },
     {

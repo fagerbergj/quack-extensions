@@ -14,10 +14,11 @@ const done = (job, title, agent, data) => ({ job, title, agent, found: true, exa
 
 function fullPage() {
   const header = `<header class="qk-page__header"><div><h1>${R.esc(season.league.name)}</h1><p>${R.esc(season.me.team)} · ${season.me.wins}-${season.me.losses} · ${season.league.season} season, week ${season.league.week_now} in progress</p><div class="sl-facts">${season.facts.map(f => `<span class="qk-chip">${R.esc(f)}</span>`).join('')}</div></div></header>`
-  const talks = [{ partner: trade.partner, found: true, example: true, status: trade.status, data: trade }]
+  const talks = [{ partner: trade.partner, partner_id: trade.partner_id, found: true, example: true, status: trade.status, data: trade }]
+  const partners = (season.standings || []).filter(t => !t.mine).map(t => ({ id: t.id, name: t.team }))
   const main = R.renderLineup(done('lineup', 'Start / sit', 'lineup-analyst', lineup)) +
     R.renderWaivers(done('waivers', 'Waivers', 'waiver-scout', waivers)) +
-    R.renderTrade(done('trade', 'Trade talks', 'trade-analyst'), talks, 0) +
+    R.renderTrade(done('trade', 'Trade talks', 'trade-analyst'), talks, 0, partners) +
     R.renderDigest(done('digest', 'Week 2 preview', 'league-reporter', digest)) +
     R.renderTrends(done('trends', 'Trends and news', 'trend-scout', trends))
   const side = R.renderStandingsSide(season) +

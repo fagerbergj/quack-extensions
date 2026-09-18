@@ -409,10 +409,11 @@
         "proj": 14.0
       },
       "get_proj": 14.0,
-      "note": "They start Ashton Jeanty at RB2 at 14.9; Zay Flowers sits on their bench behind three starting receivers."
+      "note": "They start Ashton Jeanty at RB2 at 14.9; Zay Flowers sits on their bench behind three starting receivers.",
+      "partner_id": "740613226189987840"
     },
     {
-      "partner": "I Think I\u2019\u2019m Gonna Puka",
+      "partner": "I Think I’’m Gonna Puka",
       "partner_owner": "cmigs",
       "record": "1-0",
       "give": {
@@ -435,7 +436,8 @@
         "proj": 13.3
       },
       "get_proj": 13.3,
-      "note": "They start Aaron Jones at RB2 at 14.0; Brock Bowers sits on their bench behind three starting receivers."
+      "note": "They start Aaron Jones at RB2 at 14.0; Brock Bowers sits on their bench behind three starting receivers.",
+      "partner_id": "517804893141327872"
     },
     {
       "partner": "Achane Magic",
@@ -461,7 +463,9 @@
         "proj": 11.6
       },
       "get_proj": 11.6,
-      "note": "They start D'Andre Swift at RB2 at 11.6; Jayden Reed sits on their bench behind three starting receivers."
+      "note": "They start D'Andre Swift at RB2 at 11.6; Jayden Reed sits on their bench behind three starting receivers.",
+      "partner_id": "860209887672635392"
     }
-  ]
+  ],
+  "partner_id": "740613226189987840"
 }

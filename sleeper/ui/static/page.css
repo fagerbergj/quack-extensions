@@ -83,10 +83,10 @@
 .sl-rows .n b { display: block; color: var(--qk-text); font-weight: 500; font-size: .8125rem; }
 .sl-rows li.line { border-top: 1px dashed var(--qk-accent); }
 .sl-timeline { list-style: none; margin: 0; padding: 0; display: grid; gap: .75rem; }
-.sl-timeline li { display: grid; grid-template-columns: 5.5rem 1fr; gap: .75rem; font-size: .8125rem; }
+.sl-timeline li { display: grid; grid-template-columns: 5.5rem 1fr; gap: .75rem; font-size: .8125rem; overflow-wrap: anywhere; }
 .sl-timeline time { color: var(--qk-muted); font-variant-numeric: tabular-nums; font-size: .75rem; padding-top: .1rem; }
 .sl-timeline .src { margin-left: .375rem; }
-.sl-notes { margin: 0; padding-left: 1.1rem; max-width: 65ch; } .sl-notes li { margin: .25rem 0; }
+.sl-notes { margin: 0; padding-left: 1.1rem; max-width: 65ch; } .sl-notes li { margin: .25rem 0; overflow-wrap: anywhere; }
 .sl-keep { color: var(--qk-muted); }
 .sl-mine td { background: var(--qk-accent-bg); }
 .sl-src { font-size: .6875rem; color: var(--qk-muted); margin: .5rem 0 0; }
