@@ -1,12 +1,14 @@
 package sleeper
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -68,25 +70,47 @@ func (e *extension) mountUI(authed chi.Router) {
 	}))
 }
 
-func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(v)
+// writeJSON encodes to a buffer before writing the response, so a value
+// json.Encoder can't marshal never reaches the client as an empty 200 (the
+// prior bug: an encode error after headers were already sent goes unnoticed).
+func (e *extension) writeJSON(w http.ResponseWriter, v any) {
+	e.writeJSONStatus(w, http.StatusOK, v)
 }
 
-func writeErr(w http.ResponseWriter, status int, msg string) {
+func (e *extension) writeErr(w http.ResponseWriter, status int, msg string) {
+	e.writeJSONStatus(w, status, map[string]string{"error": msg})
+}
+
+func (e *extension) writeJSONStatus(w http.ResponseWriter, status int, v any) {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(v); err != nil {
+		e.logError("sleeper: encode response failed", "err", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"encode failed"}`))
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	_, _ = w.Write(buf.Bytes())
+}
+
+func (e *extension) logError(msg string, args ...any) {
+	if e.host.Log != nil {
+		e.host.Log.Error(msg, args...)
+		return
+	}
+	slog.Error(msg, args...)
 }
 
 // writeLeagueErr honors client.go's typed ErrNotFound (a real 404 or
 // Sleeper's HTTP-200-null-body) as 404; anything else is an upstream failure (502).
-func writeLeagueErr(w http.ResponseWriter, err error) {
+func (e *extension) writeLeagueErr(w http.ResponseWriter, err error) {
 	if errors.Is(err, ErrNotFound) {
-		writeErr(w, http.StatusNotFound, "unknown league")
+		e.writeErr(w, http.StatusNotFound, "unknown league")
 		return
 	}
-	writeErr(w, http.StatusBadGateway, err.Error())
+	e.writeErr(w, http.StatusBadGateway, err.Error())
 }
 
 func firstNonEmpty(a, b string) string {
@@ -408,23 +432,23 @@ func (e *extension) handleSeason(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	leagueID := firstNonEmpty(r.URL.Query().Get("league_id"), e.cfg.DefaultLeague)
 	if leagueID == "" {
-		writeErr(w, http.StatusBadRequest, "league_id is required")
+		e.writeErr(w, http.StatusBadRequest, "league_id is required")
 		return
 	}
 	c := e.client
 	league, err := c.League(ctx, leagueID)
 	if err != nil {
-		writeLeagueErr(w, err)
+		e.writeLeagueErr(w, err)
 		return
 	}
 	rosters, err := c.Rosters(ctx, leagueID)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+		e.writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	users, err := c.LeagueUsers(ctx, leagueID)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+		e.writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	usersByOwner := usersByOwnerID(users)
@@ -447,7 +471,7 @@ func (e *extension) handleSeason(w http.ResponseWriter, r *http.Request) {
 		resp.Me = &meInfo{Team: teamName(u), Owner: u.DisplayName, Wins: myRoster.Settings["wins"], Losses: myRoster.Settings["losses"], WaiverPos: myRoster.Settings["waiver_position"]}
 		resp.Opponent = e.findOpponent(ctx, c, league, rosters, usersByOwner, myRoster)
 	}
-	writeJSON(w, resp)
+	e.writeJSON(w, resp)
 }
 
 func (e *extension) findMyRoster(ctx context.Context, rosters []sleepergen.Roster) *sleepergen.Roster {
@@ -503,7 +527,7 @@ func (e *extension) handleSeasons(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	leagueID := firstNonEmpty(r.URL.Query().Get("league_id"), e.cfg.DefaultLeague)
 	if leagueID == "" {
-		writeErr(w, http.StatusBadRequest, "league_id is required")
+		e.writeErr(w, http.StatusBadRequest, "league_id is required")
 		return
 	}
 	c := e.client
@@ -511,14 +535,14 @@ func (e *extension) handleSeasons(w http.ResponseWriter, r *http.Request) {
 	// swallows every failure into an empty result, which would otherwise
 	// make a genuinely unknown league indistinguishable from an upstream 5xx.
 	if _, err := c.League(ctx, leagueID); err != nil {
-		writeLeagueErr(w, err)
+		e.writeLeagueErr(w, err)
 		return
 	}
 	// stopOnUnreachable: a UI wants whatever history is reachable, not
 	// all-or-nothing (the history job, Chain's other caller, wants the opposite).
 	chain, err := c.Chain(ctx, leagueID, 0, true)
 	if err != nil || len(chain) == 0 {
-		writeErr(w, http.StatusNotFound, "unknown league")
+		e.writeErr(w, http.StatusNotFound, "unknown league")
 		return
 	}
 	resp := seasonsResponse{CurrentSeason: chain[0].Season}
@@ -526,21 +550,32 @@ func (e *extension) handleSeasons(w http.ResponseWriter, r *http.Request) {
 	for _, lg := range reverseLeagues(chain) {
 		resp.Seasons = append(resp.Seasons, e.seasonSummaryFor(ctx, c, lg, userID, haveUser))
 	}
-	writeJSON(w, resp)
+	e.writeJSON(w, resp)
 }
 
 type artifactEnvelope struct {
 	Found   bool            `json:"found"`
 	Example bool            `json:"example"`
 	Data    json.RawMessage `json:"data,omitempty"`
+	// Invalid marks an artifact whose bytes aren't JSON (an agent wrote
+	// markdown/prose); Text carries the raw content instead, and Data is omitted.
+	Invalid bool   `json:"invalid,omitempty"`
+	Text    string `json:"text,omitempty"`
 }
 
-// readArtifact tries the real chat first; behind cfg.Fixture, a miss falls
-// back to the reference example JSON, marked Example so the UI can badge it.
+// maxInvalidTextBytes caps the raw text an invalid artifact returns to the
+// UI - an agent runaway shouldn't balloon the response.
+const maxInvalidTextBytes = 64 * 1024
+
+// readArtifact tries the real chat first (a non-JSON hit comes back Invalid
+// with the raw text); behind cfg.Fixture, a miss falls back to the reference example JSON, marked Example.
 func (e *extension) readArtifact(chatID, name string) artifactEnvelope {
 	if e.host.ReadArtifact != nil {
 		if data, ok := e.host.ReadArtifact(chatID, e.cfg.DefaultUser, name); ok {
-			return artifactEnvelope{Found: true, Data: json.RawMessage(data)}
+			if parsed, ok := parseArtifactJSON(data); ok {
+				return artifactEnvelope{Found: true, Data: parsed}
+			}
+			return artifactEnvelope{Found: true, Invalid: true, Text: capText(data, maxInvalidTextBytes)}
 		}
 	}
 	if e.cfg.Fixture {
@@ -549,6 +584,37 @@ func (e *extension) readArtifact(chatID, name string) artifactEnvelope {
 		}
 	}
 	return artifactEnvelope{Found: false}
+}
+
+// parseArtifactJSON accepts raw JSON as-is, or the same bytes with a single
+// leading/trailing ``` or ```json fence stripped - agents often fence JSON
+// output like any other code block.
+func parseArtifactJSON(data []byte) (json.RawMessage, bool) {
+	if json.Valid(data) {
+		return json.RawMessage(data), true
+	}
+	if stripped, ok := stripCodeFence(data); ok && json.Valid(stripped) {
+		return json.RawMessage(stripped), true
+	}
+	return nil, false
+}
+
+func stripCodeFence(data []byte) ([]byte, bool) {
+	s := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(s, "```") {
+		return nil, false
+	}
+	s = strings.TrimPrefix(s, "```json")
+	s = strings.TrimPrefix(s, "```")
+	s = strings.TrimSuffix(s, "```")
+	return []byte(strings.TrimSpace(s)), true
+}
+
+func capText(data []byte, max int) string {
+	if len(data) <= max {
+		return string(data)
+	}
+	return string(data[:max])
 }
 
 type tradeTalkEnvelope struct {
@@ -645,12 +711,12 @@ func (e *extension) handleArtifacts(w http.ResponseWriter, r *http.Request) {
 	leagueID := firstNonEmpty(r.URL.Query().Get("league_id"), e.cfg.DefaultLeague)
 	stop := r.URL.Query().Get("stop")
 	if leagueID == "" || stop == "" {
-		writeErr(w, http.StatusBadRequest, "league_id and stop are required")
+		e.writeErr(w, http.StatusBadRequest, "league_id and stop are required")
 		return
 	}
 	jobs, talksAllowed, err := jobsForStop(stop)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		e.writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -664,7 +730,7 @@ func (e *extension) handleArtifacts(w http.ResponseWriter, r *http.Request) {
 	if talksAllowed {
 		out.Talks = e.readTradeTalks(ctx, leagueID)
 	}
-	writeJSON(w, out)
+	e.writeJSON(w, out)
 }
 
 // jobWorkflows maps a job id to its bound workflow-catalog shape name (quack
@@ -756,30 +822,30 @@ func (e *extension) dispatchSeasonNotes(ctx context.Context, leagueID string) {
 func (e *extension) handleJobs(w http.ResponseWriter, r *http.Request) {
 	var req jobRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, "bad JSON body")
+		e.writeErr(w, http.StatusBadRequest, "bad JSON body")
 		return
 	}
 	req.LeagueID = firstNonEmpty(req.LeagueID, e.cfg.DefaultLeague)
 	if req.LeagueID == "" || req.Stop == "" || req.Job == "" {
-		writeErr(w, http.StatusBadRequest, "league_id, stop, and job are required")
+		e.writeErr(w, http.StatusBadRequest, "league_id, stop, and job are required")
 		return
 	}
 	jobs, talksAllowed, err := jobsForStop(req.Stop)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		e.writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if !jobIsValid(req.Job, jobs, talksAllowed) {
-		writeErr(w, http.StatusBadRequest, fmt.Sprintf("job %q is not valid for stop %q", req.Job, req.Stop))
+		e.writeErr(w, http.StatusBadRequest, fmt.Sprintf("job %q is not valid for stop %q", req.Job, req.Stop))
 		return
 	}
 	localID, title, err := localIDFor(req)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		e.writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if e.host.Dispatch == nil {
-		writeErr(w, http.StatusServiceUnavailable, "dispatch is not available")
+		e.writeErr(w, http.StatusServiceUnavailable, "dispatch is not available")
 		return
 	}
 	ctx := r.Context()
@@ -790,12 +856,12 @@ func (e *extension) handleJobs(w http.ResponseWriter, r *http.Request) {
 		Run:  sdk.RunConfig{ReadOnly: true, Workflow: jobWorkflows[req.Job]},
 	})
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		e.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if req.Job == "trends" {
 		e.dispatchSeasonNotes(ctx, req.LeagueID)
 	}
 	chatID := "ext:sleeper:" + localID
-	writeJSON(w, jobResponse{ChatID: chatID, ChatURL: "/chat/" + chatID})
+	e.writeJSON(w, jobResponse{ChatID: chatID, ChatURL: "/chat/" + chatID})
 }

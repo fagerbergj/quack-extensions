@@ -63,6 +63,8 @@
 .sl-sec__body > .qk-table-wrap { border-left: 0; border-right: 0; border-radius: 0; margin: 0 -1rem; }
 .sl-sec__body > .qk-table-wrap + .qk-table-wrap { border-top: 0; }
 .sl-empty { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; color: var(--qk-muted); }
+.sl-invalid__notice { margin: 0 0 .5rem; padding: .5rem .75rem; border-radius: var(--qk-radius); background: var(--qk-warn-bg); color: var(--qk-warn-text); font-size: .8125rem; font-weight: 600; }
+.sl-invalid__raw { margin: 0; padding: .75rem; max-height: 20rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .75rem; background: var(--qk-surface-2); border: 1px solid var(--qk-border); border-radius: var(--qk-radius); }
 .sl-summary { margin: 0 0 .75rem; max-width: 65ch; }
 .sl-kv { display: grid; grid-template-columns: auto 1fr; gap: .25rem .75rem; font-size: .8125rem; margin: 0; }
 .sl-kv dt { color: var(--qk-muted); } .sl-kv dd { margin: 0; font-variant-numeric: tabular-nums; }
