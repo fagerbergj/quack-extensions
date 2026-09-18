@@ -5,6 +5,9 @@
 // never drifts from what the extension actually ships.
 import './kit.css'
 import '../../static/page.css'
+import { installAvatarFallback } from '../../static/render.js'
+
+installAvatarFallback()
 
 export const globalTypes = {
   theme: {

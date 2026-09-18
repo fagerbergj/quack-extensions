@@ -506,9 +506,10 @@ func (e *extension) seasonSummaryFor(ctx context.Context, c *Client, lg sleeperg
 	return out
 }
 
-// walkChain mirrors Client.Chain but tolerates a gap instead of erroring the
+// uiChain mirrors Client.Chain but tolerates a gap instead of erroring the
 // whole walk - a UI wants whatever history is reachable, not all-or-nothing.
-func (e *extension) walkChain(ctx context.Context, c *Client, leagueID string) []sleepergen.League {
+// Named distinctly from #95's own history.go walkChain (same receiver, different signature).
+func (e *extension) uiChain(ctx context.Context, c *Client, leagueID string) []sleepergen.League {
 	var out []sleepergen.League
 	id := leagueID
 	for i := 0; i < maxChainSeasons && id != ""; i++ {
@@ -525,8 +526,19 @@ func (e *extension) walkChain(ctx context.Context, c *Client, leagueID string) [
 	return out
 }
 
+// reverseLeagues returns the chain oldest-first (uiChain/Client.Chain both
+// walk newest-first via previous_league_id); the approved design wants the
+// seasons row chronological with the current season last.
+func reverseLeagues(chain []sleepergen.League) []sleepergen.League {
+	out := make([]sleepergen.League, len(chain))
+	for i, lg := range chain {
+		out[len(chain)-1-i] = lg
+	}
+	return out
+}
+
 // handleSeasons serves GET /sleeper/api/seasons?league_id= - the season
-// chain, each with this league's own record for the configured default user.
+// chain, oldest first, each with this league's own record for the default user.
 func (e *extension) handleSeasons(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	leagueID := firstNonEmpty(r.URL.Query().Get("league_id"), e.cfg.DefaultLeague)
@@ -535,14 +547,14 @@ func (e *extension) handleSeasons(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := uiClient()
-	chain := e.walkChain(ctx, c, leagueID)
+	chain := e.uiChain(ctx, c, leagueID)
 	if len(chain) == 0 {
 		writeErr(w, http.StatusNotFound, "unknown league")
 		return
 	}
-	userID, haveUser := e.resolveUserID(ctx)
 	resp := seasonsResponse{CurrentSeason: chain[0].Season}
-	for _, lg := range chain {
+	userID, haveUser := e.resolveUserID(ctx)
+	for _, lg := range reverseLeagues(chain) {
 		resp.Seasons = append(resp.Seasons, e.seasonSummaryFor(ctx, c, lg, userID, haveUser))
 	}
 	writeJSON(w, resp)
@@ -708,6 +720,41 @@ func localIDFor(req jobRequest) (localID, title string, err error) {
 	return fmt.Sprintf("%s:%s:%s", req.LeagueID, req.Stop, req.Job), fmt.Sprintf("Sleeper %s, %s", req.Job, req.Stop), nil
 }
 
+// formatArgs appends every args key/value to the dispatched message (sorted
+// for a deterministic message) - e.g. the trade job's partner/give/get, so
+// the analyst sees the counterparty and offer, not just a chat id.
+func formatArgs(args map[string]string) string {
+	keys := make([]string, 0, len(args))
+	for k := range args {
+		if args[k] != "" {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = fmt.Sprintf("%s: %s", k, args[k])
+	}
+	return " " + strings.Join(parts, "; ") + "."
+}
+
+// dispatchSeasonNotes: only trends writes notes, into their own chat id
+// separate from the per-week trends chat - a trends run dispatches twice.
+func (e *extension) dispatchSeasonNotes(ctx context.Context, leagueID string) {
+	localID := leagueID + ":season-notes"
+	err := e.host.Dispatch(ctx, sdk.DispatchRequest{
+		Chat: sdk.ChatRef{LocalID: localID, User: e.cfg.DefaultUser, Title: "Sleeper season notes"},
+		Ask:  sdk.Ask{Message: fmt.Sprintf("Update the running season notes for league %s from this week's trends findings.", leagueID)},
+		Run:  sdk.RunConfig{ReadOnly: true},
+	})
+	if err != nil && e.host.Log != nil {
+		e.host.Log.Error("sleeper: season-notes dispatch failed", "league_id", leagueID, "err", err)
+	}
+}
+
 // handleJobs serves POST /sleeper/api/jobs {league_id, stop, job, args} -
 // dispatches (or appends a turn to) the chat convention handleArtifacts
 // reads back from, and returns its chat link.
@@ -740,14 +787,19 @@ func (e *extension) handleJobs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "dispatch is not available")
 		return
 	}
-	err = e.host.Dispatch(r.Context(), sdk.DispatchRequest{
+	ctx := r.Context()
+	message := fmt.Sprintf("Run the %s job for league %s, stop %s.%s", req.Job, req.LeagueID, req.Stop, formatArgs(req.Args))
+	err = e.host.Dispatch(ctx, sdk.DispatchRequest{
 		Chat: sdk.ChatRef{LocalID: localID, User: e.cfg.DefaultUser, Title: title},
-		Ask:  sdk.Ask{Message: fmt.Sprintf("Run the %s job for league %s, stop %s.", req.Job, req.LeagueID, req.Stop)},
+		Ask:  sdk.Ask{Message: message},
 		Run:  sdk.RunConfig{ReadOnly: true},
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if req.Job == "trends" {
+		e.dispatchSeasonNotes(ctx, req.LeagueID)
 	}
 	chatID := "ext:sleeper:" + localID
 	writeJSON(w, jobResponse{ChatID: chatID, ChatURL: "/chat/" + chatID})

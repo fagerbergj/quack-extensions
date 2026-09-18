@@ -6,8 +6,12 @@
 // /sleeper/api/season and /sleeper/api/artifacts JSON shapes instead of an
 // inlined fixture object.
 
-export const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+export const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 export const num = (n, d = 1) => Number(n ?? 0).toFixed(d)
+
+// Sleeper's ADP sentinel for "no ADP" is 999/1000, not null - a truthy
+// value, so callers must check this instead of `p.adp` directly.
+export const hasADP = adp => adp != null && adp < 999
 
 // A Sleeper player_id is all digits; a DEF's id is its team code (e.g.
 // "NE") and has no player thumbnail, only a team logo.
@@ -20,12 +24,27 @@ export function avatarUrl(id) {
 
 export function avatarHTML(player, sm) {
   const cls = 'av' + (sm ? ' av--sm' : '')
-  const initials = esc((player?.name || '?').split(' ').map(w => w[0]).slice(0, 2).join(''))
-  if (!player?.id) return `<span class="${cls} av--i">${initials}</span>`
+  const initials = (player?.name || '?').split(' ').map(w => w[0]).slice(0, 2).join('')
+  if (!player?.id) return `<span class="${cls} av--i">${esc(initials)}</span>`
   const url = esc(avatarUrl(player.id))
-  // A CDN 404 (backup/rookie with no thumbnail yet) swaps itself for the
-  // initials fallback in place - no separate loaded/error state to track.
-  return `<img class="${cls}" src="${url}" alt="" loading="lazy" onerror="this.outerHTML='<span class=&quot;${cls} av--i&quot;>${initials}</span>'">`
+  // No inline onerror (player names are agent-written, untrusted): a
+  // delegated capture-phase 'error' listener (installOwnAvatarFallback,
+  // wired once by main.js/preview.js) does the swap via data attributes.
+  return `<img class="${cls}" src="${url}" alt="" loading="lazy" data-avatar-fallback="${esc(initials)}" data-avatar-class="${esc(cls)} av--i">`
+}
+
+// Installs the delegated image-fallback listener once; both the served
+// page (main.js) and Storybook (preview.js) call this so avatarHTML's
+// data attributes have no inline handler to carry out the swap.
+export function installAvatarFallback(root = document) {
+  root.addEventListener('error', e => {
+    const img = e.target
+    if (!(img instanceof HTMLImageElement) || img.dataset.avatarFallback == null) return
+    const span = document.createElement('span')
+    span.className = img.dataset.avatarClass
+    span.textContent = img.dataset.avatarFallback
+    img.replaceWith(span)
+  }, true)
 }
 
 export function injBadge(p) {
@@ -72,7 +91,7 @@ export function renderLineup(state) {
   const rows = d.starters.map(row => `<tr title="${esc(row.why || '')}"><td>${esc(row.slot)}</td><td class="cell">${personHTML(row.player)}</td><td class="num">${num(row.proj)}</td><td>${verdictBadge(row.verdict, row.confidence, row.why)}</td></tr>`).join('')
   const benchRows = (d.bench || []).map(b => `<tr title="${esc(b.why || '')}"><td>BN</td><td class="cell">${personHTML(b.player)}</td><td class="num">${num(b.proj)}</td><td>${verdictBadge('sit', null, b.why)}</td></tr>`).join('')
   const reserve = d.reserve || []
-  const irRows = reserve.map(rv => `<tr><td>IR</td><td class="cell">${personHTML(rv.player)}</td><td class="num">–</td><td><span class="qk-badge">IR</span></td></tr>`).join('')
+  const irRows = reserve.map(rv => `<tr title="${esc(rv.why || '')}"><td>IR</td><td class="cell">${personHTML(rv.player)}</td><td class="num">–</td><td><span class="qk-badge">IR</span></td></tr>`).join('')
   const oppRows = (d.opponent_starters || []).map(o => `<tr><td>${esc(o.slot)}</td><td class="cell">${personHTML(o.player, true)}</td><td class="num">${num(o.proj)}</td></tr>`).join('')
   return section('sec-lineup', head + `
     <div class="sl-score"><div><b>${num(d.my_proj)}</b><span>${esc(d.team)} · ${esc(d.team_record || '')}<br>projected</span></div><div class="vs">vs</div><div><b>${num(d.opp_proj)}</b><span>${esc(d.opponent)} · ${esc(d.opponent_record || '')}<br>projected</span></div></div>
@@ -123,7 +142,7 @@ export function renderTrade(state, talks, talkIdx) {
     ? d.offers.map(o => `<li class="sl-offer ${o.by === 'You' ? 'mine' : ''}"><div class="sl-offer__who"><b>${esc(o.by)}</b>${esc(o.when)}</div><div><div class="sl-sides">${tradeSide('You give', o.give)}${tradeSide('You get', o.get)}</div><p class="sl-eval"><span class="qk-badge ${o.verdict === 'send' ? 'qk-badge--ok' : o.verdict === 'decline' ? 'qk-badge--err' : 'qk-badge--warn'}">${esc(o.verdict)}</span> <b>${esc(o.delta)}</b> · ${esc(o.why)}</p></div></li>`).join('')
     : `<li class="sl-empty">No offers yet.</li>`
   const compose = d
-    ? `<form class="sl-compose" id="compose" data-partner="${esc(cur.partner)}" onsubmit="return false"><div><label for="give">You give</label><select id="give" class="sl-select sl-multi" multiple size="5">${(d.my_roster || []).map(tradeOption).join('')}</select></div><div><label for="get">You get from ${esc(cur.partner)}</label><select id="get" class="sl-select sl-multi" multiple size="5">${(d.partner_roster || []).map(tradeOption).join('')}</select></div><button class="qk-btn qk-btn--primary" data-run="trade" data-partner="${esc(cur.partner)}" type="button">Evaluate counter</button></form>`
+    ? `<form class="sl-compose" id="compose" data-partner="${esc(cur.partner)}"><div><label for="give">You give</label><select id="give" class="sl-select sl-multi" multiple size="5">${(d.my_roster || []).map(tradeOption).join('')}</select></div><div><label for="get">You get from ${esc(cur.partner)}</label><select id="get" class="sl-select sl-multi" multiple size="5">${(d.partner_roster || []).map(tradeOption).join('')}</select></div><button class="qk-btn qk-btn--primary" data-run="trade" data-partner="${esc(cur.partner)}" type="button">Evaluate counter</button></form>`
     : ''
   return section('sec-trade', head + `<div class="sl-sec__body">
     <div class="sl-talkbar"><label for="talk-select" class="sl-keep" style="font-size:.75rem">Talk</label><select id="talk-select" class="sl-select">${options}</select><button class="qk-btn" data-run="trade">New talk</button></div>
@@ -178,14 +197,15 @@ export function renderDraftBoard(state) {
   d.picks.forEach(p => { (byRound[p.round] = byRound[p.round] || {})[p.slot] = p })
   const cell = p => {
     if (!p) return '<td></td>'
-    const delta = p.adp ? Math.round(p.pick_no - p.adp) : null
+    const adp = hasADP(p.adp) ? p.adp : null
+    const delta = adp ? Math.round(p.pick_no - adp) : null
     const cls = delta == null ? '' : delta >= 8 ? 'fell' : delta <= -8 ? 'reach' : ''
-    return `<td class="${p.mine ? 'me' : ''}"><span class="pos ${esc(p.player.pos || '')}">${esc(p.player.pos || '')}</span>${esc(p.player.name)}<span class="adp ${cls}">${p.adp ? (delta > 0 ? '+' : '') + delta + ' vs ADP ' + num(p.adp, 0) : ''}</span></td>`
+    return `<td class="${p.mine ? 'me' : ''}"><span class="pos ${esc(p.player.pos || '')}">${esc(p.player.pos || '')}</span>${esc(p.player.name)}<span class="adp ${cls}">${adp ? (delta > 0 ? '+' : '') + delta + ' vs ADP ' + num(adp, 0) : ''}</span></td>`
   }
   const rows = Object.keys(byRound).sort((a, b) => a - b).map(r => `<tr><td class="num">${esc(r)}</td>${slots.map(s => cell(byRound[r][s])).join('')}</tr>`).join('')
   const mine = d.picks.filter(p => p.mine)
-  const fell = mine.filter(p => p.adp && p.pick_no - p.adp >= 8).length
-  const reach = mine.filter(p => p.adp && p.pick_no - p.adp <= -8).length
+  const fell = mine.filter(p => hasADP(p.adp) && p.pick_no - p.adp >= 8).length
+  const reach = mine.filter(p => hasADP(p.adp) && p.pick_no - p.adp <= -8).length
   return section('sec-draft', head + `<div class="sl-sec__body">
     <p class="sl-summary">Your column is highlighted. Green: the player fell 8 or more picks past ADP; red: a reach of 8 or more. ${fell} value picks, ${reach} reaches.</p>
     <div class="qk-table-wrap"><table class="qk-table sl-board"><thead><tr><th>Rd</th>${slots.map(s => `<th class="${s === d.my_slot ? 'me' : ''}">${s}. ${esc(d.slots[s])}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>
@@ -281,4 +301,20 @@ export function renderTimeline(currentStop, weekNow, isCurrentSeason, artifactCo
 
 export function renderYears(seasons, currentSeason) {
   return `<nav class="sl-years" aria-label="Seasons">${seasons.map(s => `<button class="sl-year" data-season="${esc(s.season)}" aria-pressed="${s.season === currentSeason}">${esc(s.season)}<small>${s.wins}-${s.losses}</small></button>`).join('')}</nav>`
+}
+
+// items: [{job, label, agent, running, disabled}] - the kebab menu's list
+// body, pulled out of main.js's renderMenu so it (and the whole menu) can
+// be storied without live app state.
+export function renderMenuList(heading, items) {
+  const rows = items.map(i => `<li><button data-run="${esc(i.job)}" ${i.disabled || i.running ? 'disabled' : ''}>${esc(i.label)}<span>${esc(i.agent || '')}</span></button></li>`).join('')
+  return `<li class="hd">${esc(heading)}</li>${rows}`
+}
+
+const KEBAB_SVG = '<svg width="20" height="20" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="M480-160q-33 0-56.5-23.5T400-240q0-33 23.5-56.5T480-320q33 0 56.5 23.5T560-240q0 33-23.5 56.5T480-160Zm0-240q-33 0-56.5-23.5T400-480q0-33 23.5-56.5T480-560q33 0 56.5 23.5T560-480q0 33-23.5 56.5T480-400Zm0-240q-33 0-56.5-23.5T400-720q0-33 23.5-56.5T480-800q33 0 56.5 23.5T560-720q0 33-23.5 56.5T480-640Z"/></svg>'
+
+// The full kebab menu, open, for stories - the served page's own
+// index.html markup drives the real <details> (see main.js's renderMenu).
+export function kebabMenuHTML(heading, items) {
+  return `<details class="sl-menu" open><summary aria-label="Run a job" title="Run a job">${KEBAB_SVG}</summary><ul class="sl-menu__list">${renderMenuList(heading, items)}</ul></details>`
 }

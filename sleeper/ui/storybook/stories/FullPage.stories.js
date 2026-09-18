@@ -34,7 +34,8 @@ export const MobileViewport390 = {
   render: () => {
     const el = document.createElement('div')
     el.className = 'qk-page'
-    el.style.cssText = 'width:390px;max-width:390px;border:1px solid var(--qk-border);overflow-x:hidden'
+    // No overflow-x:hidden - that would clip the very overflow render-check measures.
+    el.style.cssText = 'width:390px;max-width:390px;border:1px solid var(--qk-border)'
     el.innerHTML = fullPage()
     return el
   },

@@ -3,6 +3,8 @@
 // pure renderers in render.js. No build step - native ESM only.
 import * as R from './render.js'
 
+R.installAvatarFallback()
+
 const JOBS = [
   { id: 'lineup', name: 'Start / sit', agent: 'lineup-analyst' },
   { id: 'waivers', name: 'Waiver targets', agent: 'waiver-scout' },
@@ -24,6 +26,9 @@ const state = {
   stop: qs.get('stop') || null,
   talkIdx: 0,
   running: new Set(), // job ids currently polling
+  // "<season>:<stop>" -> artifact count, filled in as stops are visited (no
+  // bulk endpoint exists to precompute every stop's dots up front).
+  stopFoundCounts: {},
 }
 
 const $ = id => document.getElementById(id)
@@ -58,6 +63,8 @@ async function loadSeason() {
 async function loadArtifacts() {
   state.artifacts = await jget(`api/artifacts?league_id=${encodeURIComponent(state.leagueID)}&stop=${encodeURIComponent(state.stop)}`)
   state.talkIdx = Math.min(state.talkIdx, Math.max(0, (state.artifacts.talks || []).length - 1))
+  const found = Object.values(state.artifacts.jobs || {}).filter(j => j.found).length
+  state.stopFoundCounts[`${state.seasonKey}:${state.stop}`] = found
 }
 
 function isCurrentSeason() { return state.seasonKey === state.seasons.current_season }
@@ -91,27 +98,34 @@ function renderYears() {
 }
 
 function renderRail() {
-  const found = Object.values(state.artifacts?.jobs || {}).filter(j => j.found).length
-  $('rail').innerHTML = R.renderTimeline(state.stop, weekNow(), isCurrentSeason(), { [state.stop]: found })
+  const prefix = `${state.seasonKey}:`
+  const counts = {}
+  for (const [key, n] of Object.entries(state.stopFoundCounts)) {
+    if (key.startsWith(prefix)) counts[key.slice(prefix.length)] = n
+  }
+  $('rail').innerHTML = R.renderTimeline(state.stop, weekNow(), isCurrentSeason(), counts)
 }
 
 function renderMenu() {
   const list = $('menu-list')
   if (state.stop === 'draft') {
-    list.innerHTML = `<li class="hd">${R.esc(state.seasonKey)} draft</li><li><button data-run="draft">${isCurrentSeason() ? 'Re-grade this draft' : 'Re-run draft report card'}<span>${DRAFT_JOB.agent}</span></button></li>`
+    const label = isCurrentSeason() ? 'Re-grade this draft' : 'Re-run draft report card'
+    list.innerHTML = R.renderMenuList(`${state.seasonKey} draft`, [{ job: 'draft', label, agent: DRAFT_JOB.agent }])
     return
   }
   if (state.stop === 'review') {
-    list.innerHTML = `<li class="hd">${R.esc(state.seasonKey)} review</li><li><button data-run="history" ${isCurrentSeason() ? 'disabled' : ''}>${isCurrentSeason() ? 'Available after week 17' : 'Re-run season review'}<span>${REVIEW_JOB.agent}</span></button></li>`
+    const label = isCurrentSeason() ? 'Available after week 17' : 'Re-run season review'
+    list.innerHTML = R.renderMenuList(`${state.seasonKey} review`, [{ job: 'history', label, agent: REVIEW_JOB.agent, disabled: isCurrentSeason() }])
     return
   }
   const past = isPastWeek()
   const jobs = JOBS.filter(j => (past ? (j.id === 'retro' || j.id === 'digest') : !j.past))
-  list.innerHTML = `<li class="hd">${R.esc(state.seasonKey)} · week ${R.esc(state.stop)}</li>` + jobs.map(j => {
+  const items = jobs.map(j => {
     const env = jobEnvelope(j)
-    const label = env.running ? 'Running ' : env.found ? 'Re-run ' : 'Run '
-    return `<li><button data-run="${j.id}" ${env.running ? 'disabled' : ''}>${label}${R.esc(j.name.toLowerCase())}<span>${R.esc(j.agent)}</span></button></li>`
-  }).join('')
+    const label = (env.running ? 'Running ' : env.found ? 'Re-run ' : 'Run ') + j.name.toLowerCase()
+    return { job: j.id, label, agent: j.agent, running: env.running }
+  })
+  list.innerHTML = R.renderMenuList(`${state.seasonKey} · week ${state.stop}`, items)
 }
 
 function renderMain() {
@@ -199,9 +213,24 @@ async function switchStop(stop) {
   window.scrollTo({ top: 0 })
 }
 
+function selectedValues(id) {
+  const el = document.getElementById(id)
+  return el ? Array.from(el.selectedOptions).map(o => o.value) : []
+}
+
 async function runJob(job, partner) {
   $('menu').removeAttribute('open')
-  const body = { league_id: state.leagueID, stop: state.stop, job, args: partner ? { partner } : undefined }
+  const args = {}
+  if (partner) args.partner = partner
+  if (job === 'trade') {
+    // The compose form's two multi-selects (mine/partner's roster), when present
+    // for the talk being acted on - so the analyst gets the actual offer, not just who.
+    const give = selectedValues('give')
+    const get = selectedValues('get')
+    if (give.length) args.give = give.join(',')
+    if (get.length) args.get = get.join(',')
+  }
+  const body = { league_id: state.leagueID, stop: state.stop, job, args: Object.keys(args).length ? args : undefined }
   state.running.add(job)
   renderMenu(); renderMain()
   try {

@@ -14,7 +14,8 @@ export function page(html, maxWidth = '48rem') {
 export function mobileFrame(html) {
   const outer = document.createElement('div')
   outer.className = 'qk-page'
-  outer.style.cssText = 'width:390px;max-width:390px;border:1px solid var(--qk-border);overflow-x:hidden'
+  // No overflow-x:hidden - that would clip the very overflow render-check measures.
+  outer.style.cssText = 'width:390px;max-width:390px;border:1px solid var(--qk-border)'
   outer.innerHTML = html
   return outer
 }

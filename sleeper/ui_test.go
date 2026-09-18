@@ -77,6 +77,16 @@ func TestHandleSeasons(t *testing.T) {
 	if _, ok := found[pastLeague]; !ok {
 		t.Errorf("chain missing past league %s: %+v", pastLeague, resp.Seasons)
 	}
+	// Chronological, current last (the approved design; the underlying walk is newest-first).
+	if len(resp.Seasons) < 2 {
+		t.Fatalf("expected at least 2 seasons, got %+v", resp.Seasons)
+	}
+	if resp.Seasons[len(resp.Seasons)-1].LeagueID != testLeague {
+		t.Errorf("last season = %+v, want the current league last", resp.Seasons[len(resp.Seasons)-1])
+	}
+	if resp.Seasons[0].LeagueID == testLeague {
+		t.Errorf("first season is the current league; want oldest first: %+v", resp.Seasons)
+	}
 }
 
 func TestHandleSeasonsUnknownLeague(t *testing.T) {
@@ -297,6 +307,44 @@ func TestHandleJobsTradeRequiresPartner(t *testing.T) {
 	want := "ext:sleeper:" + testLeague + ":trade:Rice Cooker"
 	if resp.ChatID != want {
 		t.Errorf("chat_id = %q, want %q", resp.ChatID, want)
+	}
+}
+
+func TestHandleJobsArgsReachTheMessage(t *testing.T) {
+	host := &fakeHost{artifacts: map[string]map[string][]byte{}}
+	_, r := newTestExtension(t, host.sdkHost(), config{})
+	body := `{"league_id":"` + testLeague + `","stop":"2","job":"trade","args":{"partner":"Rice Cooker","give":"7594,8142","get":"9997"}}`
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/jobs", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if len(host.dispatched) != 1 {
+		t.Fatalf("dispatched %d requests, want 1", len(host.dispatched))
+	}
+	msg := host.dispatched[0].Ask.Message
+	for _, want := range []string{"partner: Rice Cooker", "give: 7594,8142", "get: 9997"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message %q missing %q", msg, want)
+		}
+	}
+}
+
+func TestHandleJobsTrendsAlsoDispatchesSeasonNotes(t *testing.T) {
+	host := &fakeHost{artifacts: map[string]map[string][]byte{}}
+	_, r := newTestExtension(t, host.sdkHost(), config{})
+	body := `{"league_id":"` + testLeague + `","stop":"2","job":"trends"}`
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/jobs", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if len(host.dispatched) != 2 {
+		t.Fatalf("dispatched %d requests, want 2 (trends + season-notes): %+v", len(host.dispatched), host.dispatched)
+	}
+	wantLocalID := testLeague + ":season-notes"
+	if host.dispatched[1].Chat.LocalID != wantLocalID {
+		t.Errorf("second dispatch LocalID = %q, want %q", host.dispatched[1].Chat.LocalID, wantLocalID)
 	}
 }
 

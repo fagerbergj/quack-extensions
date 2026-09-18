@@ -21,8 +21,10 @@
     </details>
   </header>
 
-  <nav class="sl-years" id="years" aria-label="Seasons"></nav>
-  <nav class="sl-rail" id="rail" aria-label="Season timeline"></nav>
+  <!-- renderYears/renderTimeline each emit their own <nav aria-label>, so this
+       stays a plain container - a <nav> here too would nest duplicate landmarks. -->
+  <div id="years"></div>
+  <div id="rail"></div>
 
   <div id="banner"></div>
   <div class="sl-grid">
