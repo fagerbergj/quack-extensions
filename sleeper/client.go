@@ -2,6 +2,7 @@ package sleeper
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -393,17 +394,29 @@ func (c *Client) SeasonStats(ctx context.Context, season string) (map[string]sle
 	})
 }
 
+// ErrNotFound wraps every "not found" response (a real 404, or Sleeper's
+// HTTP-200-plus-literal-null body), so callers can tell it apart from a
+// genuine fetch failure with errors.Is.
+var ErrNotFound = errors.New("sleeper: not found")
+
 // okJSON errors on a nil JSON200 or a literal "null" body (Sleeper's 200
 // response for e.g. an unknown username) - never a cacheable zero value.
 func okJSON[T any](json *T, resp *http.Response, body []byte) (*T, error) {
-	if json == nil || strings.TrimSpace(string(body)) == "null" {
-		status := "unknown"
-		if resp != nil {
-			status = resp.Status
-		}
-		return nil, fmt.Errorf("sleeper: not found (status %s): %s", status, string(body))
+	isNullBody := strings.TrimSpace(string(body)) == "null"
+	if json != nil && !isNullBody {
+		return json, nil
 	}
-	return json, nil
+	status, code := "unknown", 0
+	if resp != nil {
+		status, code = resp.Status, resp.StatusCode
+	}
+	// A real 404 or Sleeper's HTTP-200-plus-literal-null body both mean
+	// not-found; any other non-200 is a genuine failure, not ErrNotFound,
+	// so a caller (e.g. sleeper_transactions) can tell them apart.
+	if code == http.StatusNotFound || isNullBody {
+		return nil, fmt.Errorf("%w (status %s): %s", ErrNotFound, status, string(body))
+	}
+	return nil, fmt.Errorf("sleeper: unexpected response (status %s): %s", status, string(body))
 }
 
 // buildNameIndex indexes a players dump by lowercased "first last", last

@@ -2,6 +2,7 @@ package sleeper
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -94,7 +95,10 @@ func (e *extension) getTransactions(ctx context.Context, a transactionsArgs) (tr
 		}
 		txs, err := e.client.Transactions(ctx, leagueID, week)
 		if err != nil {
-			continue // no data recorded for this round yet
+			if errors.Is(err, ErrNotFound) {
+				continue // no round recorded for this week yet
+			}
+			return transactionsResult{}, fmt.Errorf("sleeper_transactions: week %d: %w", week, err)
 		}
 		for _, tx := range txs {
 			out = append(out, buildTransactionEntry(week, tx, names, dump))
@@ -161,7 +165,7 @@ func (e *extension) freeAgentsTool() tool.Tool {
 		functiontool.Config{
 			Name: "sleeper_free_agents",
 			Description: "Rank unrostered players by this week's projection, with trending-add counts and " +
-				"research ownership %. `position` filters (e.g. \"RB\"); `limit` caps the list (default 20).",
+				"research ownership percentage. `position` filters (e.g. \"RB\"); `limit` caps the list (default 20).",
 		},
 		func(ctx adkagent.Context, a freeAgentsArgs) (freeAgentsResult, error) { return e.getFreeAgents(ctx, a) },
 	)

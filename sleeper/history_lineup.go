@@ -22,10 +22,16 @@ var flexKindEligible = map[string][]string{
 func bestLineupPoints(rosterPositions []string, playerIDs []string, points map[string]float32, dump map[string]sleepergen.Player) float32 {
 	counts, flexCounts := slotCounts(rosterPositions)
 	byPos := groupByPosition(playerIDs, dump)
+	// Seed every candidate as flex-eligible leftover first - a position
+	// with no strict slot (e.g. TE in a QB/RB/WR/FLEX league) must still
+	// reach fillFlexKind, not just whatever counts happens to name.
 	leftover := map[string][]string{}
+	for pos, ids := range byPos {
+		leftover[pos] = sortedByPoints(ids, points)
+	}
 	var total float32
 	for pos, n := range counts {
-		group := sortedByPoints(byPos[pos], points)
+		group := leftover[pos]
 		if n > len(group) {
 			n = len(group)
 		}

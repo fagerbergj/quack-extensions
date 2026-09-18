@@ -2,6 +2,8 @@ package sleeper
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/fagerbergj/quack-extensions/sdk"
@@ -30,6 +32,27 @@ func TestSnapshotOnceWritesTodaysFile(t *testing.T) {
 	}
 	if len(snap.Players) == 0 {
 		t.Error("expected rostered players in the snapshot")
+	}
+}
+
+// TestWriteSnapshotLeavesNoTempFile proves writeSnapshot's temp-file +
+// rename leaves only the final .json, no stray .tmp.
+func TestWriteSnapshotLeavesNoTempFile(t *testing.T) {
+	dataDir := t.TempDir()
+	snap := snapshot{Date: "2026-09-18", Players: map[string]playerSnapshot{"a": {DepthChartOrder: 1}}}
+	if err := writeSnapshot(dataDir, testLeague, snap); err != nil {
+		t.Fatalf("writeSnapshot: %v", err)
+	}
+	entries, err := os.ReadDir(snapshotDir(dataDir, testLeague))
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "2026-09-18.json" {
+		t.Fatalf("dir entries = %v, want exactly [2026-09-18.json]", entries)
+	}
+	got, err := readSnapshot(dataDir, testLeague, "2026-09-18")
+	if err != nil || got.Players["a"].DepthChartOrder != 1 {
+		t.Errorf("readSnapshot = %+v, %v; want the written snapshot back", got, err)
 	}
 }
 
@@ -131,6 +154,31 @@ func TestGetTrendsOverTwoSyntheticSnapshots(t *testing.T) {
 	}
 	if got.Trends[0].Name != "Brandon Aubrey" {
 		t.Errorf("name = %q, want Brandon Aubrey", got.Trends[0].Name)
+	}
+}
+
+// TestGetTrendsSkipsUnreadableSnapshotWithNote covers the fix: a corrupt
+// snapshot file must not fail the whole tool call.
+func TestGetTrendsSkipsUnreadableSnapshotWithNote(t *testing.T) {
+	dataDir := t.TempDir()
+	e := &extension{client: newTestClient(t), host: sdk.Host{DataDir: dataDir}, cfg: config{DefaultLeague: testLeague}}
+	good := snapshot{Date: "2026-09-10", Players: map[string]playerSnapshot{"11533": {DepthChartOrder: 1}}}
+	if err := writeSnapshot(dataDir, testLeague, good); err != nil {
+		t.Fatalf("writeSnapshot: %v", err)
+	}
+	corruptPath := filepath.Join(snapshotDir(dataDir, testLeague), "2026-09-16.json")
+	if err := os.WriteFile(corruptPath, []byte("not json"), 0o644); err != nil {
+		t.Fatalf("write corrupt snapshot: %v", err)
+	}
+	got, err := e.getTrends(context.Background(), trendsArgs{Days: 30})
+	if err != nil {
+		t.Fatalf("getTrends must not fail on an unreadable snapshot: %v", err)
+	}
+	if got.Note == "" {
+		t.Error("expected a note explaining the unreadable snapshot")
+	}
+	if len(got.Trends) != 0 {
+		t.Errorf("trends = %+v, want none (only one readable snapshot)", got.Trends)
 	}
 }
 

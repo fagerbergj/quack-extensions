@@ -129,15 +129,30 @@ func playerSnapshots(rosteredIDs map[string]bool, dump map[string]sleepergen.Pla
 	return out
 }
 
+// writeSnapshot writes via a temp file + rename so a reader (or a crash
+// mid-write) never sees a partial file at the final path.
 func writeSnapshot(dataDir, leagueID string, snap snapshot) error {
-	if err := os.MkdirAll(snapshotDir(dataDir, leagueID), 0o755); err != nil {
+	dir := snapshotDir(dataDir, leagueID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
 	data, err := json.Marshal(snap)
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	return os.WriteFile(snapshotPath(dataDir, leagueID, snap.Date), data, 0o644)
+	tmp, err := os.CreateTemp(dir, snap.Date+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }() // no-op once the rename below succeeds
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp: %w", err)
+	}
+	return os.Rename(tmp.Name(), snapshotPath(dataDir, leagueID, snap.Date))
 }
 
 func readSnapshot(dataDir, leagueID, date string) (snapshot, error) {
@@ -150,6 +165,27 @@ func readSnapshot(dataDir, leagueID, date string) (snapshot, error) {
 		return snapshot{}, fmt.Errorf("unmarshal snapshot %s: %w", date, err)
 	}
 	return snap, nil
+}
+
+// firstReadableSnapshot tries dates in order and returns the first one that
+// reads cleanly - a corrupt or half-written file is skipped, not fatal.
+func firstReadableSnapshot(dataDir, leagueID string, dates []string) (snapshot, bool) {
+	for _, d := range dates {
+		if snap, err := readSnapshot(dataDir, leagueID, d); err == nil {
+			return snap, true
+		}
+	}
+	return snapshot{}, false
+}
+
+// reversed returns a new slice with dates in the opposite order, leaving
+// the input untouched.
+func reversed(dates []string) []string {
+	out := make([]string, len(dates))
+	for i, d := range dates {
+		out[len(dates)-1-i] = d
+	}
+	return out
 }
 
 // snapshotDates lists a league's stored snapshot dates, oldest first.

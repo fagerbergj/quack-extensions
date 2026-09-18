@@ -3,6 +3,7 @@ package sleeper
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -134,6 +135,25 @@ func TestOkJSONPassesThroughRealValue(t *testing.T) {
 	}
 	if got == nil || *got != "hello" {
 		t.Errorf("okJSON(...) = %v, want \"hello\"", got)
+	}
+}
+
+// TestOkJSONDistinguishesNotFoundFromOtherErrors covers the fix: only a
+// real 404 (or the null-body quirk) is ErrNotFound; a 500 is a genuine
+// failure a caller like sleeper_transactions must not silently skip.
+func TestOkJSONDistinguishesNotFoundFromOtherErrors(t *testing.T) {
+	var zero string
+	_, err := okJSON[string](nil, &http.Response{Status: "404 Not Found", StatusCode: 404}, []byte("not found"))
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("404: err = %v, want errors.Is(err, ErrNotFound)", err)
+	}
+	_, err = okJSON(&zero, &http.Response{Status: "200 OK", StatusCode: 200}, []byte("null"))
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("null body: err = %v, want errors.Is(err, ErrNotFound)", err)
+	}
+	_, err = okJSON[string](nil, &http.Response{Status: "500 Internal Server Error", StatusCode: 500}, []byte("boom"))
+	if err == nil || errors.Is(err, ErrNotFound) {
+		t.Errorf("500: err = %v, want a non-ErrNotFound error", err)
 	}
 }
 

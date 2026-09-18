@@ -106,3 +106,31 @@ func TestBestLineupPointsFlexPicksHighestRemaining(t *testing.T) {
 		t.Errorf("bestLineupPoints = %v, want %v", got, want)
 	}
 }
+
+// TestBestLineupPointsFlexReachesPositionWithNoStrictSlot is quack's probe:
+// TE has no strict slot here, only FLEX, so it must still reach fillFlexKind.
+func TestBestLineupPointsFlexReachesPositionWithNoStrictSlot(t *testing.T) {
+	dump := playerDumpAt("qb1", "QB", "rb1", "RB", "wr1", "WR", "te1", "TE")
+	points := map[string]float32{"qb1": 20, "rb1": 15, "wr1": 18, "te1": 40}
+	ids := []string{"qb1", "rb1", "wr1", "te1"}
+	positions := []string{"QB", "RB", "WR", "FLEX", "BN"}
+	got := bestLineupPoints(positions, ids, points, dump)
+	want := float32(93) // 20 + 15 + 18 + FLEX picks te1 (40), not 0
+	if got != want {
+		t.Errorf("bestLineupPoints = %v, want %v", got, want)
+	}
+}
+
+// TestBestLineupPointsAllFlexLineup is quack's second probe: no strict
+// slots at all, so counts is empty and every candidate must still be seeded.
+func TestBestLineupPointsAllFlexLineup(t *testing.T) {
+	dump := playerDumpAt("rb1", "RB", "wr1", "WR")
+	points := map[string]float32{"rb1": 12, "wr1": 9}
+	ids := []string{"rb1", "wr1"}
+	positions := []string{"FLEX", "FLEX", "BN"}
+	got := bestLineupPoints(positions, ids, points, dump)
+	want := float32(21) // rb1 + wr1, not 0
+	if got != want {
+		t.Errorf("bestLineupPoints = %v, want %v", got, want)
+	}
+}

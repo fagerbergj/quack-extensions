@@ -106,13 +106,26 @@ func (e *extension) getDraft(ctx context.Context, a draftArgs) (draftResult, err
 		DraftID: d.DraftId, Status: d.Status, Type: d.Type, Season: d.Season,
 		Order:     draftOrder(d, names),
 		Picks:     draftPicksOut(picks, names, proj),
-		OnClock:   onClock(d, len(picks), names),
+		OnClock:   onClock(d, e.draftRounds(ctx, d), len(picks), names),
 		FetchedAt: nowRFC3339(),
 	}
 	if d.Status == "drafting" {
 		result.BestAvailable = bestAvailable(dump, picks, proj)
 	}
 	return result, nil
+}
+
+// draftRounds falls back to the league's roster size when a draft's own
+// settings.rounds is unset - every roster slot is filled exactly once.
+func (e *extension) draftRounds(ctx context.Context, d *sleepergen.Draft) int {
+	if r := d.Settings["rounds"]; r > 0 {
+		return r
+	}
+	league, err := e.client.League(ctx, d.LeagueId)
+	if err != nil {
+		return 0
+	}
+	return len(league.RosterPositions)
 }
 
 // resolveDraftID picks a draft directly, or the league's own draft when
@@ -132,7 +145,35 @@ func (e *extension) resolveDraftID(ctx context.Context, draftID, leagueID string
 	if len(drafts) == 0 {
 		return "", "", fmt.Errorf("sleeper_draft: league %s has no drafts", leagueID)
 	}
-	return drafts[0].DraftId, leagueID, nil
+	league, err := e.client.League(ctx, leagueID)
+	if err != nil {
+		return "", "", fmt.Errorf("sleeper_draft: league: %w", err)
+	}
+	return pickDraft(drafts, league.Season).DraftId, leagueID, nil
+}
+
+// pickDraft prefers the draft matching season (a league can carry more than
+// one, e.g. after a re-draft); else the latest by start_time.
+func pickDraft(drafts []sleepergen.Draft, season string) sleepergen.Draft {
+	for _, d := range drafts {
+		if d.Season == season {
+			return d
+		}
+	}
+	best := drafts[0]
+	for _, d := range drafts[1:] {
+		if draftStartTime(d) > draftStartTime(best) {
+			best = d
+		}
+	}
+	return best
+}
+
+func draftStartTime(d sleepergen.Draft) int {
+	if d.StartTime == nil {
+		return 0
+	}
+	return *d.StartTime
 }
 
 func (e *extension) rostersAndUsers(ctx context.Context, leagueID string) ([]sleepergen.Roster, []sleepergen.LeagueUser, error) {
@@ -218,16 +259,15 @@ func pickPosition(p sleepergen.DraftPick) string {
 
 // onClock computes the next pick from snake-draft math; nil unless the
 // draft is actively drafting and picks remain.
-func onClock(d *sleepergen.Draft, picksMade int, names map[int]string) *draftSlot {
+func onClock(d *sleepergen.Draft, rounds, picksMade int, names map[int]string) *draftSlot {
 	if d.Status != "drafting" || d.SlotToRosterId == nil {
 		return nil
 	}
 	teams := d.Settings["teams"]
-	rounds := d.Settings["rounds"]
 	if teams == 0 {
 		teams = len(*d.SlotToRosterId)
 	}
-	if teams == 0 || picksMade >= teams*rounds {
+	if teams == 0 || rounds == 0 || picksMade >= teams*rounds {
 		return nil
 	}
 	pickNo := picksMade + 1

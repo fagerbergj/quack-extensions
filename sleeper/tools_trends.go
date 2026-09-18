@@ -75,13 +75,10 @@ func (e *extension) getTrends(ctx context.Context, a trendsArgs) (trendsResult, 
 	if len(dates) < 2 {
 		return trendsResult{LeagueID: leagueID, Note: "fewer than two snapshots in range; nothing to diff yet", FetchedAt: nowRFC3339()}, nil
 	}
-	oldSnap, err := readSnapshot(e.host.DataDir, leagueID, dates[0])
-	if err != nil {
-		return trendsResult{}, fmt.Errorf("sleeper_trends: %w", err)
-	}
-	newSnap, err := readSnapshot(e.host.DataDir, leagueID, dates[len(dates)-1])
-	if err != nil {
-		return trendsResult{}, fmt.Errorf("sleeper_trends: %w", err)
+	oldSnap, oldOK := firstReadableSnapshot(e.host.DataDir, leagueID, dates)
+	newSnap, newOK := firstReadableSnapshot(e.host.DataDir, leagueID, reversed(dates))
+	if !oldOK || !newOK || oldSnap.Date == newSnap.Date {
+		return trendsResult{LeagueID: leagueID, Note: "fewer than two readable snapshots in range (some were unreadable); nothing to diff yet", FetchedAt: nowRFC3339()}, nil
 	}
 	dump, err := e.client.PlayersDump(ctx)
 	if err != nil {

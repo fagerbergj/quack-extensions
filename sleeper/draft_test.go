@@ -64,7 +64,7 @@ func TestOnClockSnakeMath(t *testing.T) {
 		{5, 1, 1}, // round 2, pick 6: slot 1 goes last
 	}
 	for _, tc := range cases {
-		got := onClock(d, tc.picksMade, names)
+		got := onClock(d, 2, tc.picksMade, names)
 		if got == nil {
 			t.Fatalf("picksMade=%d: onClock = nil, want a pick", tc.picksMade)
 		}
@@ -72,7 +72,7 @@ func TestOnClockSnakeMath(t *testing.T) {
 			t.Errorf("picksMade=%d: got slot=%d roster=%d, want slot=%d roster=%d", tc.picksMade, got.Slot, got.RosterID, tc.wantSlot, tc.wantRoster)
 		}
 	}
-	if got := onClock(d, 6, names); got != nil {
+	if got := onClock(d, 2, 6, names); got != nil {
 		t.Errorf("draft complete (6/6 picks): onClock = %+v, want nil", got)
 	}
 }
@@ -80,8 +80,73 @@ func TestOnClockSnakeMath(t *testing.T) {
 func TestOnClockNilWhenNotDrafting(t *testing.T) {
 	slotToRoster := map[string]int{"1": 1}
 	d := &sleepergen.Draft{Status: "complete", Type: "snake", SlotToRosterId: &slotToRoster}
-	if got := onClock(d, 0, nil); got != nil {
+	if got := onClock(d, 1, 0, nil); got != nil {
 		t.Errorf("onClock = %+v, want nil for a non-drafting status", got)
+	}
+}
+
+// TestOnClockFallsBackToRosterSizeWhenRoundsUnset covers the fix: a
+// missing settings.rounds must not silently make picksMade >= teams*0 always true.
+func TestOnClockFallsBackToRosterSizeWhenRoundsUnset(t *testing.T) {
+	names := map[int]string{1: "a", 2: "b"}
+	slotToRoster := map[string]int{"1": 1, "2": 2}
+	d := &sleepergen.Draft{
+		Status: "drafting", Type: "snake",
+		Settings:       map[string]int{"teams": 2}, // no "rounds" key
+		SlotToRosterId: &slotToRoster,
+	}
+	if got := onClock(d, 0, 0, names); got != nil {
+		t.Errorf("rounds=0 with no fallback given: onClock = %+v, want nil", got)
+	}
+	got := onClock(d, 3, 0, names) // caller derived rounds=3 from roster size
+	if got == nil || got.Slot != 1 {
+		t.Errorf("onClock(rounds=3, picksMade=0) = %+v, want slot 1", got)
+	}
+}
+
+// TestPickDraftPrefersSeasonMatch covers a league carrying two drafts
+// (e.g. after a re-draft): the one matching the league's season wins,
+// regardless of start_time.
+func TestPickDraftPrefersSeasonMatch(t *testing.T) {
+	old := int(1000)
+	newer := int(2000)
+	drafts := []sleepergen.Draft{
+		{DraftId: "old-redraft", Season: "2026", StartTime: &newer},
+		{DraftId: "right-season", Season: "2025", StartTime: &old},
+	}
+	got := pickDraft(drafts, "2025")
+	if got.DraftId != "right-season" {
+		t.Errorf("pickDraft = %q, want right-season (season match beats a later start_time)", got.DraftId)
+	}
+}
+
+// TestPickDraftFallsBackToLatestStartTime covers no season match: the
+// most recently started draft wins.
+func TestPickDraftFallsBackToLatestStartTime(t *testing.T) {
+	early := int(1000)
+	late := int(2000)
+	drafts := []sleepergen.Draft{
+		{DraftId: "earlier", Season: "2024", StartTime: &early},
+		{DraftId: "later", Season: "2023", StartTime: &late},
+	}
+	got := pickDraft(drafts, "2026")
+	if got.DraftId != "later" {
+		t.Errorf("pickDraft = %q, want later (no season match, latest start_time wins)", got.DraftId)
+	}
+}
+
+// TestDraftRoundsFallsBackToLeagueRosterSize drives e.draftRounds against
+// the real fixture: no settings.rounds means "count roster_positions".
+func TestDraftRoundsFallsBackToLeagueRosterSize(t *testing.T) {
+	e := testExtension(t)
+	d := &sleepergen.Draft{LeagueId: testLeague, Settings: map[string]int{"teams": 10}}
+	got := e.draftRounds(context.Background(), d)
+	if got != 14 {
+		t.Errorf("draftRounds = %d, want 14 (len(roster_positions))", got)
+	}
+	d.Settings["rounds"] = 12
+	if got := e.draftRounds(context.Background(), d); got != 12 {
+		t.Errorf("draftRounds = %d, want 12 (settings.rounds takes priority)", got)
 	}
 }
 

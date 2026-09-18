@@ -2,6 +2,12 @@ package sleeper
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +32,40 @@ func TestGetTransactions(t *testing.T) {
 				t.Errorf("move %+v did not resolve a player name", m)
 			}
 		}
+	}
+}
+
+// TestGetTransactionsPropagatesGenuineError covers the fix: a real fetch
+// failure for one round (a 500, not a 404) must fail the tool, not be
+// swallowed the same way a not-yet-recorded round is.
+func TestGetTransactionsPropagatesGenuineError(t *testing.T) {
+	failWeek := 2
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, fmt.Sprintf("/transactions/%d", failWeek)) {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		key, err := fixtureKey(r.URL.RequestURI())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		b, err := os.ReadFile(filepath.Join("testdata", "get", key))
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(b)
+	}))
+	defer srv.Close()
+	client, err := NewClient(srv.URL, nil)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	e := &extension{client: client, cfg: config{DefaultUser: testUser, DefaultLeague: testLeague}}
+	if _, err := e.getTransactions(context.Background(), transactionsArgs{WeeksBack: 2}); err == nil {
+		t.Fatal("expected getTransactions to return the week-2 server error, not swallow it")
 	}
 }
 
