@@ -361,6 +361,27 @@ func TestHandleJobsDispatchesChatIDAndAppendsTurn(t *testing.T) {
 
 // TestHandleJobsUnmappedJobUsesPlannerPath pins jobWorkflows' zero-value
 // default: a job with no agent yet (e.g. digest) must not name a shape.
+func TestHandleJobsEveryMappedJobBindsItsWorkflow(t *testing.T) {
+	for job, want := range jobWorkflows {
+		t.Run(job, func(t *testing.T) {
+			host := &fakeHost{artifacts: map[string]map[string][]byte{}}
+			_, r := newTestExtension(t, host.sdkHost(), config{})
+			body := `{"league_id":"` + testLeague + `","stop":"2","job":"` + job + `"}`
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/jobs", strings.NewReader(body)))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+			}
+			if len(host.dispatched) == 0 {
+				t.Fatal("nothing dispatched")
+			}
+			if got := host.dispatched[0].Run.Workflow; got != want {
+				t.Errorf("%s workflow = %q, want %q", job, got, want)
+			}
+		})
+	}
+}
+
 func TestHandleJobsUnmappedJobUsesPlannerPath(t *testing.T) {
 	host := &fakeHost{artifacts: map[string]map[string][]byte{}}
 	_, r := newTestExtension(t, host.sdkHost(), config{})
