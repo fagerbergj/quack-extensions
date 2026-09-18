@@ -1,6 +1,7 @@
 package sleeper
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -49,15 +50,31 @@ func TestFactorySeasonValidation(t *testing.T) {
 	}
 }
 
-// TestFactoryIsSideEffectFree calls factory with a zero-value Host, whose
-// function fields (Dispatch, Log, ...) are all nil - factory must not
-// invoke any of them, only validate config and construct.
+// wantToolCount is every sleeper_* tool this slice registers.
+const wantToolCount = 12
+
+// TestFactoryIsSideEffectFree calls factory with a zero-value Host - factory
+// (and building the tool list) must never invoke any of its nil fields.
 func TestFactoryIsSideEffectFree(t *testing.T) {
 	ext, err := factory(sdk.Host{}, []byte("default_user: jf\n"))
 	if err != nil {
 		t.Fatalf("factory: %v", err)
 	}
-	if ext.Tools() != nil {
-		t.Errorf("Tools() = %v, want nil (no tools in this slice)", ext.Tools())
+	if got := len(ext.Tools()); got != wantToolCount {
+		t.Errorf("Tools() returned %d tools, want %d", got, wantToolCount)
+	}
+}
+
+// TestStartNoopWithoutDailySnapshots covers both guards: snapshots not
+// "daily", and no default_league to snapshot.
+func TestStartNoopWithoutDailySnapshots(t *testing.T) {
+	for _, cfg := range []config{
+		{Snapshots: "off", DefaultLeague: testLeague},
+		{Snapshots: "daily", DefaultLeague: ""},
+	} {
+		e := &extension{host: sdk.Host{}, cfg: cfg}
+		if err := e.Start(context.Background()); err != nil {
+			t.Errorf("Start(%+v) = %v, want nil", cfg, err)
+		}
 	}
 }

@@ -22,6 +22,10 @@ const (
 	ttlStatMap     = time.Hour
 	ttlChain       = 24 * time.Hour
 
+	// ttlLive covers endpoints a tool wants fresh during an active event
+	// (waivers processing, a live draft, trending heat).
+	ttlLive = 2 * time.Minute
+
 	// maxChainSeasons bounds Chain against a malformed or cyclic
 	// previous_league_id chain - no real league runs this deep.
 	maxChainSeasons = 10
@@ -90,6 +94,7 @@ func (c *Client) State(ctx context.Context) (*sleepergen.NflState, error) {
 	})
 }
 
+//nolint:dupl // each single-value cached lookup differs only by type and endpoint
 func (c *Client) League(ctx context.Context, leagueID string) (*sleepergen.League, error) {
 	return cached(c, "league:"+leagueID, ttlLeague, func() (*sleepergen.League, error) {
 		resp, err := c.gen.GetLeagueWithResponse(ctx, leagueID)
@@ -140,6 +145,7 @@ func (c *Client) LeagueUsers(ctx context.Context, leagueID string) ([]sleepergen
 	})
 }
 
+//nolint:dupl // see Rosters
 func (c *Client) Matchups(ctx context.Context, leagueID string, week int) ([]sleepergen.Matchup, error) {
 	key := fmt.Sprintf("matchups:%s:%d", leagueID, week)
 	return cachedList(c, key, ttlMatchups, func() (*[]sleepergen.Matchup, *http.Response, []byte, error) {
@@ -224,6 +230,173 @@ func (c *Client) Chain(ctx context.Context, leagueID string) ([]sleepergen.Leagu
 			id = *league.PreviousLeagueId
 		}
 		return out, nil
+	})
+}
+
+//nolint:dupl // each single-value cached lookup differs only by type and endpoint
+func (c *Client) User(ctx context.Context, identifier string) (*sleepergen.User, error) {
+	return cached(c, "user:"+identifier, ttlLeague, func() (*sleepergen.User, error) {
+		resp, err := c.gen.GetUserWithResponse(ctx, identifier)
+		if err != nil {
+			return nil, fmt.Errorf("sleeper: get user %s: %w", identifier, err)
+		}
+		return okJSON(resp.JSON200, resp.HTTPResponse, resp.Body)
+	})
+}
+
+//nolint:dupl // see Rosters
+func (c *Client) UserLeagues(ctx context.Context, userID, season string) ([]sleepergen.League, error) {
+	key := fmt.Sprintf("user_leagues:%s:%s", userID, season)
+	return cachedList(c, key, ttlLeague, func() (*[]sleepergen.League, *http.Response, []byte, error) {
+		resp, err := c.gen.GetUserLeaguesWithResponse(ctx, userID, season)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("sleeper: get user leagues %s %s: %w", userID, season, err)
+		}
+		return resp.JSON200, resp.HTTPResponse, resp.Body, nil
+	})
+}
+
+//nolint:dupl // see Rosters
+func (c *Client) Transactions(ctx context.Context, leagueID string, round int) ([]sleepergen.Transaction, error) {
+	key := fmt.Sprintf("transactions:%s:%d", leagueID, round)
+	return cachedList(c, key, ttlLeague, func() (*[]sleepergen.Transaction, *http.Response, []byte, error) {
+		resp, err := c.gen.GetLeagueTransactionsWithResponse(ctx, leagueID, round)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("sleeper: get transactions %s round %d: %w", leagueID, round, err)
+		}
+		return resp.JSON200, resp.HTTPResponse, resp.Body, nil
+	})
+}
+
+//nolint:dupl // see Rosters
+func (c *Client) WinnersBracket(ctx context.Context, leagueID string) ([]sleepergen.BracketMatch, error) {
+	return cachedList(c, "winners_bracket:"+leagueID, ttlLeague, func() (*[]sleepergen.BracketMatch, *http.Response, []byte, error) {
+		resp, err := c.gen.GetWinnersBracketWithResponse(ctx, leagueID)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("sleeper: get winners bracket %s: %w", leagueID, err)
+		}
+		return resp.JSON200, resp.HTTPResponse, resp.Body, nil
+	})
+}
+
+//nolint:dupl // see Rosters
+func (c *Client) LosersBracket(ctx context.Context, leagueID string) ([]sleepergen.BracketMatch, error) {
+	return cachedList(c, "losers_bracket:"+leagueID, ttlLeague, func() (*[]sleepergen.BracketMatch, *http.Response, []byte, error) {
+		resp, err := c.gen.GetLosersBracketWithResponse(ctx, leagueID)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("sleeper: get losers bracket %s: %w", leagueID, err)
+		}
+		return resp.JSON200, resp.HTTPResponse, resp.Body, nil
+	})
+}
+
+//nolint:dupl // see Rosters
+func (c *Client) LeagueDrafts(ctx context.Context, leagueID string) ([]sleepergen.Draft, error) {
+	return cachedList(c, "league_drafts:"+leagueID, ttlLeague, func() (*[]sleepergen.Draft, *http.Response, []byte, error) {
+		resp, err := c.gen.GetLeagueDraftsWithResponse(ctx, leagueID)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("sleeper: get league drafts %s: %w", leagueID, err)
+		}
+		return resp.JSON200, resp.HTTPResponse, resp.Body, nil
+	})
+}
+
+//nolint:dupl // each single-value cached lookup differs only by type and endpoint
+func (c *Client) Draft(ctx context.Context, draftID string) (*sleepergen.Draft, error) {
+	return cached(c, "draft:"+draftID, ttlLive, func() (*sleepergen.Draft, error) {
+		resp, err := c.gen.GetDraftWithResponse(ctx, draftID)
+		if err != nil {
+			return nil, fmt.Errorf("sleeper: get draft %s: %w", draftID, err)
+		}
+		return okJSON(resp.JSON200, resp.HTTPResponse, resp.Body)
+	})
+}
+
+//nolint:dupl // see Rosters
+func (c *Client) DraftPicks(ctx context.Context, draftID string) ([]sleepergen.DraftPick, error) {
+	return cachedList(c, "draft_picks:"+draftID, ttlLive, func() (*[]sleepergen.DraftPick, *http.Response, []byte, error) {
+		resp, err := c.gen.GetDraftPicksWithResponse(ctx, draftID)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("sleeper: get draft picks %s: %w", draftID, err)
+		}
+		return resp.JSON200, resp.HTTPResponse, resp.Body, nil
+	})
+}
+
+func (c *Client) TrendingPlayers(ctx context.Context, kind sleepergen.GetTrendingPlayersParamsType, lookbackHours, limit int) ([]sleepergen.TrendingPlayer, error) {
+	key := fmt.Sprintf("trending:%s:%d:%d", kind, lookbackHours, limit)
+	params := &sleepergen.GetTrendingPlayersParams{LookbackHours: &lookbackHours, Limit: &limit}
+	return cachedList(c, key, ttlLive, func() (*[]sleepergen.TrendingPlayer, *http.Response, []byte, error) {
+		resp, err := c.gen.GetTrendingPlayersWithResponse(ctx, kind, params)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("sleeper: get trending %s: %w", kind, err)
+		}
+		return resp.JSON200, resp.HTTPResponse, resp.Body, nil
+	})
+}
+
+// Player is the cheaper single-lookup alternative to PlayersDump.
+func (c *Client) Player(ctx context.Context, playerID string) (*sleepergen.Player, error) { //nolint:dupl // each single-value cached lookup differs only by type and endpoint
+	return cached(c, "player:"+playerID, ttlStatMap, func() (*sleepergen.Player, error) {
+		resp, err := c.gen.GetPlayerWithResponse(ctx, playerID)
+		if err != nil {
+			return nil, fmt.Errorf("sleeper: get player %s: %w", playerID, err)
+		}
+		return okJSON(resp.JSON200, resp.HTTPResponse, resp.Body)
+	})
+}
+
+func (c *Client) DepthChart(ctx context.Context, team string) (map[string][]string, error) {
+	return cachedList(c, "depth_chart:"+team, ttlStatMap, func() (*map[string][]string, *http.Response, []byte, error) {
+		resp, err := c.gen.GetTeamDepthChartWithResponse(ctx, team)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("sleeper: get depth chart %s: %w", team, err)
+		}
+		return resp.JSON200, resp.HTTPResponse, resp.Body, nil
+	})
+}
+
+//nolint:dupl // see Rosters
+func (c *Client) Schedule(ctx context.Context, season string) ([]sleepergen.Game, error) {
+	return cachedList(c, "schedule:"+season, ttlStatMap, func() (*[]sleepergen.Game, *http.Response, []byte, error) {
+		resp, err := c.gen.GetScheduleWithResponse(ctx, season)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("sleeper: get schedule %s: %w", season, err)
+		}
+		return resp.JSON200, resp.HTTPResponse, resp.Body, nil
+	})
+}
+
+//nolint:dupl // see Rosters
+func (c *Client) Research(ctx context.Context, season string, week int) (map[string]sleepergen.ResearchEntry, error) {
+	key := fmt.Sprintf("research:%s:%d", season, week)
+	return cachedList(c, key, ttlStatMap, func() (*map[string]sleepergen.ResearchEntry, *http.Response, []byte, error) {
+		resp, err := c.gen.GetPlayerResearchWithResponse(ctx, season, week)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("sleeper: get research %s week %d: %w", season, week, err)
+		}
+		return resp.JSON200, resp.HTTPResponse, resp.Body, nil
+	})
+}
+
+func (c *Client) PlayerSeasonStats(ctx context.Context, playerID, season string) (*sleepergen.PlayerStatEntry, error) {
+	return cached(c, "player_season_stats:"+playerID+":"+season, ttlStatMap, func() (*sleepergen.PlayerStatEntry, error) {
+		params := &sleepergen.GetPlayerSeasonStatsParams{SeasonType: "regular", Season: season}
+		resp, err := c.gen.GetPlayerSeasonStatsWithResponse(ctx, playerID, params)
+		if err != nil {
+			return nil, fmt.Errorf("sleeper: get player season stats %s %s: %w", playerID, season, err)
+		}
+		return okJSON(resp.JSON200, resp.HTTPResponse, resp.Body)
+	})
+}
+
+func (c *Client) SeasonStats(ctx context.Context, season string) (map[string]sleepergen.StatMap, error) {
+	return cachedList(c, "season_stats:"+season, ttlStatMap, func() (*map[string]sleepergen.StatMap, *http.Response, []byte, error) {
+		resp, err := c.gen.GetSeasonStatsWithResponse(ctx, season)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("sleeper: get season stats %s: %w", season, err)
+		}
+		return resp.JSON200, resp.HTTPResponse, resp.Body, nil
 	})
 }
 
