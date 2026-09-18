@@ -343,6 +343,9 @@ func TestHandleJobsDispatchesChatIDAndAppendsTurn(t *testing.T) {
 	if resp.ChatURL != "/chat/"+wantChatID {
 		t.Errorf("chat_url = %q, want /chat/%s", resp.ChatURL, wantChatID)
 	}
+	if host.dispatched[0].Run.Workflow != "sleeper-lineup" {
+		t.Errorf("workflow = %q, want sleeper-lineup (bound, no planner call)", host.dispatched[0].Run.Workflow)
+	}
 
 	// A second POST for the same job/stop must target the same LocalID, so
 	// the host appends a turn instead of starting a second chat.
@@ -444,6 +447,12 @@ func TestHandleJobsTrendsAlsoDispatchesSeasonNotes(t *testing.T) {
 	if host.dispatched[1].Chat.LocalID != wantLocalID {
 		t.Errorf("second dispatch LocalID = %q, want %q", host.dispatched[1].Chat.LocalID, wantLocalID)
 	}
+	if host.dispatched[0].Run.Workflow != "sleeper-trends" {
+		t.Errorf("trends workflow = %q, want sleeper-trends", host.dispatched[0].Run.Workflow)
+	}
+	if host.dispatched[1].Run.Workflow != "sleeper-season-notes" {
+		t.Errorf("season-notes workflow = %q, want sleeper-season-notes", host.dispatched[1].Run.Workflow)
+	}
 }
 
 func TestHandleJobsBadJobForStop(t *testing.T) {
@@ -467,14 +476,37 @@ func TestHandleJobsBadInput(t *testing.T) {
 	}
 }
 
-func TestIndexPageServes(t *testing.T) {
-	_, r := newTestExtension(t, sdk.Host{}, config{})
+// TestUIServesUnderQuackMount mounts the extension the way quack's router
+// does (internal/server/router.go: r.Mount("/"+name, combined), which chi
+// does not strip) - the page and its assets must still resolve under it.
+func TestUIServesUnderQuackMount(t *testing.T) {
+	e := &extension{host: sdk.Host{}, cfg: config{Fixture: true, DefaultUser: testUser, DefaultLeague: testLeague}, client: newTestClient(t)}
+	combined := chi.NewRouter()
+	e.RegisterRoutes(combined, combined)
+	r := chi.NewRouter()
+	r.Mount("/"+extensionName, combined)
+
 	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sleeper/", nil))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d", rec.Code)
+		t.Fatalf("GET /sleeper/ status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Errorf("GET /sleeper/ content-type = %q, want text/html", ct)
 	}
 	if !strings.Contains(rec.Body.String(), "<title>Sleeper") {
 		t.Errorf("index page missing expected title, got: %s", rec.Body.String()[:min(200, rec.Body.Len())])
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sleeper/main.js", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /sleeper/main.js status = %d, body = %s", rec.Code, rec.Body)
+	}
+
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sleeper/api/artifacts?stop=1", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /sleeper/api/artifacts?stop=1 status = %d, body = %s", rec.Code, rec.Body)
 	}
 }

@@ -54,7 +54,9 @@ func (e *extension) mountUI(authed chi.Router) {
 		// build-time bug (a renamed/missing directory), never a runtime state.
 		panic("sleeper: embedded UI assets missing: " + err.Error())
 	}
-	authed.Handle("/*", http.FileServer(http.FS(static)))
+	// chi's r.Mount("/"+name, combined) in quack's router does not strip the
+	// prefix, so the file server must strip it itself or every asset 404s.
+	authed.Handle("/*", http.StripPrefix("/"+extensionName, http.FileServer(http.FS(static))))
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -722,7 +724,8 @@ func (e *extension) dispatchSeasonNotes(ctx context.Context, leagueID string) {
 	err := e.host.Dispatch(ctx, sdk.DispatchRequest{
 		Chat: sdk.ChatRef{LocalID: localID, User: e.cfg.DefaultUser, Title: "Sleeper season notes"},
 		Ask:  sdk.Ask{Message: fmt.Sprintf("Update the running season notes for league %s from this week's trends findings.", leagueID)},
-		Run:  sdk.RunConfig{ReadOnly: true},
+		// Fixed shape: bound to skip the planner LLM call; quack's workflow catalog owns it.
+		Run: sdk.RunConfig{ReadOnly: true, Workflow: "sleeper-season-notes"},
 	})
 	if err != nil && e.host.Log != nil {
 		e.host.Log.Error("sleeper: season-notes dispatch failed", "league_id", leagueID, "err", err)
@@ -766,7 +769,8 @@ func (e *extension) handleJobs(w http.ResponseWriter, r *http.Request) {
 	err = e.host.Dispatch(ctx, sdk.DispatchRequest{
 		Chat: sdk.ChatRef{LocalID: localID, User: e.cfg.DefaultUser, Title: title},
 		Ask:  sdk.Ask{Message: message},
-		Run:  sdk.RunConfig{ReadOnly: true},
+		// Fixed shape per job: bound to skip the planner LLM call; quack's workflow catalog owns it.
+		Run: sdk.RunConfig{ReadOnly: true, Workflow: "sleeper-" + req.Job},
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
