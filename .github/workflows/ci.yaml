@@ -97,3 +97,24 @@ jobs:
       - name: coverdiff tests
         if: matrix.module == 'github'
         run: go -C tools/coverdiff test .
+
+  sleeper-storybook:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sleeper/ui/storybook
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: sleeper/ui/storybook/package-lock.json
+      - run: npm ci
+      - run: npm run validate-schemas
+      - run: npm run security-check
+      # No --with-deps: it runs apt-get update, which fails whenever Google's
+      # chrome apt mirror is inconsistent, and the runner already ships every
+      # library Chromium needs.
+      - run: npx playwright install chromium
+      - run: npm run render-check

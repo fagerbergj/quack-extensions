@@ -1,0 +1,35 @@
+{
+  "week": 2,
+  "started": 100.66,
+  "best": 132.06,
+  "left": 31.4,
+  "opp": 116.0,
+  "won": false,
+  "misses": [
+    {
+      "slot": "RB",
+      "started_name": "Christian McCaffrey",
+      "started_pts": 13.8,
+      "better_name": "Chuba Hubbard",
+      "better_pts": 23.7,
+      "swing": 9.9
+    },
+    {
+      "slot": "RB",
+      "started_name": "Rico Dowdle",
+      "started_pts": 4.1,
+      "better_name": "Bucky Irving",
+      "better_pts": 20.3,
+      "swing": 16.2
+    },
+    {
+      "slot": "FLEX",
+      "started_name": "Jameson Williams",
+      "started_pts": 8.5,
+      "better_name": "Christian McCaffrey",
+      "better_pts": 13.8,
+      "swing": 5.3
+    }
+  ],
+  "summary": "The lineup, not the roster, lost this one: 31.4 points sat on the bench in a 15.34-point loss. Every miss was at running back: McCaffrey and Dowdle started; Hubbard and Irving outscored both."
+}
