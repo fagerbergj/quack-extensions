@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/fagerbergj/quack-extensions/sdk"
 	"github.com/fagerbergj/quack-extensions/sleeper/sleepergen"
@@ -57,31 +56,6 @@ func (e *extension) mountUI(authed chi.Router) {
 	authed.Handle("/*", http.FileServer(http.FS(static)))
 }
 
-// uiClientOverride is a test-only seam: set directly to point handlers at a mock server.
-var uiClientOverride *Client
-
-var (
-	defaultClientOnce sync.Once
-	defaultClientVal  *Client
-)
-
-// uiClient is package-level, not an extension field: the base URL never
-// varies per instance, and this avoids a second edit to sleeper.go's struct.
-func uiClient() *Client {
-	if uiClientOverride != nil {
-		return uiClientOverride
-	}
-	defaultClientOnce.Do(func() {
-		c, err := NewClient("https://api.sleeper.app", nil)
-		if err != nil {
-			// NewClient only errors on a malformed base URL, a compile-time constant here.
-			panic("sleeper: default client: " + err.Error())
-		}
-		defaultClientVal = c
-	})
-	return defaultClientVal
-}
-
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
@@ -107,20 +81,11 @@ func (e *extension) resolveUserID(ctx context.Context) (string, bool) {
 	if e.cfg.DefaultUser == "" {
 		return "", false
 	}
-	resp, err := uiClient().gen.GetUserWithResponse(ctx, e.cfg.DefaultUser)
-	if err != nil || resp.JSON200 == nil {
+	u, err := e.client.User(ctx, e.cfg.DefaultUser)
+	if err != nil {
 		return "", false
 	}
-	return resp.JSON200.UserId, true
-}
-
-func teamName(u sleepergen.LeagueUser) string {
-	if u.Metadata != nil {
-		if s := (*u.Metadata)["team_name"]; s != "" {
-			return s
-		}
-	}
-	return u.DisplayName
+	return u.UserId, true
 }
 
 func rosterPoints(r sleepergen.Roster, prefix string) float64 {
@@ -328,16 +293,6 @@ func playerNames(m *map[string]int, players map[string]sleepergen.Player) []stri
 	return out
 }
 
-func rosterOwnerNames(rosters []sleepergen.Roster, usersByOwner map[string]sleepergen.LeagueUser) map[int]string {
-	out := make(map[int]string, len(rosters))
-	for _, ro := range rosters {
-		if ro.OwnerId != nil {
-			out[ro.RosterId] = teamName(usersByOwner[*ro.OwnerId])
-		}
-	}
-	return out
-}
-
 func teamsFor(ids []int, ownerName map[int]string) []string {
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
@@ -381,18 +336,18 @@ func moveRowFor(tx sleepergen.Transaction, week int, players map[string]sleeperg
 
 // buildMoves is best-effort: any upstream failure (transactions, players
 // dump) yields an empty list rather than failing the whole season response.
-func (e *extension) buildMoves(ctx context.Context, c *Client, leagueID string, week int, rosters []sleepergen.Roster, usersByOwner map[string]sleepergen.LeagueUser) []moveRow {
+func (e *extension) buildMoves(ctx context.Context, c *Client, leagueID string, week int, rosters []sleepergen.Roster, users []sleepergen.LeagueUser) []moveRow {
 	if week < 1 {
 		week = 1
 	}
-	resp, err := c.gen.GetLeagueTransactionsWithResponse(ctx, leagueID, week)
-	if err != nil || resp.JSON200 == nil {
+	txs, err := c.Transactions(ctx, leagueID, week)
+	if err != nil {
 		return nil
 	}
 	players, _ := c.PlayersDump(ctx)
-	ownerName := rosterOwnerNames(rosters, usersByOwner)
-	moves := make([]moveRow, 0, len(*resp.JSON200))
-	for _, tx := range *resp.JSON200 {
+	ownerName := teamNames(rosters, users)
+	moves := make([]moveRow, 0, len(txs))
+	for _, tx := range txs {
 		moves = append(moves, moveRowFor(tx, week, players, ownerName))
 	}
 	return moves
@@ -434,7 +389,7 @@ func (e *extension) handleSeason(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "league_id is required")
 		return
 	}
-	c := uiClient()
+	c := e.client
 	league, err := c.League(ctx, leagueID)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "unknown league")
@@ -463,7 +418,7 @@ func (e *extension) handleSeason(w http.ResponseWriter, r *http.Request) {
 		Standings:    buildStandings(rosters, usersByOwner, myRoster),
 		ReserveSlots: reserveSlots(league.RosterPositions),
 		PlayoffLine:  intSetting(league.Settings, "playoff_teams", 6),
-		RecentMoves:  e.buildMoves(ctx, c, leagueID, weekNow, rosters, usersByOwner),
+		RecentMoves:  e.buildMoves(ctx, c, leagueID, weekNow, rosters, users),
 	}
 	if myRoster != nil {
 		u := usersByOwner[*myRoster.OwnerId]
@@ -509,37 +464,8 @@ func (e *extension) seasonSummaryFor(ctx context.Context, c *Client, lg sleeperg
 	return out
 }
 
-// isNotFoundErr matches Client's "not found" (a literal null body) errors,
-// the only signal that distinguishes a bad league id from an upstream 5xx.
-func isNotFoundErr(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "not found")
-}
-
-// uiChain mirrors Client.Chain but tolerates a gap instead of erroring the
-// whole walk - a UI wants whatever history is reachable, not all-or-nothing.
-// Only the first hop's error is returned; a deeper gap is the tolerated case.
-func (e *extension) uiChain(ctx context.Context, c *Client, leagueID string) ([]sleepergen.League, error) {
-	var out []sleepergen.League
-	id := leagueID
-	for i := 0; i < maxChainSeasons && id != ""; i++ {
-		lg, err := c.League(ctx, id)
-		if err != nil {
-			if i == 0 {
-				return nil, err
-			}
-			break
-		}
-		out = append(out, *lg)
-		if lg.PreviousLeagueId == nil {
-			break
-		}
-		id = *lg.PreviousLeagueId
-	}
-	return out, nil
-}
-
-// reverseLeagues returns the chain oldest-first (uiChain/Client.Chain both
-// walk newest-first via previous_league_id); the approved design wants the
+// reverseLeagues returns the chain oldest-first (Client.Chain walks
+// newest-first via previous_league_id); the approved design wants the
 // seasons row chronological with the current season last.
 func reverseLeagues(chain []sleepergen.League) []sleepergen.League {
 	out := make([]sleepergen.League, len(chain))
@@ -558,14 +484,12 @@ func (e *extension) handleSeasons(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "league_id is required")
 		return
 	}
-	c := uiClient()
-	chain, err := e.uiChain(ctx, c, leagueID)
-	if err != nil {
-		if isNotFoundErr(err) {
-			writeErr(w, http.StatusNotFound, "unknown league")
-		} else {
-			writeErr(w, http.StatusBadGateway, err.Error())
-		}
+	c := e.client
+	// stopOnUnreachable: a UI wants whatever history is reachable, not
+	// all-or-nothing (the history job, Chain's other caller, wants the opposite).
+	chain, err := c.Chain(ctx, leagueID, 0, true)
+	if err != nil || len(chain) == 0 {
+		writeErr(w, http.StatusNotFound, "unknown league")
 		return
 	}
 	resp := seasonsResponse{CurrentSeason: chain[0].Season}
@@ -612,7 +536,7 @@ type teamRef struct {
 }
 
 func (e *extension) otherTeams(ctx context.Context, leagueID string) []teamRef {
-	users, err := uiClient().LeagueUsers(ctx, leagueID)
+	users, err := e.client.LeagueUsers(ctx, leagueID)
 	if err != nil {
 		return nil
 	}

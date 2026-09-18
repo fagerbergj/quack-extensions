@@ -40,10 +40,8 @@ func (h *fakeHost) sdkHost() sdk.Host {
 
 func newTestExtension(t *testing.T, host sdk.Host, cfg config) (*extension, *chi.Mux) {
 	t.Helper()
-	uiClientOverride = newTestClient(t)
-	t.Cleanup(func() { uiClientOverride = nil })
 	cfg.DefaultUser = firstNonEmpty(cfg.DefaultUser, testUser)
-	e := &extension{host: host, cfg: cfg}
+	e := &extension{host: host, cfg: cfg, client: newTestClient(t)}
 	r := chi.NewRouter()
 	e.RegisterRoutes(r, chi.NewRouter())
 	return e, r
