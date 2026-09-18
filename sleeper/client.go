@@ -177,9 +177,9 @@ func (c *Client) WeekStats(ctx context.Context, season string, week int) (map[st
 	})
 }
 
-// PlayersDump fetches (or replays) the full player map and refreshes the
-// name index used by ResolvePlayer - both share the 24h TTL since the
-// index is only ever as fresh as the dump it was built from.
+// PlayersDump fetches (or replays) the full player map and rebuilds the
+// name index used by ResolvePlayer every call, so the index never lags
+// behind a dump that was refetched after its 24h TTL expired.
 func (c *Client) PlayersDump(ctx context.Context) (map[string]sleepergen.Player, error) {
 	out, err := cachedList(c, "players", ttlPlayersDump, func() (*map[string]sleepergen.Player, *http.Response, []byte, error) {
 		resp, err := c.gen.GetAllPlayersWithResponse(ctx)
@@ -192,9 +192,7 @@ func (c *Client) PlayersDump(ctx context.Context) (map[string]sleepergen.Player,
 		return nil, err
 	}
 	c.namesMu.Lock()
-	if c.names == nil {
-		c.names = buildNameIndex(out)
-	}
+	c.names = buildNameIndex(out)
 	c.namesMu.Unlock()
 	return out, nil
 }
@@ -208,9 +206,8 @@ func (c *Client) ResolvePlayer(name string) []string {
 	return c.names[strings.ToLower(strings.TrimSpace(name))]
 }
 
-// Chain walks previous_league_id from leagueID back through past seasons,
-// newest first, bounded to maxChainSeasons so a bad or cyclic pointer can't
-// loop forever. Cached 24h per starting league.
+// Chain walks previous_league_id back through past seasons (newest first,
+// bounded to maxChainSeasons); any fetch failure errors the whole walk rather than caching a truncated chain for 24h.
 func (c *Client) Chain(ctx context.Context, leagueID string) ([]sleepergen.League, error) {
 	return cached(c, "chain:"+leagueID, ttlChain, func() ([]sleepergen.League, error) {
 		var out []sleepergen.League
@@ -218,12 +215,7 @@ func (c *Client) Chain(ctx context.Context, leagueID string) ([]sleepergen.Leagu
 		for i := 0; i < maxChainSeasons && id != ""; i++ {
 			league, err := c.League(ctx, id)
 			if err != nil {
-				// The starting league must resolve; an older season
-				// vanishing (deleted, access revoked) just ends the chain.
-				if i == 0 {
-					return nil, err
-				}
-				break
+				return nil, err
 			}
 			out = append(out, *league)
 			if league.PreviousLeagueId == nil {
@@ -235,16 +227,15 @@ func (c *Client) Chain(ctx context.Context, leagueID string) ([]sleepergen.Leagu
 	})
 }
 
-// okJSON turns a generated response's nil-on-non-200 JSON200 field into an
-// error carrying the real status and body, so a caching layer never masks
-// an upstream failure as a cache miss.
+// okJSON errors on a nil JSON200 or a literal "null" body (Sleeper's 200
+// response for e.g. an unknown username) - never a cacheable zero value.
 func okJSON[T any](json *T, resp *http.Response, body []byte) (*T, error) {
-	if json == nil {
+	if json == nil || strings.TrimSpace(string(body)) == "null" {
 		status := "unknown"
 		if resp != nil {
 			status = resp.Status
 		}
-		return nil, fmt.Errorf("sleeper: unexpected response %s: %s", status, string(body))
+		return nil, fmt.Errorf("sleeper: not found (status %s): %s", status, string(body))
 	}
 	return json, nil
 }

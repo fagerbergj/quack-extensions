@@ -545,6 +545,7 @@ components:
   schemas:
     User:
       type: object
+      required: [user_id, username]
       properties:
         user_id: { type: string }
         username: { type: string }
@@ -570,6 +571,7 @@ components:
 
     League:
       type: object
+      required: [league_id, name, season, status, sport, total_rosters, roster_positions, scoring_settings, settings, previous_league_id]
       properties:
         league_id: { type: string }
         name: { type: string }
@@ -617,6 +619,7 @@ components:
 
     Roster:
       type: object
+      required: [roster_id, league_id, owner_id, players, starters, settings]
       properties:
         roster_id: { type: integer }
         league_id: { type: string }
@@ -641,6 +644,7 @@ components:
 
     LeagueUser:
       type: object
+      required: [user_id, league_id, display_name]
       properties:
         user_id: { type: string }
         league_id: { type: string }
@@ -655,6 +659,7 @@ components:
 
     Matchup:
       type: object
+      required: [roster_id, matchup_id, points, players, starters, players_points]
       properties:
         roster_id: { type: integer }
         matchup_id: { type: integer, nullable: true }
@@ -675,6 +680,7 @@ components:
 
     BracketMatch:
       type: object
+      required: [m, r, t1, t2, w, l]
       properties:
         m: { type: integer }
         r: { type: integer }
@@ -688,6 +694,7 @@ components:
 
     Transaction:
       type: object
+      required: [transaction_id, type, status, roster_ids, adds, drops]
       properties:
         transaction_id: { type: string }
         type: { type: string }
@@ -716,9 +723,11 @@ components:
     TradedPick:
       type: object
       description: >-
-        No trade has occurred in league 1356407594683482112, so both
-        traded_picks endpoints return [] and this shape is unverified against
-        a live sample - fields follow Sleeper's documented convention.
+        Both leagues have pick_trading disabled (league.settings.pick_trading
+        == 0), so every traded_picks endpoint and every trade transaction's
+        draft_picks return [] - this shape is unverified against a live
+        sample; fields follow Sleeper's documented convention.
+      required: [season, round, roster_id, previous_owner_id, owner_id]
       properties:
         season: { type: string }
         round: { type: integer }
@@ -728,6 +737,7 @@ components:
 
     Draft:
       type: object
+      required: [draft_id, league_id, season, status, type, settings]
       properties:
         draft_id: { type: string }
         league_id: { type: string }
@@ -755,6 +765,7 @@ components:
 
     DraftPick:
       type: object
+      required: [draft_id, round, draft_slot, pick_no, roster_id, player_id, picked_by]
       properties:
         draft_id: { type: string }
         round: { type: integer }
@@ -771,6 +782,7 @@ components:
 
     NflState:
       type: object
+      required: [week, season, season_type]
       properties:
         week: { type: integer }
         leg: { type: integer }
@@ -785,12 +797,14 @@ components:
 
     TrendingPlayer:
       type: object
+      required: [player_id, count]
       properties:
         player_id: { type: string }
         count: { type: integer }
 
     Game:
       type: object
+      required: [game_id, week, home, away]
       properties:
         game_id: { type: string }
         week: { type: integer }
@@ -816,6 +830,7 @@ components:
         single-player season-stats endpoint - both wrap a StatMap-like
         "stats" object with the same envelope fields.
       type: object
+      required: [player_id, season, season_type]
       properties:
         player_id: { type: string }
         team: { type: string, nullable: true }
@@ -847,6 +862,7 @@ components:
         and a DEF (team defense) entry omits most fields entirely; every
         field here is optional so both shapes decode cleanly.
       type: object
+      required: [player_id]
       properties:
         player_id: { type: string }
         sport: { type: string }

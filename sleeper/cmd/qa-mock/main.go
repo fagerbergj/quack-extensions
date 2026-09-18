@@ -21,12 +21,21 @@ func main() {
 	record := flag.Bool("record", false, "proxy GET misses to the real Sleeper API and save them")
 	flag.Parse()
 
-	if err := os.MkdirAll(*fixtures, 0o755); err != nil {
+	s, err := newServer(*fixtures, *record)
+	if err != nil {
 		log.Fatal(err)
 	}
-	s := &server{dir: *fixtures, record: *record, http: &http.Client{Timeout: 15 * time.Second}}
 	log.Printf("qa-mock sleeper server on %s, fixtures=%s, record=%v", *addr, *fixtures, *record)
 	log.Fatal(http.ListenAndServe(*addr, s))
+}
+
+// newServer is split out from main so it's testable without starting a
+// real listener.
+func newServer(fixtures string, record bool) (*server, error) {
+	if err := os.MkdirAll(fixtures, 0o755); err != nil {
+		return nil, err
+	}
+	return &server{dir: fixtures, record: record, http: &http.Client{Timeout: 15 * time.Second}}, nil
 }
 
 // server replays fixtures keyed by request path+query, same convention as

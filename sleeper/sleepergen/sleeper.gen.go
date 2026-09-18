@@ -35,60 +35,60 @@ func (e GetTrendingPlayersParamsType) Valid() bool {
 
 // BracketMatch defines model for BracketMatch.
 type BracketMatch struct {
-	L      *int            `json:"l,omitempty"`
-	M      *int            `json:"m,omitempty"`
+	L      *int            `json:"l"`
+	M      int             `json:"m"`
 	P      *int            `json:"p,omitempty"`
-	R      *int            `json:"r,omitempty"`
-	T1     *int            `json:"t1,omitempty"`
+	R      int             `json:"r"`
+	T1     *int            `json:"t1"`
 	T1From *map[string]int `json:"t1_from,omitempty"`
-	T2     *int            `json:"t2,omitempty"`
+	T2     *int            `json:"t2"`
 	T2From *map[string]int `json:"t2_from,omitempty"`
-	W      *int            `json:"w,omitempty"`
+	W      *int            `json:"w"`
 }
 
 // Draft defines model for Draft.
 type Draft struct {
 	Created         *int               `json:"created,omitempty"`
 	Creators        *[]string          `json:"creators,omitempty"`
-	DraftId         *string            `json:"draft_id,omitempty"`
+	DraftId         string             `json:"draft_id"`
 	DraftOrder      *map[string]int    `json:"draft_order,omitempty"`
 	LastMessageId   *string            `json:"last_message_id,omitempty"`
 	LastMessageTime *int               `json:"last_message_time,omitempty"`
 	LastPicked      *int               `json:"last_picked,omitempty"`
-	LeagueId        *string            `json:"league_id,omitempty"`
+	LeagueId        string             `json:"league_id"`
 	Metadata        *map[string]string `json:"metadata,omitempty"`
-	Season          *string            `json:"season,omitempty"`
+	Season          string             `json:"season"`
 	SeasonType      *string            `json:"season_type,omitempty"`
-	Settings        *map[string]int    `json:"settings,omitempty"`
+	Settings        map[string]int     `json:"settings"`
 	SlotToRosterId  *map[string]int    `json:"slot_to_roster_id,omitempty"`
 	Sport           *string            `json:"sport,omitempty"`
 	StartTime       *int               `json:"start_time,omitempty"`
-	Status          *string            `json:"status,omitempty"`
-	Type            *string            `json:"type,omitempty"`
+	Status          string             `json:"status"`
+	Type            string             `json:"type"`
 }
 
 // DraftPick defines model for DraftPick.
 type DraftPick struct {
-	DraftId   *string                 `json:"draft_id,omitempty"`
-	DraftSlot *int                    `json:"draft_slot,omitempty"`
+	DraftId   string                  `json:"draft_id"`
+	DraftSlot int                     `json:"draft_slot"`
 	IsKeeper  *bool                   `json:"is_keeper,omitempty"`
 	Metadata  *map[string]string      `json:"metadata,omitempty"`
-	PickNo    *int                    `json:"pick_no,omitempty"`
-	PickedBy  *string                 `json:"picked_by,omitempty"`
-	PlayerId  *string                 `json:"player_id,omitempty"`
+	PickNo    int                     `json:"pick_no"`
+	PickedBy  string                  `json:"picked_by"`
+	PlayerId  string                  `json:"player_id"`
 	Reactions *map[string]interface{} `json:"reactions,omitempty"`
-	RosterId  *int                    `json:"roster_id,omitempty"`
-	Round     *int                    `json:"round,omitempty"`
+	RosterId  int                     `json:"roster_id"`
+	Round     int                     `json:"round"`
 }
 
 // Game defines model for Game.
 type Game struct {
-	Away   *string `json:"away,omitempty"`
+	Away   string  `json:"away"`
 	Date   *string `json:"date,omitempty"`
-	GameId *string `json:"game_id,omitempty"`
-	Home   *string `json:"home,omitempty"`
+	GameId string  `json:"game_id"`
+	Home   string  `json:"home"`
 	Status *string `json:"status,omitempty"`
-	Week   *int    `json:"week,omitempty"`
+	Week   int     `json:"week"`
 }
 
 // League defines model for League.
@@ -111,45 +111,45 @@ type League struct {
 	LastPinnedMessageId     *string                 `json:"last_pinned_message_id,omitempty"`
 	LastReadId              *string                 `json:"last_read_id,omitempty"`
 	LastTransactionId       *string                 `json:"last_transaction_id,omitempty"`
-	LeagueId                *string                 `json:"league_id,omitempty"`
+	LeagueId                string                  `json:"league_id"`
 	LoserBracketId          *int                    `json:"loser_bracket_id,omitempty"`
 	LoserBracketOverridesId *string                 `json:"loser_bracket_overrides_id,omitempty"`
 	Metadata                *map[string]string      `json:"metadata,omitempty"`
-	Name                    *string                 `json:"name,omitempty"`
-	PreviousLeagueId        *string                 `json:"previous_league_id,omitempty"`
-	RosterPositions         *[]string               `json:"roster_positions,omitempty"`
-	ScoringSettings         *map[string]float32     `json:"scoring_settings,omitempty"`
-	Season                  *string                 `json:"season,omitempty"`
+	Name                    string                  `json:"name"`
+	PreviousLeagueId        *string                 `json:"previous_league_id"`
+	RosterPositions         []string                `json:"roster_positions"`
+	ScoringSettings         map[string]float32      `json:"scoring_settings"`
+	Season                  string                  `json:"season"`
 	SeasonType              *string                 `json:"season_type,omitempty"`
-	Settings                *map[string]int         `json:"settings,omitempty"`
+	Settings                map[string]int          `json:"settings"`
 	Shard                   *int                    `json:"shard,omitempty"`
-	Sport                   *string                 `json:"sport,omitempty"`
-	Status                  *string                 `json:"status,omitempty"`
-	TotalRosters            *int                    `json:"total_rosters,omitempty"`
+	Sport                   string                  `json:"sport"`
+	Status                  string                  `json:"status"`
+	TotalRosters            int                     `json:"total_rosters"`
 }
 
 // LeagueUser defines model for LeagueUser.
 type LeagueUser struct {
 	Avatar      *string                 `json:"avatar,omitempty"`
-	DisplayName *string                 `json:"display_name,omitempty"`
+	DisplayName string                  `json:"display_name"`
 	IsBot       *bool                   `json:"is_bot,omitempty"`
 	IsOwner     *bool                   `json:"is_owner,omitempty"`
-	LeagueId    *string                 `json:"league_id,omitempty"`
+	LeagueId    string                  `json:"league_id"`
 	Metadata    *map[string]string      `json:"metadata,omitempty"`
 	Settings    *map[string]interface{} `json:"settings,omitempty"`
-	UserId      *string                 `json:"user_id,omitempty"`
+	UserId      string                  `json:"user_id"`
 }
 
 // Matchup defines model for Matchup.
 type Matchup struct {
-	CustomPoints   *float32            `json:"custom_points,omitempty"`
-	MatchupId      *int                `json:"matchup_id,omitempty"`
-	Players        *[]string           `json:"players,omitempty"`
-	PlayersPoints  *map[string]float32 `json:"players_points,omitempty"`
-	Points         *float32            `json:"points,omitempty"`
-	RosterId       *int                `json:"roster_id,omitempty"`
-	Starters       *[]string           `json:"starters,omitempty"`
-	StartersPoints *[]float32          `json:"starters_points,omitempty"`
+	CustomPoints   *float32           `json:"custom_points,omitempty"`
+	MatchupId      *int               `json:"matchup_id"`
+	Players        []string           `json:"players"`
+	PlayersPoints  map[string]float32 `json:"players_points"`
+	Points         float32            `json:"points"`
+	RosterId       int                `json:"roster_id"`
+	Starters       []string           `json:"starters"`
+	StartersPoints *[]float32         `json:"starters_points,omitempty"`
 }
 
 // NflState defines model for NflState.
@@ -159,11 +159,11 @@ type NflState struct {
 	LeagueSeason       *string `json:"league_season,omitempty"`
 	Leg                *int    `json:"leg,omitempty"`
 	PreviousSeason     *string `json:"previous_season,omitempty"`
-	Season             *string `json:"season,omitempty"`
+	Season             string  `json:"season"`
 	SeasonHasScores    *bool   `json:"season_has_scores,omitempty"`
 	SeasonStartDate    *string `json:"season_start_date,omitempty"`
-	SeasonType         *string `json:"season_type,omitempty"`
-	Week               *int    `json:"week,omitempty"`
+	SeasonType         string  `json:"season_type"`
+	Week               int     `json:"week"`
 }
 
 // Player Superset of fields seen on both GET /v1/players/nfl (the dump) and the undocumented GET /v1/players/nfl/{playerId} - the single-player endpoint omits the search_*/full_name/hashtag fields the dump adds, and a DEF (team defense) entry omits most fields entirely; every field here is optional so both shapes decode cleanly.
@@ -199,7 +199,7 @@ type Player struct {
 	OddsjamId             *string            `json:"oddsjam_id,omitempty"`
 	OptaId                *string            `json:"opta_id,omitempty"`
 	PandascoreId          *string            `json:"pandascore_id,omitempty"`
-	PlayerId              *string            `json:"player_id,omitempty"`
+	PlayerId              string             `json:"player_id"`
 	PlayerShard           *string            `json:"player_shard,omitempty"`
 	Position              *string            `json:"position,omitempty"`
 	PracticeDescription   *string            `json:"practice_description,omitempty"`
@@ -232,9 +232,9 @@ type PlayerStatEntry struct {
 	LastModified *int                    `json:"last_modified,omitempty"`
 	Opponent     *string                 `json:"opponent,omitempty"`
 	Player       *map[string]interface{} `json:"player,omitempty"`
-	PlayerId     *string                 `json:"player_id,omitempty"`
-	Season       *string                 `json:"season,omitempty"`
-	SeasonType   *string                 `json:"season_type,omitempty"`
+	PlayerId     string                  `json:"player_id"`
+	Season       string                  `json:"season"`
+	SeasonType   string                  `json:"season_type"`
 	Sport        *string                 `json:"sport,omitempty"`
 	Stats        *map[string]float32     `json:"stats,omitempty"`
 	Status       *string                 `json:"status,omitempty"`
@@ -254,53 +254,53 @@ type ResearchEntry struct {
 type Roster struct {
 	CoOwners  *[]string               `json:"co_owners,omitempty"`
 	Keepers   *[]string               `json:"keepers,omitempty"`
-	LeagueId  *string                 `json:"league_id,omitempty"`
+	LeagueId  string                  `json:"league_id"`
 	Metadata  *map[string]string      `json:"metadata,omitempty"`
-	OwnerId   *string                 `json:"owner_id,omitempty"`
+	OwnerId   *string                 `json:"owner_id"`
 	PlayerMap *map[string]interface{} `json:"player_map,omitempty"`
-	Players   *[]string               `json:"players,omitempty"`
+	Players   []string                `json:"players"`
 	Reserve   *[]string               `json:"reserve,omitempty"`
-	RosterId  *int                    `json:"roster_id,omitempty"`
-	Settings  *map[string]int         `json:"settings,omitempty"`
-	Starters  *[]string               `json:"starters,omitempty"`
+	RosterId  int                     `json:"roster_id"`
+	Settings  map[string]int          `json:"settings"`
+	Starters  []string                `json:"starters"`
 	Taxi      *[]string               `json:"taxi,omitempty"`
 }
 
 // StatMap A player's weekly projection or stat line, keyed by Sleeper's stat abbreviation.
 type StatMap map[string]float32
 
-// TradedPick No trade has occurred in league 1356407594683482112, so both traded_picks endpoints return [] and this shape is unverified against a live sample - fields follow Sleeper's documented convention.
+// TradedPick Both leagues have pick_trading disabled (league.settings.pick_trading == 0), so every traded_picks endpoint and every trade transaction's draft_picks return [] - this shape is unverified against a live sample; fields follow Sleeper's documented convention.
 type TradedPick struct {
-	OwnerId         *int    `json:"owner_id,omitempty"`
-	PreviousOwnerId *int    `json:"previous_owner_id,omitempty"`
-	RosterId        *int    `json:"roster_id,omitempty"`
-	Round           *int    `json:"round,omitempty"`
-	Season          *string `json:"season,omitempty"`
+	OwnerId         int    `json:"owner_id"`
+	PreviousOwnerId int    `json:"previous_owner_id"`
+	RosterId        int    `json:"roster_id"`
+	Round           int    `json:"round"`
+	Season          string `json:"season"`
 }
 
 // Transaction defines model for Transaction.
 type Transaction struct {
-	Adds          *map[string]int           `json:"adds,omitempty"`
+	Adds          *map[string]int           `json:"adds"`
 	ConsenterIds  *[]int                    `json:"consenter_ids,omitempty"`
 	Created       *int                      `json:"created,omitempty"`
 	Creator       *string                   `json:"creator,omitempty"`
 	DraftPicks    *[]map[string]interface{} `json:"draft_picks,omitempty"`
-	Drops         *map[string]int           `json:"drops,omitempty"`
+	Drops         *map[string]int           `json:"drops"`
 	Leg           *int                      `json:"leg,omitempty"`
 	Metadata      *map[string]string        `json:"metadata,omitempty"`
-	RosterIds     *[]int                    `json:"roster_ids,omitempty"`
+	RosterIds     []int                     `json:"roster_ids"`
 	Settings      *map[string]int           `json:"settings,omitempty"`
-	Status        *string                   `json:"status,omitempty"`
+	Status        string                    `json:"status"`
 	StatusUpdated *int                      `json:"status_updated,omitempty"`
-	TransactionId *string                   `json:"transaction_id,omitempty"`
-	Type          *string                   `json:"type,omitempty"`
+	TransactionId string                    `json:"transaction_id"`
+	Type          string                    `json:"type"`
 	WaiverBudget  *[]map[string]interface{} `json:"waiver_budget,omitempty"`
 }
 
 // TrendingPlayer defines model for TrendingPlayer.
 type TrendingPlayer struct {
-	Count    *int    `json:"count,omitempty"`
-	PlayerId *string `json:"player_id,omitempty"`
+	Count    int    `json:"count"`
+	PlayerId string `json:"player_id"`
 }
 
 // User defines model for User.
@@ -323,8 +323,8 @@ type User struct {
 	SummonerName   *string                 `json:"summoner_name,omitempty"`
 	SummonerRegion *string                 `json:"summoner_region,omitempty"`
 	Token          *string                 `json:"token,omitempty"`
-	UserId         *string                 `json:"user_id,omitempty"`
-	Username       *string                 `json:"username,omitempty"`
+	UserId         string                  `json:"user_id"`
+	Username       string                  `json:"username"`
 	Verification   *string                 `json:"verification,omitempty"`
 }
 

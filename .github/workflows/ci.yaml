@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        module: [sdk, noop, remarkable, usage, github]
+        module: [sdk, noop, remarkable, usage, github, sleeper]
     defaults:
       run:
         working-directory: ${{ matrix.module }}
@@ -29,7 +29,7 @@ jobs:
     if: github.event_name == 'pull_request'
     strategy:
       matrix:
-        module: [sdk, noop, remarkable, usage, github]
+        module: [sdk, noop, remarkable, usage, github, sleeper]
     steps:
       - uses: actions/checkout@v7
         with:

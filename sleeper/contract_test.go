@@ -5,21 +5,25 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/fagerbergj/quack-extensions/sleeper/sleepergen"
+	"gopkg.in/yaml.v3"
 )
 
 // fixtureCase pairs a recorded request with the generated type its 200
-// response must decode into. url mirrors what client.go actually requests,
-// so a fixture drifting from the real shape fails here, not in prod.
+// response must decode into, and (for shape != "") the openapi.yaml schema
+// whose required fields every instance in the payload must carry.
 type fixtureCase struct {
-	name string
-	url  string
-	dst  func() any
+	name   string
+	url    string
+	dst    func() any
+	schema string // components.schemas name; "" skips the required-field check
+	shape  string // "object" | "array" | "map" - how instances sit in the payload
 }
 
 // fixtureKey must match cmd/qa-mock's key function exactly - both compute
@@ -47,67 +51,176 @@ const (
 
 func fixtureCases() []fixtureCase {
 	return []fixtureCase{
-		{"user", "/v1/user/" + testUser, func() any { return &sleepergen.User{} }},
-		{"user leagues", "/v1/user/" + testUser + "/leagues/nfl/2026", func() any { return &[]sleepergen.League{} }},
-		{"league", "/v1/league/" + testLeague, func() any { return &sleepergen.League{} }},
-		{"rosters", "/v1/league/" + testLeague + "/rosters", func() any { return &[]sleepergen.Roster{} }},
-		{"league users", "/v1/league/" + testLeague + "/users", func() any { return &[]sleepergen.LeagueUser{} }},
-		{"matchups w2", "/v1/league/" + testLeague + "/matchups/2", func() any { return &[]sleepergen.Matchup{} }},
-		{"matchups w1", "/v1/league/" + testLeague + "/matchups/1", func() any { return &[]sleepergen.Matchup{} }},
-		{"transactions w2", "/v1/league/" + testLeague + "/transactions/2", func() any { return &[]sleepergen.Transaction{} }},
-		{"transactions w1", "/v1/league/" + testLeague + "/transactions/1", func() any { return &[]sleepergen.Transaction{} }},
-		{"winners bracket", "/v1/league/" + testLeague + "/winners_bracket", func() any { return &[]sleepergen.BracketMatch{} }},
-		{"losers bracket", "/v1/league/" + testLeague + "/losers_bracket", func() any { return &[]sleepergen.BracketMatch{} }},
-		{"traded picks", "/v1/league/" + testLeague + "/traded_picks", func() any { return &[]sleepergen.TradedPick{} }},
-		{"league drafts", "/v1/league/" + testLeague + "/drafts", func() any { return &[]sleepergen.Draft{} }},
-		{"draft", "/v1/draft/" + testDraft, func() any { return &sleepergen.Draft{} }},
-		{"draft picks", "/v1/draft/" + testDraft + "/picks", func() any { return &[]sleepergen.DraftPick{} }},
-		{"draft traded picks", "/v1/draft/" + testDraft + "/traded_picks", func() any { return &[]sleepergen.TradedPick{} }},
-		{"state", "/v1/state/nfl", func() any { return &sleepergen.NflState{} }},
-		{"trending add", "/v1/players/nfl/trending/add?lookback_hours=24&limit=25", func() any { return &[]sleepergen.TrendingPlayer{} }},
-		{"trending drop", "/v1/players/nfl/trending/drop?lookback_hours=24&limit=25", func() any { return &[]sleepergen.TrendingPlayer{} }},
-		{"one player", "/v1/players/nfl/6797", func() any { return &sleepergen.Player{} }},
-		{"players dump", "/v1/players/nfl", func() any { return &map[string]sleepergen.Player{} }},
-		{"projections w2", "/v1/projections/nfl/regular/2026/2", func() any { return &map[string]sleepergen.StatMap{} }},
-		{"stats w2", "/v1/stats/nfl/regular/2026/2", func() any { return &map[string]sleepergen.StatMap{} }},
-		{"depth chart", "/players/nfl/TB/depth_chart", func() any { return &map[string][]string{} }},
-		{"schedule", "/schedule/nfl/regular/2026", func() any { return &[]sleepergen.Game{} }},
-		{"research", "/players/nfl/research/regular/2026/2", func() any { return &map[string]sleepergen.ResearchEntry{} }},
-		{"player season stats", "/stats/nfl/player/6797?season_type=regular&season=2026", func() any { return &sleepergen.PlayerStatEntry{} }},
-		{"past league", "/v1/league/" + pastLeague, func() any { return &sleepergen.League{} }},
-		{"past rosters", "/v1/league/" + pastLeague + "/rosters", func() any { return &[]sleepergen.Roster{} }},
-		{"past winners bracket", "/v1/league/" + pastLeague + "/winners_bracket", func() any { return &[]sleepergen.BracketMatch{} }},
-		{"past matchups w1", "/v1/league/" + pastLeague + "/matchups/1", func() any { return &[]sleepergen.Matchup{} }},
-		{"past matchups w14", "/v1/league/" + pastLeague + "/matchups/14", func() any { return &[]sleepergen.Matchup{} }},
-		{"past transactions w1", "/v1/league/" + pastLeague + "/transactions/1", func() any { return &[]sleepergen.Transaction{} }},
-		{"past draft", "/v1/draft/" + pastDraft, func() any { return &sleepergen.Draft{} }},
-		{"past draft picks", "/v1/draft/" + pastDraft + "/picks", func() any { return &[]sleepergen.DraftPick{} }},
-		{"past draft traded picks", "/v1/draft/" + pastDraft + "/traded_picks", func() any { return &[]sleepergen.TradedPick{} }},
-		{"season stats 2025", "/v1/stats/nfl/regular/2025", func() any { return &map[string]sleepergen.StatMap{} }},
+		{"user", "/v1/user/" + testUser, func() any { return &sleepergen.User{} }, "User", "object"},
+		{"user leagues", "/v1/user/" + testUser + "/leagues/nfl/2026", func() any { return &[]sleepergen.League{} }, "League", "array"},
+		{"league", "/v1/league/" + testLeague, func() any { return &sleepergen.League{} }, "League", "object"},
+		{"rosters", "/v1/league/" + testLeague + "/rosters", func() any { return &[]sleepergen.Roster{} }, "Roster", "array"},
+		{"league users", "/v1/league/" + testLeague + "/users", func() any { return &[]sleepergen.LeagueUser{} }, "LeagueUser", "array"},
+		{"matchups w2", "/v1/league/" + testLeague + "/matchups/2", func() any { return &[]sleepergen.Matchup{} }, "Matchup", "array"},
+		{"matchups w1", "/v1/league/" + testLeague + "/matchups/1", func() any { return &[]sleepergen.Matchup{} }, "Matchup", "array"},
+		{"transactions w2", "/v1/league/" + testLeague + "/transactions/2", func() any { return &[]sleepergen.Transaction{} }, "Transaction", "array"},
+		{"transactions w1", "/v1/league/" + testLeague + "/transactions/1", func() any { return &[]sleepergen.Transaction{} }, "Transaction", "array"},
+		{"winners bracket", "/v1/league/" + testLeague + "/winners_bracket", func() any { return &[]sleepergen.BracketMatch{} }, "BracketMatch", "array"},
+		{"losers bracket", "/v1/league/" + testLeague + "/losers_bracket", func() any { return &[]sleepergen.BracketMatch{} }, "BracketMatch", "array"},
+		{"traded picks", "/v1/league/" + testLeague + "/traded_picks", func() any { return &[]sleepergen.TradedPick{} }, "TradedPick", "array"},
+		{"league drafts", "/v1/league/" + testLeague + "/drafts", func() any { return &[]sleepergen.Draft{} }, "Draft", "array"},
+		{"draft", "/v1/draft/" + testDraft, func() any { return &sleepergen.Draft{} }, "Draft", "object"},
+		{"draft picks", "/v1/draft/" + testDraft + "/picks", func() any { return &[]sleepergen.DraftPick{} }, "DraftPick", "array"},
+		{"draft traded picks", "/v1/draft/" + testDraft + "/traded_picks", func() any { return &[]sleepergen.TradedPick{} }, "TradedPick", "array"},
+		{"state", "/v1/state/nfl", func() any { return &sleepergen.NflState{} }, "NflState", "object"},
+		{"trending add", "/v1/players/nfl/trending/add?lookback_hours=24&limit=25", func() any { return &[]sleepergen.TrendingPlayer{} }, "TrendingPlayer", "array"},
+		{"trending drop", "/v1/players/nfl/trending/drop?lookback_hours=24&limit=25", func() any { return &[]sleepergen.TrendingPlayer{} }, "TrendingPlayer", "array"},
+		{"one player", "/v1/players/nfl/6797", func() any { return &sleepergen.Player{} }, "Player", "object"},
+		{"players dump", "/v1/players/nfl", func() any { return &map[string]sleepergen.Player{} }, "Player", "map"},
+		{"projections w2", "/v1/projections/nfl/regular/2026/2", func() any { return &map[string]sleepergen.StatMap{} }, "", ""},
+		{"stats w2", "/v1/stats/nfl/regular/2026/2", func() any { return &map[string]sleepergen.StatMap{} }, "", ""},
+		{"depth chart", "/players/nfl/TB/depth_chart", func() any { return &map[string][]string{} }, "", ""},
+		{"schedule", "/schedule/nfl/regular/2026", func() any { return &[]sleepergen.Game{} }, "Game", "array"},
+		{"research", "/players/nfl/research/regular/2026/2", func() any { return &map[string]sleepergen.ResearchEntry{} }, "", ""},
+		{"player season stats", "/stats/nfl/player/6797?season_type=regular&season=2026", func() any { return &sleepergen.PlayerStatEntry{} }, "PlayerStatEntry", "object"},
+		{"past league", "/v1/league/" + pastLeague, func() any { return &sleepergen.League{} }, "League", "object"},
+		{"past rosters", "/v1/league/" + pastLeague + "/rosters", func() any { return &[]sleepergen.Roster{} }, "Roster", "array"},
+		{"past winners bracket", "/v1/league/" + pastLeague + "/winners_bracket", func() any { return &[]sleepergen.BracketMatch{} }, "BracketMatch", "array"},
+		{"past matchups w1", "/v1/league/" + pastLeague + "/matchups/1", func() any { return &[]sleepergen.Matchup{} }, "Matchup", "array"},
+		{"past matchups w14", "/v1/league/" + pastLeague + "/matchups/14", func() any { return &[]sleepergen.Matchup{} }, "Matchup", "array"},
+		{"past transactions w1", "/v1/league/" + pastLeague + "/transactions/1", func() any { return &[]sleepergen.Transaction{} }, "Transaction", "array"},
+		{"past transactions w5 (trade)", "/v1/league/" + pastLeague + "/transactions/5", func() any { return &[]sleepergen.Transaction{} }, "Transaction", "array"},
+		{"past draft", "/v1/draft/" + pastDraft, func() any { return &sleepergen.Draft{} }, "Draft", "object"},
+		{"past draft picks", "/v1/draft/" + pastDraft + "/picks", func() any { return &[]sleepergen.DraftPick{} }, "DraftPick", "array"},
+		{"past draft traded picks", "/v1/draft/" + pastDraft + "/traded_picks", func() any { return &[]sleepergen.TradedPick{} }, "TradedPick", "array"},
+		{"season stats 2025", "/v1/stats/nfl/regular/2025", func() any { return &map[string]sleepergen.StatMap{} }, "", ""},
 	}
 }
 
 // TestFixturesMatchGeneratedTypes decodes every recorded fixture with
-// unknown fields disallowed - a field Sleeper renamed or dropped fails here
-// instead of surfacing as a silent zero value in prod.
+// unknown fields disallowed - an extra or renamed field fails here instead
+// of prod silently rejecting or dropping it - and, for cases naming a
+// schema, verifies every field openapi.yaml marks required is present, so a
+// dropped required field fails too (unknown-fields alone can't catch that:
+// a missing field just decodes as a zero value).
 func TestFixturesMatchGeneratedTypes(t *testing.T) {
+	required := loadRequiredFields(t)
 	for _, tc := range fixtureCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			key, err := fixtureKey(tc.url)
-			if err != nil {
-				t.Fatalf("fixtureKey: %v", err)
-			}
-			path := filepath.Join("testdata", "get", key)
-			data, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("read fixture %s (for %s): %v", path, tc.url, err)
-			}
+			data := readFixture(t, tc.url)
 			dec := json.NewDecoder(bytes.NewReader(data))
 			dec.DisallowUnknownFields()
 			if err := dec.Decode(tc.dst()); err != nil {
-				t.Fatalf("decode %s into generated type: %v", path, err)
+				t.Fatalf("decode into generated type: %v", err)
 			}
+			checkRequiredFields(t, data, tc.schema, tc.shape, required[tc.schema])
 		})
+	}
+}
+
+func readFixture(t *testing.T, rawURL string) []byte {
+	t.Helper()
+	key, err := fixtureKey(rawURL)
+	if err != nil {
+		t.Fatalf("fixtureKey: %v", err)
+	}
+	path := filepath.Join("testdata", "get", key)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fixture %s (for %s): %v", path, rawURL, err)
+	}
+	return data
+}
+
+// openAPISchemas is the sliver of openapi.yaml's shape this test needs:
+// each schema's own required-field list.
+type openAPISchemas struct {
+	Components struct {
+		Schemas map[string]struct {
+			Required []string `yaml:"required"`
+		} `yaml:"schemas"`
+	} `yaml:"components"`
+}
+
+// loadRequiredFields reads required-field lists from openapi.yaml itself
+// (not a hardcoded copy), so the spec stays the single source of truth.
+func loadRequiredFields(t *testing.T) map[string][]string {
+	t.Helper()
+	data, err := os.ReadFile("openapi.yaml")
+	if err != nil {
+		t.Fatalf("read openapi.yaml: %v", err)
+	}
+	var spec openAPISchemas
+	if err := yaml.Unmarshal(data, &spec); err != nil {
+		t.Fatalf("parse openapi.yaml: %v", err)
+	}
+	out := make(map[string][]string, len(spec.Components.Schemas))
+	for name, s := range spec.Components.Schemas {
+		out[name] = s.Required
+	}
+	return out
+}
+
+// checkRequiredFields asserts every field in required is a present key on
+// every JSON object instance raw contains, per shape ("object": raw itself;
+// "array": each element; "map": each value) - independent of the generated
+// Go type, so a required field silently zeroing out can't hide behind it.
+func checkRequiredFields(t *testing.T, raw []byte, schema, shape string, required []string) {
+	t.Helper()
+	missing, err := missingRequiredFields(raw, schema, shape, required)
+	if err != nil {
+		t.Fatalf("check required fields: %v", err)
+	}
+	for _, m := range missing {
+		t.Error(m)
+	}
+}
+
+// missingRequiredFields is checkRequiredFields' pure core: no *testing.T,
+// so the mutation test below can assert on its return value directly
+// instead of needing a subtest whose expected failure would still fail
+// the overall test run.
+func missingRequiredFields(raw []byte, schema, shape string, required []string) ([]string, error) {
+	if schema == "" || len(required) == 0 {
+		return nil, nil
+	}
+	instances, err := jsonInstances(raw, shape)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for i, obj := range instances {
+		for _, field := range required {
+			if _, ok := obj[field]; !ok {
+				out = append(out, fmt.Sprintf("instance %d: missing required field %q (schema %s)", i, field, schema))
+			}
+		}
+	}
+	return out, nil
+}
+
+// jsonInstances unmarshals raw per shape into a slice of top-level objects.
+func jsonInstances(raw []byte, shape string) ([]map[string]any, error) {
+	switch shape {
+	case "object":
+		var obj map[string]any
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			return nil, err
+		}
+		return []map[string]any{obj}, nil
+	case "array":
+		var arr []map[string]any
+		if err := json.Unmarshal(raw, &arr); err != nil {
+			return nil, err
+		}
+		return arr, nil
+	case "map":
+		var m map[string]map[string]any
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return nil, err
+		}
+		out := make([]map[string]any, 0, len(m))
+		for _, v := range m {
+			out = append(out, v)
+		}
+		return out, nil
+	default:
+		return nil, nil
 	}
 }
 
@@ -130,5 +243,29 @@ func TestAllFixturesCovered(t *testing.T) {
 		if !want[e.Name()] {
 			t.Errorf("fixture %s has no contract-test case covering it", e.Name())
 		}
+	}
+}
+
+// TestMutationDroppedRequiredFieldFails proves checkRequiredFields actually
+// catches a dropped field: DisallowUnknownFields alone would not (a missing
+// field just decodes to its zero value).
+func TestMutationDroppedRequiredFieldFails(t *testing.T) {
+	data := readFixture(t, "/v1/state/nfl")
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		t.Fatalf("unmarshal state fixture: %v", err)
+	}
+	delete(obj, "week")
+	mutated, err := json.Marshal(obj)
+	if err != nil {
+		t.Fatalf("remarshal mutated state fixture: %v", err)
+	}
+	required := loadRequiredFields(t)["NflState"]
+	missing, err := missingRequiredFields(mutated, "NflState", "object", required)
+	if err != nil {
+		t.Fatalf("missingRequiredFields: %v", err)
+	}
+	if len(missing) == 0 {
+		t.Fatal("expected the required-field check to flag a fixture missing \"week\", but it found nothing")
 	}
 }

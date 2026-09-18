@@ -52,7 +52,7 @@ func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
 		return nil, fmt.Errorf("sleeper: snapshots must be \"off\" or \"daily\", got %q", cfg.Snapshots)
 	}
 	if cfg.Season < 0 {
-		return nil, fmt.Errorf("sleeper: season must be positive, got %d", cfg.Season)
+		return nil, fmt.Errorf("sleeper: season must not be negative, got %d", cfg.Season)
 	}
 
 	return &extension{host: host, cfg: cfg}, nil
