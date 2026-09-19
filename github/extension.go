@@ -289,10 +289,8 @@ func (e *Extension) spawn(f func()) {
 	}()
 }
 
-// Wait blocks until every goroutine started via spawn has returned. Callers
-// that own e's lifetime (tests, and a real shutdown) must call this before
-// closing anything spawned work still reads or writes - the store, an HTTP
-// client - or a completion races that close.
+// Wait blocks until every spawned goroutine returns - call before closing
+// anything spawned work still uses (store, HTTP client), or a completion races that close.
 func (e *Extension) Wait() {
 	e.bg.Wait()
 }
