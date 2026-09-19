@@ -660,9 +660,7 @@ func (e *extension) otherTeams(ctx context.Context, leagueID string) []teamRef {
 }
 
 // readTradeTalks tries every other team as a candidate trade partner (the
-// SDK has no chat-listing call, so this is the only way to discover which
-// per-partner chats exist) and keeps the ones that actually have a chat -
-// plus any chat still running its first talk, which has no artifact yet.
+// SDK has no chat-listing call, so this is the only way to discover chats).
 func (e *extension) readTradeTalks(ctx context.Context, leagueID string) []tradeTalkEnvelope {
 	var out []tradeTalkEnvelope
 	for _, t := range e.otherTeams(ctx, leagueID) {
@@ -674,6 +672,7 @@ func (e *extension) readTradeTalks(ctx context.Context, leagueID string) []trade
 			env.Running = running
 			out = append(out, tradeTalkEnvelope{Partner: t.Name, PartnerID: t.ID, artifactEnvelope: env})
 		case running:
+			// A first talk has no artifact yet; without this the Running badge never shows.
 			out = append(out, tradeTalkEnvelope{Partner: t.Name, PartnerID: t.ID, artifactEnvelope: artifactEnvelope{Running: true}})
 		}
 	}
