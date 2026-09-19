@@ -159,9 +159,21 @@ function runAttrs(runnable) {
   return runnable ? '' : ' disabled title="no agent bound yet"'
 }
 
-function tradeFinder(suggestions, runnable = true) {
-  if (!suggestions?.length) return ''
-  return `<h3 class="sl-h3">Suggested trades <span class="qk-badge">Example</span></h3><ul class="sl-finds">${suggestions.map(f => `<li><div><b>${esc(f.partner)}</b> <span class="sl-keep">${esc(f.partner_owner || '')}${f.record ? ' · ' + esc(f.record) : ''}</span><div class="sl-keep">Give ${esc(f.give.name)} (${num(f.give_proj)}) for ${esc(f.get.name)} (${num(f.get_proj)}). ${esc(f.note || '')}</div></div><button class="qk-btn" data-run="trade" data-partner="${esc(f.partner_id || f.partner)}" data-partner-name="${esc(f.partner)}"${runAttrs(runnable)}>Start talk</button></li>`).join('')}</ul>`
+// finder: the trade-finder job's own artifactEnvelope ({found, example,
+// running, data}) - a separate kind so a finder run never overwrites a talk.
+function tradeFinder(finder, runnable = true) {
+  const suggestions = finder?.data?.suggestions
+  const running = !!finder?.running
+  const cta = running
+    ? '<span class="qk-badge qk-badge--warn">Finding trades…</span>'
+    : `<button class="qk-btn" data-run="trade-finder"${runAttrs(runnable)}>Find trades</button>`
+  if (!suggestions?.length) {
+    const msg = running ? 'Looking for trades that help both sides.' : 'No suggestions yet.'
+    return `<h3 class="sl-h3">Suggested trades</h3><div class="sl-empty"><span>${esc(msg)}</span> ${cta}</div>`
+  }
+  const badge = finder?.example ? ' <span class="qk-badge">Example</span>' : ''
+  const items = suggestions.map(f => `<li><div><b>${esc(f.partner)}</b> <span class="sl-keep">${esc(f.partner_owner || '')}${f.record ? ' · ' + esc(f.record) : ''}</span><div class="sl-keep">Give ${esc(f.give.name)} (${num(f.give_proj)}) for ${esc(f.get.name)} (${num(f.get_proj)}). ${esc(f.note || '')}</div></div><button class="qk-btn" data-run="trade" data-partner="${esc(f.partner_id || f.partner)}" data-partner-name="${esc(f.partner)}"${runAttrs(runnable)}>Start talk</button></li>`).join('')
+  return `<h3 class="sl-h3">Suggested trades${badge}</h3><ul class="sl-finds">${items}</ul>${cta}`
 }
 
 function talkPartnerSelect(partners) {
@@ -175,18 +187,20 @@ function talkPartnerSelect(partners) {
 // talks: [{partner, found, example, status, data}]; talkIdx selects which
 // one the dropdown shows. partners: every other team's name, for the "New
 // talk" select - runJob reads it when a click carries no data-partner.
-export function renderTrade(state, talks, talkIdx, partners) {
+// finder: the trade-finder job's own artifactEnvelope, for the suggestions CTA.
+export function renderTrade(state, talks, talkIdx, partners, finder) {
   const head = jobHead(state)
   const anyFound = talks.some(t => t.found)
-  const suggestions = talks.find(t => t.found)?.data?.suggestions
-  const runnable = state.runnable !== false
+  const finderRunnable = finder?.runnable !== false
   if (!anyFound) {
     // The talkbar (partner select + New talk) is the only way to start a
     // FIRST talk when no suggestions exist yet, so it has to render here too.
+    const runnable = state.runnable !== false
     return section('sec-trade', head + `<div class="sl-sec__body">
     <div class="sl-talkbar">${talkPartnerSelect(partners)}<button class="qk-btn qk-btn--primary" data-run="trade"${runAttrs(runnable)}>New talk</button></div>
-    ${tradeFinder(suggestions, runnable)}<div class="sl-empty" style="margin-top:1rem"><span>Pick a team and start a talk.</span></div></div>`)
+    ${tradeFinder(finder, finderRunnable)}<div class="sl-empty" style="margin-top:1rem"><span>Pick a team and start a talk.</span></div></div>`)
   }
+  const runnable = state.runnable !== false
   const cur = talks[Math.min(talkIdx, talks.length - 1)]
   const options = talks.map((t, i) => `<option value="${i}" ${i === talkIdx ? 'selected' : ''}>${esc(t.partner)} · ${esc(t.status || (t.found ? 'open' : 'new'))} · ${t.data?.offers?.length ?? 0} offer${(t.data?.offers?.length ?? 0) === 1 ? '' : 's'}</option>`).join('')
   const talkbar = `<div class="sl-talkbar"><label for="talk-select" class="sl-keep" style="font-size:.75rem">Talk</label><select id="talk-select" class="sl-select">${options}</select>${talkPartnerSelect(partners)}<button class="qk-btn" data-run="trade"${runAttrs(runnable)}>New talk</button></div>`
@@ -202,7 +216,7 @@ export function renderTrade(state, talks, talkIdx, partners) {
     ${talkbar}
     <ul class="sl-offers">${offers}</ul>
     ${compose}
-    <div style="margin-top:1.25rem;padding-top:1rem;border-top:1px solid var(--qk-border)">${tradeFinder(suggestions, runnable)}</div>
+    <div style="margin-top:1.25rem;padding-top:1rem;border-top:1px solid var(--qk-border)">${tradeFinder(finder, finderRunnable)}</div>
     <p class="sl-src">One chat per talk; every offer or counter is a new turn, so the analyst keeps the whole negotiation in context.</p></div>`)
 }
 

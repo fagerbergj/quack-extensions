@@ -17,8 +17,10 @@ import (
 // so a test can assert on the exact chat id and turn-append behavior
 // without a real quack server.
 type fakeHost struct {
-	artifacts  map[string]map[string][]byte // chatID -> name -> data
-	dispatched []sdk.DispatchRequest
+	artifacts   map[string]map[string][]byte // chatID -> name -> data
+	dispatched  []sdk.DispatchRequest
+	dispatchErr error  // returned by every dispatch call when set
+	onDispatch  func() // called synchronously inside dispatch, before it returns
 }
 
 func (h *fakeHost) readArtifact(chatID, user, name string) ([]byte, bool) {
@@ -32,7 +34,10 @@ func (h *fakeHost) readArtifact(chatID, user, name string) ([]byte, bool) {
 
 func (h *fakeHost) dispatch(_ context.Context, req sdk.DispatchRequest) error {
 	h.dispatched = append(h.dispatched, req)
-	return nil
+	if h.onDispatch != nil {
+		h.onDispatch()
+	}
+	return h.dispatchErr
 }
 
 func (h *fakeHost) sdkHost() sdk.Host {
@@ -193,10 +198,30 @@ func TestHandleArtifactsReadsExactChatID(t *testing.T) {
 	if string(lineup.Data) != `{"week":2}` {
 		t.Errorf("data = %s, want the stored bytes verbatim", lineup.Data)
 	}
-	for _, job := range []string{"waivers", "digest", "trends", "retro"} {
+	for _, job := range []string{"waivers", "digest", "trends", "retro", "trade-finder"} {
 		if resp.Jobs[job].Found {
 			t.Errorf("jobs[%s] should not be found (no artifact stored)", job)
 		}
+	}
+}
+
+// TestHandleArtifactsIncludesTradeFinder pins the finder's own artifact
+// kind: one chat per week, read back under jobs["trade-finder"].
+func TestHandleArtifactsIncludesTradeFinder(t *testing.T) {
+	chatID := "ext:sleeper:" + testLeague + ":2:trade-finder"
+	host := &fakeHost{artifacts: map[string]map[string][]byte{
+		chatID: {"trade-finder": []byte(`{"league":"` + testLeague + `","week":2,"suggestions":[]}`)},
+	}}
+	_, r := newTestExtension(t, host.sdkHost(), config{})
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/artifacts?league_id="+testLeague+"&stop=2", nil))
+	var resp artifactsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	finder, ok := resp.Jobs["trade-finder"]
+	if !ok || !finder.Found || finder.Example {
+		t.Fatalf("jobs[trade-finder] = %+v, want found && !example", resp.Jobs["trade-finder"])
 	}
 }
 
@@ -281,6 +306,30 @@ func TestHandleArtifactsRealTradeTalkDiscovery(t *testing.T) {
 	got := resp.Talks[0]
 	if got.PartnerID != riceCookerOwnerID || got.Partner != "Rice Cooker" || !got.Found || got.Example {
 		t.Errorf("talk = %+v, want partner_id=%q partner=Rice Cooker found=true example=false", got, riceCookerOwnerID)
+	}
+}
+
+// TestHandleArtifactsRunningFirstTalkSurfaces pins the #100 follow-up: a
+// partner chat with no artifact yet still shows Running, or the badge and
+// polling never start for a first talk.
+func TestHandleArtifactsRunningFirstTalkSurfaces(t *testing.T) {
+	const riceCookerOwnerID = "740613226189987840"
+	chatID := "ext:sleeper:" + testLeague + ":trade:" + riceCookerOwnerID
+	host := &fakeHost{artifacts: map[string]map[string][]byte{}}
+	e, r := newTestExtension(t, host.sdkHost(), config{})
+	e.markRunning(chatID)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/artifacts?league_id="+testLeague+"&stop=2", nil))
+	var resp artifactsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Talks) != 1 {
+		t.Fatalf("talks = %+v, want the one running-but-not-yet-found talk", resp.Talks)
+	}
+	got := resp.Talks[0]
+	if got.PartnerID != riceCookerOwnerID || got.Found || !got.Running {
+		t.Errorf("talk = %+v, want partner_id=%q found=false running=true", got, riceCookerOwnerID)
 	}
 }
 
@@ -382,19 +431,28 @@ func TestHandleJobsDispatchesChatIDAndAppendsTurn(t *testing.T) {
 	}
 }
 
-// TestHandleJobsUnmappedJobUsesPlannerPath pins jobWorkflows' zero-value
-// default: a job with no agent yet (e.g. digest) must not name a shape.
+// TestHandleJobsEveryMappedJobBindsItsWorkflow pins jobWorkflows exactly:
+// every job id quack has an agent for names its bound shape, none guess via the planner.
 func TestHandleJobsEveryMappedJobBindsItsWorkflow(t *testing.T) {
 	// Literal expectations, not jobWorkflows itself: the shape names are quack config keys (PR #1501).
-	want := map[string]string{"lineup": "sleeper-lineup", "waivers": "sleeper-waivers", "trends": "sleeper-trends"}
+	want := map[string]string{
+		"lineup": "sleeper-lineup", "waivers": "sleeper-waivers", "trends": "sleeper-trends",
+		"digest": "sleeper-digest", "retro": "sleeper-retro", "draft": "sleeper-draft",
+		"history": "sleeper-history", "trade": "sleeper-trade", "trade-finder": "sleeper-trade-finder",
+	}
 	if len(want) != len(jobWorkflows) {
 		t.Fatalf("jobWorkflows has %d entries, this test pins %d", len(jobWorkflows), len(want))
 	}
+	stopFor := map[string]string{"draft": "draft", "history": "review"}
 	for job, want := range want {
 		t.Run(job, func(t *testing.T) {
+			stop := firstNonEmpty(stopFor[job], "2")
+			body := `{"league_id":"` + testLeague + `","stop":"` + stop + `","job":"` + job + `"}`
+			if job == "trade" {
+				body = `{"league_id":"` + testLeague + `","stop":"2","job":"trade","args":{"partner":"740613226189987840"}}`
+			}
 			host := &fakeHost{artifacts: map[string]map[string][]byte{}}
 			_, r := newTestExtension(t, host.sdkHost(), config{})
-			body := `{"league_id":"` + testLeague + `","stop":"2","job":"` + job + `"}`
 			rec := httptest.NewRecorder()
 			r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/jobs", strings.NewReader(body)))
 			if rec.Code != http.StatusOK {
@@ -410,26 +468,59 @@ func TestHandleJobsEveryMappedJobBindsItsWorkflow(t *testing.T) {
 	}
 }
 
-// TestHandleJobsUnmappedJobsAreConflict: a job absent from jobWorkflows
-// 409s before reaching Dispatch, instead of guessing via the planner.
-func TestHandleJobsUnmappedJobsAreConflict(t *testing.T) {
-	cases := []struct{ stop, job string }{
-		{"2", "digest"}, {"2", "retro"}, {"2", "trade"}, {"draft", "draft"}, {"review", "history"},
+// TestHandleJobsTradeDispatchCarriesArgs: the trade job's dispatch must
+// still carry partner/partner_name/give/get in the message now that it's bound.
+func TestHandleJobsTradeDispatchCarriesArgs(t *testing.T) {
+	const riceCookerOwnerID = "740613226189987840"
+	host := &fakeHost{artifacts: map[string]map[string][]byte{}}
+	_, r := newTestExtension(t, host.sdkHost(), config{})
+	body := `{"league_id":"` + testLeague + `","stop":"2","job":"trade","args":{"partner":"` + riceCookerOwnerID + `","partner_name":"Rice Cooker","give":"7594","get":"9997"}}`
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/jobs", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
-	for _, c := range cases {
-		t.Run(c.job, func(t *testing.T) {
-			host := &fakeHost{artifacts: map[string]map[string][]byte{}}
-			_, r := newTestExtension(t, host.sdkHost(), config{})
-			body := `{"league_id":"` + testLeague + `","stop":"` + c.stop + `","job":"` + c.job + `","args":{"partner":"Rice Cooker"}}`
-			rec := httptest.NewRecorder()
-			r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/jobs", strings.NewReader(body)))
-			if rec.Code != http.StatusConflict {
-				t.Fatalf("status = %d, want 409, body = %s", rec.Code, rec.Body)
-			}
-			if len(host.dispatched) != 0 {
-				t.Errorf("dispatched %d requests, want 0", len(host.dispatched))
-			}
-		})
+	if len(host.dispatched) != 1 {
+		t.Fatalf("dispatched %d requests, want 1", len(host.dispatched))
+	}
+	req := host.dispatched[0]
+	if req.Run.Workflow != "sleeper-trade" {
+		t.Errorf("workflow = %q, want sleeper-trade", req.Run.Workflow)
+	}
+	for _, want := range []string{"partner: " + riceCookerOwnerID, "partner_name: Rice Cooker", "give: 7594", "get: 9997"} {
+		if !strings.Contains(req.Ask.Message, want) {
+			t.Errorf("message %q missing %q", req.Ask.Message, want)
+		}
+	}
+}
+
+// TestHandleJobsTradeFinderDispatchesToOwnChat pins the finder's chat shape:
+// one chat per week, separate from any per-partner talk.
+func TestHandleJobsTradeFinderDispatchesToOwnChat(t *testing.T) {
+	host := &fakeHost{artifacts: map[string]map[string][]byte{}}
+	_, r := newTestExtension(t, host.sdkHost(), config{})
+	body := `{"league_id":"` + testLeague + `","stop":"2","job":"trade-finder"}`
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/jobs", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	var resp jobResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	wantChatID := "ext:sleeper:" + testLeague + ":2:trade-finder"
+	if resp.ChatID != wantChatID {
+		t.Errorf("chat_id = %q, want %q", resp.ChatID, wantChatID)
+	}
+	if len(host.dispatched) != 1 {
+		t.Fatalf("dispatched %d requests, want 1", len(host.dispatched))
+	}
+	if got := host.dispatched[0].Chat.LocalID; got != testLeague+":2:trade-finder" {
+		t.Errorf("LocalID = %q, want %q", got, testLeague+":2:trade-finder")
+	}
+	if got := host.dispatched[0].Run.Workflow; got != "sleeper-trade-finder" {
+		t.Errorf("workflow = %q, want sleeper-trade-finder", got)
 	}
 }
 

@@ -76,6 +76,10 @@ function syncRunningFromServer() {
     state.running.add('trade')
     pollFor('trade')
   }
+  if (state.artifacts.season_notes?.running && !state.running.has('season-notes')) {
+    state.running.add('season-notes')
+    pollFor('season-notes')
+  }
 }
 
 async function loadArtifacts() {
@@ -186,8 +190,9 @@ function renderMain() {
   }
   const talks = state.artifacts.talks || []
   const partners = (state.season.standings || []).filter(t => !t.mine).map(t => ({ id: t.id, name: t.team }))
+  const finder = { ...(state.artifacts.jobs || {})['trade-finder'], runnable: state.runnableJobs.has('trade-finder') }
   main.innerHTML = R.renderLineup(jobEnvelope(JOBS[0], 'Start / sit')) + R.renderWaivers(jobEnvelope(JOBS[1], 'Waivers')) +
-    R.renderTrade(jobEnvelope(JOBS[2], 'Trade talks'), talks, state.talkIdx, partners) +
+    R.renderTrade(jobEnvelope(JOBS[2], 'Trade talks'), talks, state.talkIdx, partners, finder) +
     R.renderDigest(jobEnvelope(JOBS[3], `Week ${state.stop} preview`)) + R.renderTrends(jobEnvelope(JOBS[4], 'Trends and news'))
   side.innerHTML = currentSide()
 }
@@ -202,8 +207,10 @@ async function loadReviewHistory() {
 }
 
 function currentSide() {
-  const found = !!state.artifacts.season_notes?.found
-  const notesEnv = { title: 'Season notes', agent: 'trend-scout', found, example: !!state.artifacts.season_notes?.example, data: state.artifacts.season_notes?.data, invalid: !!state.artifacts.season_notes?.invalid, text: state.artifacts.season_notes?.text, status: found ? 'done' : 'not_run', chatHref: found ? `/chat/ext:sleeper:${state.leagueID}:season-notes` : undefined }
+  const notes = state.artifacts.season_notes
+  const found = !!notes?.found
+  const running = state.running.has('season-notes')
+  const notesEnv = { title: 'Season notes', agent: 'trend-scout', found, example: !!notes?.example, data: notes?.data, invalid: !!notes?.invalid, text: notes?.text, status: running ? 'running' : found ? 'done' : 'not_run', chatHref: found ? `/chat/ext:sleeper:${state.leagueID}:season-notes` : undefined }
   return R.renderStandingsSide(state.season) + R.renderSeasonNotes(notesEnv) + R.renderMovesSide(state.season)
 }
 
@@ -318,7 +325,9 @@ function pollFor(job) {
     try { await loadArtifacts() } catch { /* keep polling; a transient fetch error isn't fatal */ }
     const running = job === 'trade'
       ? (state.artifacts.talks || []).some(t => t.running)
-      : !!(state.artifacts.jobs || {})[job]?.running
+      : job === 'season-notes'
+        ? !!state.artifacts.season_notes?.running
+        : !!(state.artifacts.jobs || {})[job]?.running
     const done = !running || attempts >= 20
     if (done) {
       clearInterval(timer)
