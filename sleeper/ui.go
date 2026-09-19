@@ -29,7 +29,7 @@ var fixtureBytes = loadFixtures()
 
 // fixtureJobNames enumerates every artifact name a fixture file exists for -
 // the job ids plus the two non-job artifacts (season-notes, trade).
-var fixtureJobNames = []string{"lineup", "waivers", "trade", "digest", "trends", "retro", "draft", "history", "season-notes"}
+var fixtureJobNames = []string{"lineup", "waivers", "trade", "trade-finder", "digest", "trends", "retro", "draft", "history", "season-notes"}
 
 func loadFixtures() map[string]json.RawMessage {
 	out := make(map[string]json.RawMessage, len(fixtureJobNames))
@@ -661,15 +661,20 @@ func (e *extension) otherTeams(ctx context.Context, leagueID string) []teamRef {
 
 // readTradeTalks tries every other team as a candidate trade partner (the
 // SDK has no chat-listing call, so this is the only way to discover which
-// per-partner chats exist) and keeps the ones that actually have a chat.
+// per-partner chats exist) and keeps the ones that actually have a chat -
+// plus any chat still running its first talk, which has no artifact yet.
 func (e *extension) readTradeTalks(ctx context.Context, leagueID string) []tradeTalkEnvelope {
 	var out []tradeTalkEnvelope
 	for _, t := range e.otherTeams(ctx, leagueID) {
 		chatID := fmt.Sprintf("ext:sleeper:%s:trade:%s", leagueID, t.ID)
 		env := e.readArtifact(chatID, "trade")
-		if env.Found && !env.Example {
-			env.Running = e.isRunning(chatID)
+		running := e.isRunning(chatID)
+		switch {
+		case env.Found && !env.Example:
+			env.Running = running
 			out = append(out, tradeTalkEnvelope{Partner: t.Name, PartnerID: t.ID, artifactEnvelope: env})
+		case running:
+			out = append(out, tradeTalkEnvelope{Partner: t.Name, PartnerID: t.ID, artifactEnvelope: artifactEnvelope{Running: true}})
 		}
 	}
 	if len(out) == 0 && e.cfg.Fixture {
@@ -707,7 +712,7 @@ func jobsForStop(stop string) (jobs []string, talksAllowed bool, err error) {
 		if convErr != nil || wk < 1 || wk > 18 {
 			return nil, false, fmt.Errorf("stop must be \"draft\", \"review\", or a week number 1-18, got %q", stop)
 		}
-		return []string{"lineup", "waivers", "digest", "trends", "retro"}, true, nil
+		return []string{"lineup", "waivers", "digest", "trends", "retro", "trade-finder"}, true, nil
 	}
 }
 
@@ -756,9 +761,15 @@ func (e *extension) handleArtifacts(w http.ResponseWriter, r *http.Request) {
 // config, PR #1501). A job with no agent yet is absent, so it keeps the
 // planner path (Workflow == "") until one exists.
 var jobWorkflows = map[string]string{
-	"lineup":  "sleeper-lineup",
-	"waivers": "sleeper-waivers",
-	"trends":  "sleeper-trends",
+	"lineup":       "sleeper-lineup",
+	"waivers":      "sleeper-waivers",
+	"trends":       "sleeper-trends",
+	"trade":        "sleeper-trade",
+	"digest":       "sleeper-digest",
+	"retro":        "sleeper-retro",
+	"draft":        "sleeper-draft",
+	"history":      "sleeper-history",
+	"trade-finder": "sleeper-trade-finder",
 }
 
 type jobRequest struct {
@@ -885,17 +896,16 @@ func (e *extension) handleJobs(w http.ResponseWriter, r *http.Request) {
 	}
 	origin := e.jobOrigin(ctx, req.LeagueID, req.Stop, req.Job, originLabel(req.Stop, req.Job, partnerName))
 	message := fmt.Sprintf("Run the %s job for league %s, stop %s.%s", req.Job, req.LeagueID, req.Stop, formatArgs(req.Args))
-	err = e.host.Dispatch(ctx, sdk.DispatchRequest{
+	chatID := globalChatID(localID)
+	err = e.dispatchTracked(ctx, sdk.DispatchRequest{
 		Chat: sdk.ChatRef{LocalID: localID, User: e.cfg.DefaultUser, Title: title, Origin: origin},
 		Ask:  sdk.Ask{Message: message},
 		Run:  sdk.RunConfig{ReadOnly: true, Workflow: jobWorkflows[req.Job]},
-	})
+	}, chatID)
 	if err != nil {
 		e.writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	chatID := globalChatID(localID)
-	e.markRunning(chatID)
 	if req.Job == "trends" {
 		e.dispatchSeasonNotes(ctx, req.LeagueID)
 	}

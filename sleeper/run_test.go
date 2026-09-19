@@ -1,7 +1,9 @@
 package sleeper
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,6 +24,7 @@ func TestOriginLabel(t *testing.T) {
 		{"draft", "draft", "", "Draft"},
 		{"review", "history", "", "Season review"},
 		{"3", "trade", "Rice Cooker", "Trade · Rice Cooker"},
+		{"3", "trade-finder", "", "Trade finder · week 3"},
 	}
 	for _, c := range cases {
 		if got := originLabel(c.stop, c.job, c.partner); got != c.want {
@@ -75,14 +78,43 @@ func TestRunEndedUnknownChatIsNoop(t *testing.T) {
 }
 
 func TestJobRunnableMatchesJobWorkflows(t *testing.T) {
-	for _, job := range []string{"lineup", "waivers", "trends"} {
+	for _, job := range []string{"lineup", "waivers", "trends", "digest", "retro", "draft", "history", "trade", "trade-finder"} {
 		if !jobRunnable(job) {
 			t.Errorf("jobRunnable(%q) = false, want true (in jobWorkflows)", job)
 		}
 	}
-	for _, job := range []string{"digest", "retro", "draft", "history", "trade"} {
-		if jobRunnable(job) {
-			t.Errorf("jobRunnable(%q) = true, want false (no jobWorkflows entry)", job)
-		}
+	if jobRunnable("nonexistent-job") {
+		t.Error(`jobRunnable("nonexistent-job") = true, want false (no jobWorkflows entry)`)
+	}
+}
+
+// TestDispatchTrackedMarksRunningBeforeDispatch pins the #100 follow-up: a
+// fast Dispatch that fires RunEnded before markRunning would otherwise land
+// must never see chatID cleared before it's marked.
+func TestDispatchTrackedMarksRunningBeforeDispatch(t *testing.T) {
+	host := &fakeHost{artifacts: map[string]map[string][]byte{}}
+	e, _ := newTestExtension(t, host.sdkHost(), config{})
+	const chatID = "ext:sleeper:test:chat"
+	var runningDuringDispatch bool
+	host.onDispatch = func() { runningDuringDispatch = e.isRunning(chatID) }
+	if err := e.dispatchTracked(context.Background(), sdk.DispatchRequest{}, chatID); err != nil {
+		t.Fatalf("dispatchTracked: %v", err)
+	}
+	if !runningDuringDispatch {
+		t.Error("chatID must be marked running before Dispatch is called, not after it returns")
+	}
+}
+
+// TestDispatchTrackedClearsRunningOnError: a synchronous Dispatch failure
+// must not leave a phantom Running mark with nothing left to clear it.
+func TestDispatchTrackedClearsRunningOnError(t *testing.T) {
+	host := &fakeHost{artifacts: map[string]map[string][]byte{}, dispatchErr: errors.New("boom")}
+	e, _ := newTestExtension(t, host.sdkHost(), config{})
+	const chatID = "ext:sleeper:test:chat"
+	if err := e.dispatchTracked(context.Background(), sdk.DispatchRequest{}, chatID); err == nil {
+		t.Fatal("want the Dispatch error back")
+	}
+	if e.isRunning(chatID) {
+		t.Error("a synchronous Dispatch error must clear the running mark")
 	}
 }
