@@ -256,6 +256,7 @@ type Extension struct {
 	pending            sync.Map        // globalChatID → *pendingRun; correlates RunEnded back to its dispatch
 	runTimeout         time.Duration
 	autoArchiveOnMerge bool
+	bg                 sync.WaitGroup // every webhook-spawned goroutine (see spawn); Wait drains them
 
 	// intentClassifier backs the mention-intent classification in intent.go -
 	// wired to Host.Classify in factory when non-nil; nil (degrades to
@@ -277,6 +278,22 @@ func (e *Extension) isInvokerAllowed(login string) bool {
 }
 
 func (e *Extension) Tools() []tool.Tool { return e.app.Tools() }
+
+// spawn runs f in a goroutine tracked by Wait, so a webhook handler can fire
+// background work without outliving the store/HTTP client it uses.
+func (e *Extension) spawn(f func()) {
+	e.bg.Add(1)
+	go func() {
+		defer e.bg.Done()
+		f()
+	}()
+}
+
+// Wait blocks until every spawned goroutine returns - call before closing
+// anything spawned work still uses (store, HTTP client), or a completion races that close.
+func (e *Extension) Wait() {
+	e.bg.Wait()
+}
 
 // Deliver/GitCredential satisfy sdk.Deliverer/sdk.GitCredentialSource by
 // delegating to App, which does the actual GitHub API work.
