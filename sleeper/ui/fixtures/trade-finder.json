@@ -1,0 +1,88 @@
+{
+  "league": "1124857466211995648",
+  "week": 2,
+  "updated": "Today 14:20",
+  "suggestions": [
+    {
+      "partner": "Rice Cooker",
+      "partner_owner": "pirates5",
+      "record": "1-0",
+      "give": {
+        "id": "7594",
+        "name": "Chuba Hubbard",
+        "pos": "RB",
+        "team": "CAR",
+        "inj": null,
+        "prac": null,
+        "proj": 12.4
+      },
+      "give_proj": 12.4,
+      "get": {
+        "id": "9997",
+        "name": "Zay Flowers",
+        "pos": "WR",
+        "team": "BAL",
+        "inj": "Questionable",
+        "prac": null,
+        "proj": 14.0
+      },
+      "get_proj": 14.0,
+      "note": "They start Ashton Jeanty at RB2 at 14.9; Zay Flowers sits on their bench behind three starting receivers.",
+      "partner_id": "740613226189987840"
+    },
+    {
+      "partner": "I Think I’m Gonna Puka",
+      "partner_owner": "cmigs",
+      "record": "1-0",
+      "give": {
+        "id": "7594",
+        "name": "Chuba Hubbard",
+        "pos": "RB",
+        "team": "CAR",
+        "inj": null,
+        "prac": null,
+        "proj": 12.4
+      },
+      "give_proj": 12.4,
+      "get": {
+        "id": "11604",
+        "name": "Brock Bowers",
+        "pos": "TE",
+        "team": "LV",
+        "inj": "Questionable",
+        "prac": null,
+        "proj": 13.3
+      },
+      "get_proj": 13.3,
+      "note": "They start Aaron Jones at RB2 at 14.0; Brock Bowers sits on their bench behind three starting receivers.",
+      "partner_id": "517804893141327872"
+    },
+    {
+      "partner": "Achane Magic",
+      "partner_owner": "cdelphin",
+      "record": "0-1",
+      "give": {
+        "id": "7594",
+        "name": "Chuba Hubbard",
+        "pos": "RB",
+        "team": "CAR",
+        "inj": null,
+        "prac": null,
+        "proj": 12.4
+      },
+      "give_proj": 12.4,
+      "get": {
+        "id": "10222",
+        "name": "Jayden Reed",
+        "pos": "WR",
+        "team": "GB",
+        "inj": null,
+        "prac": null,
+        "proj": 11.6
+      },
+      "get_proj": 11.6,
+      "note": "They start D'Andre Swift at RB2 at 11.6; Jayden Reed sits on their bench behind three starting receivers.",
+      "partner_id": "860209887672635392"
+    }
+  ]
+}

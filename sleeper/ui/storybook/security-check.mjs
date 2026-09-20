@@ -51,6 +51,9 @@ async function checks() {
   const partners = [{ id: '1', name: 'Team' }]
   out.push(['renderTrade', R.renderTrade(doneEnvelope(null), talks, 0, partners)])
 
+  const tradeFinder = poisonNumbers(await loadFixture('trade-finder'))
+  out.push(['renderTrade (finder)', R.renderTrade(doneEnvelope(null), talks, 0, partners, doneEnvelope(tradeFinder))])
+
   const digest = poisonNumbers(await loadFixture('digest'))
   out.push(['renderDigest', R.renderDigest(doneEnvelope(digest))])
 
