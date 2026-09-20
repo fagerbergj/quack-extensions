@@ -875,6 +875,9 @@ func (e *extension) handleJobs(w http.ResponseWriter, r *http.Request) {
 		e.writeErr(w, http.StatusBadRequest, fmt.Sprintf("job %q is not valid for stop %q", req.Job, req.Stop))
 		return
 	}
+	// Drift guard: every jobIsValid accepts today has a jobWorkflows entry, so this
+	// 409 is unreachable over HTTP. It only fires if a job is added to jobsForStop
+	// but forgotten in jobWorkflows - catching that at request time, not in the planner.
 	if !jobRunnable(req.Job) {
 		e.writeErr(w, http.StatusConflict, fmt.Sprintf("no agent is bound for the %s job yet", req.Job))
 		return

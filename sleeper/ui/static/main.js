@@ -190,7 +190,7 @@ function renderMain() {
   }
   const talks = state.artifacts.talks || []
   const partners = (state.season.standings || []).filter(t => !t.mine).map(t => ({ id: t.id, name: t.team }))
-  const finder = { ...(state.artifacts.jobs || {})['trade-finder'], runnable: state.runnableJobs.has('trade-finder') }
+  const finder = { ...(state.artifacts.jobs || {})['trade-finder'], running: state.running.has('trade-finder'), runnable: state.runnableJobs.has('trade-finder') }
   main.innerHTML = R.renderLineup(jobEnvelope(JOBS[0], 'Start / sit')) + R.renderWaivers(jobEnvelope(JOBS[1], 'Waivers')) +
     R.renderTrade(jobEnvelope(JOBS[2], 'Trade talks'), talks, state.talkIdx, partners, finder) +
     R.renderDigest(jobEnvelope(JOBS[3], `Week ${state.stop} preview`)) + R.renderTrends(jobEnvelope(JOBS[4], 'Trends and news'))
@@ -210,7 +210,7 @@ function currentSide() {
   const notes = state.artifacts.season_notes
   const found = !!notes?.found
   const running = state.running.has('season-notes')
-  const notesEnv = { title: 'Season notes', agent: 'trend-scout', found, example: !!notes?.example, data: notes?.data, invalid: !!notes?.invalid, text: notes?.text, status: running ? 'running' : found ? 'done' : 'not_run', chatHref: found ? `/chat/ext:sleeper:${state.leagueID}:season-notes` : undefined }
+  const notesEnv = { title: 'Season notes', agent: 'trend-scout', found, example: !!notes?.example, data: notes?.data, invalid: !!notes?.invalid, text: notes?.text, running, status: running ? 'running' : found ? 'done' : 'not_run', chatHref: found ? `/chat/ext:sleeper:${state.leagueID}:season-notes` : undefined }
   return R.renderStandingsSide(state.season) + R.renderSeasonNotes(notesEnv) + R.renderMovesSide(state.season)
 }
 
