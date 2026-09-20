@@ -88,20 +88,26 @@ func TestJobRunnableMatchesJobWorkflows(t *testing.T) {
 	}
 }
 
-// TestDispatchTrackedMarksRunningBeforeDispatch pins the #100 follow-up: a
-// fast Dispatch that fires RunEnded before markRunning would otherwise land
-// must never see chatID cleared before it's marked.
+// TestDispatchTrackedMarksRunningBeforeDispatch pins the #100 regression:
+// a fast Dispatch that completes and fires RunEnded before markRunning
+// would otherwise land must never leave the chatID unmarked afterwards.
 func TestDispatchTrackedMarksRunningBeforeDispatch(t *testing.T) {
 	host := &fakeHost{artifacts: map[string]map[string][]byte{}}
 	e, _ := newTestExtension(t, host.sdkHost(), config{})
 	const chatID = "ext:sleeper:test:chat"
 	var runningDuringDispatch bool
-	host.onDispatch = func() { runningDuringDispatch = e.isRunning(chatID) }
+	host.onDispatch = func() {
+		runningDuringDispatch = e.isRunning(chatID)
+		e.RunEnded(chatID, sdk.RunOutcome{}) // fast run ends inside Dispatch
+	}
 	if err := e.dispatchTracked(context.Background(), sdk.DispatchRequest{}, chatID); err != nil {
 		t.Fatalf("dispatchTracked: %v", err)
 	}
 	if !runningDuringDispatch {
 		t.Error("chatID must be marked running before Dispatch is called, not after it returns")
+	}
+	if e.isRunning(chatID) {
+		t.Error("a RunEnded fired inside Dispatch must clear the mark, not resurrect it")
 	}
 }
 

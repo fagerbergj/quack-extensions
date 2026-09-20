@@ -332,7 +332,12 @@ export function renderReview(state) {
 export function renderSeasonNotes(state) {
   const head = jobHead(state)
   if (state.invalid) return section('side-notes', head + invalidBody(state.text))
-  if (!state.found) return section('side-notes', head + `<div class="sl-sec__body sl-empty"><span>No season notes yet.</span></div>`)
+  if (!state.found) {
+    const body = state.running
+      ? `<div class="sl-sec__body sl-empty"><span>Working on the season notes. The list fills in when the run finishes.</span></div>`
+      : `<div class="sl-sec__body sl-empty"><span>No season notes yet.</span></div>`
+    return section('side-notes', head + body)
+  }
   const d = state.data
   return section('side-notes', head + `<div class="sl-sec__body"><ul class="sl-notes">${(d.notes || []).map(n => `<li>${esc(n)}</li>`).join('')}</ul></div>`)
 }
