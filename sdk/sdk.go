@@ -99,8 +99,8 @@ const (
 	RunCancelled RunStatus = "cancelled"
 )
 
-// ArtifactSchemas is an optional interface: the JSON Schema each artifact kind
-// the extension reads must satisfy. quack refuses a write that violates one.
+// ArtifactSchemas is optional. Keys are artifact kinds, values JSON Schema
+// documents; quack refuses a violating write and fails boot on one it cannot compile. Nil means nothing to validate.
 type ArtifactSchemas interface {
 	ArtifactSchemas() map[string]json.RawMessage
 }

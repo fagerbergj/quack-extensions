@@ -33,9 +33,11 @@ var uiSchemasFS embed.FS
 func (e *extension) ArtifactSchemas() map[string]json.RawMessage {
 	out := make(map[string]json.RawMessage, len(fixtureJobNames))
 	for _, kind := range fixtureJobNames {
-		if b, err := uiSchemasFS.ReadFile("ui/schemas/" + kind + ".json"); err == nil {
-			out[kind] = json.RawMessage(b)
+		b, err := uiSchemasFS.ReadFile("ui/schemas/" + kind + ".json")
+		if err != nil {
+			panic("sleeper: embedded schema missing for artifact kind " + kind + ": " + err.Error())
 		}
+		out[kind] = json.RawMessage(b)
 	}
 	return out
 }
