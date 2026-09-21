@@ -781,3 +781,14 @@ func TestWriteJSONEncodeFailureIsNot200(t *testing.T) {
 		t.Errorf("body = %v, want a non-empty error message", body)
 	}
 }
+
+// Every artifact kind an agent writes has a schema quack can enforce.
+func TestArtifactSchemasCoverEveryKind(t *testing.T) {
+	got := (&extension{}).ArtifactSchemas()
+	for _, kind := range fixtureJobNames {
+		var doc map[string]any
+		if err := json.Unmarshal(got[kind], &doc); err != nil {
+			t.Errorf("kind %q: no parseable schema: %v", kind, err)
+		}
+	}
+}

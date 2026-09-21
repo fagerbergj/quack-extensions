@@ -25,6 +25,21 @@ var uiStaticFS embed.FS
 //go:embed ui/fixtures
 var uiFixturesFS embed.FS
 
+//go:embed ui/schemas
+var uiSchemasFS embed.FS
+
+// ArtifactSchemas implements sdk.ArtifactSchemas with the schemas the page
+// itself reads by, so an agent's artifact is checked against its one consumer.
+func (e *extension) ArtifactSchemas() map[string]json.RawMessage {
+	out := make(map[string]json.RawMessage, len(fixtureJobNames))
+	for _, kind := range fixtureJobNames {
+		if b, err := uiSchemasFS.ReadFile("ui/schemas/" + kind + ".json"); err == nil {
+			out[kind] = json.RawMessage(b)
+		}
+	}
+	return out
+}
+
 var fixtureBytes = loadFixtures()
 
 // fixtureJobNames enumerates every artifact name a fixture file exists for -
