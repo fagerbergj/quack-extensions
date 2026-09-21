@@ -74,18 +74,12 @@ func appendLine(body, line string) (string, bool) {
 	return body + "\n\n" + line, true
 }
 
-// footerRe matches quack's trailing footer region - the <sub>...</sub> line
-// alone, or (on a posted review) the commands <details> block followed by
-// it - always the body's last block, so appendLine can slot a new line
-// above the whole region instead of between its parts.
+// footerRe matches the whole trailing footer region (commands block plus
+// <sub> line, or the line alone) so appendLine slots new lines above it.
 var footerRe = regexp.MustCompile(`(?s)\n\n(?:<details>\n<summary>[^\n]*</summary>\n\n.*?\n\n</details>(?:\n\n<sub>quack[^\n]*</sub>)?|<sub>quack[^\n]*</sub>)\s*\z`)
 
-// withFooter appends quack's version/run-link footer after one blank line,
-// once: the owner's two asks were "show the quack version somewhere
-// inconspicuous" and "link a posted review/comment back to the run that
-// produced it". body is unchanged when the host set neither Host.Version
-// nor Host.PublicURL, or when body already carries this exact footer
-// (idempotent re-render, e.g. a revised-then-reposted comment).
+// withFooter appends the version/run-link footer once; body is unchanged
+// when the host set neither field or already carries this exact footer.
 func (a *App) withFooter(body, chatID string) string {
 	text := footerText(a.version, a.publicURL, chatID)
 	if text == "" || strings.Contains(body, text) {
