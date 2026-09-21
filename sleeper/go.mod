@@ -3,7 +3,7 @@ module github.com/fagerbergj/quack-extensions/sleeper
 go 1.26.6
 
 require (
-	github.com/fagerbergj/quack-extensions/sdk v0.14.0
+	github.com/fagerbergj/quack-extensions/sdk v0.15.0
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/oapi-codegen/runtime v1.7.0
 	google.golang.org/adk/v2 v2.4.0
