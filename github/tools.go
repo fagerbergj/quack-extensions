@@ -291,7 +291,7 @@ func (a *App) submitReview(ctx context.Context, args submitReviewArgs) (submitRe
 	// marker - both are unanchored substring lookups, so order doesn't
 	// affect either parser.
 	marker := "\n\n" + deliveryMarker("review")
-	url, id, err := a.createReview(ctx, args.Owner, args.Repo, args.PullNumber, event, a.withFooter(body+marker, args.ChatID), comments)
+	url, id, err := a.createReview(ctx, args.Owner, args.Repo, args.PullNumber, event, a.withReviewFooter(body+marker, args.ChatID), comments)
 	if err != nil && len(comments) > 0 && strings.Contains(err.Error(), "status 422") {
 		// One unresolvable anchor 422s the WHOLE review and GitHub never says which
 		// comment is at fault, so there is nothing to salvage selectively. The clone
@@ -306,7 +306,7 @@ func (a *App) submitReview(ctx context.Context, args submitReviewArgs) (submitRe
 		}
 		body += renderUnanchoredFindings(stranded)
 		comments = nil
-		url, id, err = a.createReview(ctx, args.Owner, args.Repo, args.PullNumber, event, a.withFooter(body+marker, args.ChatID), nil)
+		url, id, err = a.createReview(ctx, args.Owner, args.Repo, args.PullNumber, event, a.withReviewFooter(body+marker, args.ChatID), nil)
 	}
 	if err != nil {
 		return submitReviewResult{}, err

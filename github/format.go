@@ -1,6 +1,7 @@
 package github
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -73,17 +74,16 @@ func appendLine(body, line string) (string, bool) {
 	return body + "\n\n" + line, true
 }
 
-// footerRe matches quack's own trailing <sub>...</sub> footer block -
-// always the body's last two-newline-separated block - so appendLine can
-// slot a new line above it instead of after it.
-var footerRe = regexp.MustCompile(`\n\n<sub>quack[^\n]*</sub>\s*\z`)
+// commandsSummary identifies quack's own block, so footerRe never takes an
+// agent-written <details> section for the footer.
+const commandsSummary = "Commands quack accepts here"
 
-// withFooter appends quack's version/run-link footer after one blank line,
-// once: the owner's two asks were "show the quack version somewhere
-// inconspicuous" and "link a posted review/comment back to the run that
-// produced it". body is unchanged when the host set neither Host.Version
-// nor Host.PublicURL, or when body already carries this exact footer
-// (idempotent re-render, e.g. a revised-then-reposted comment).
+// footerRe matches the whole trailing footer region (commands block plus
+// <sub> line, or the line alone) so appendLine slots new lines above it.
+var footerRe = regexp.MustCompile(`(?s)\n\n(?:<details>\n<summary>` + commandsSummary + `</summary>\n\n.*?\n\n</details>(?:\n\n<sub>quack[^\n]*</sub>)?|<sub>quack[^\n]*</sub>)\s*\z`)
+
+// withFooter appends the version/run-link footer once; body is unchanged
+// when the host set neither field or already carries this exact footer.
 func (a *App) withFooter(body, chatID string) string {
 	text := footerText(a.version, a.publicURL, chatID)
 	if text == "" || strings.Contains(body, text) {
@@ -109,4 +109,67 @@ func footerText(version, publicURL, chatID string) string {
 		s += ` · <a href="` + publicURL + "/chat/" + chatID + `">run</a>`
 	}
 	return s + "</sub>"
+}
+
+// commandsBlockText renders the collapsible block a posted review carries,
+// naming only what this deployment actually accepts - "" when every trigger
+// it could name is disabled.
+func commandsBlockText(mention string, labels Labels, triggers map[string]bool) string {
+	var lines []string
+	if triggers["mention"] && mention != "" {
+		lines = append(lines,
+			fmt.Sprintf("- `%s <request>` at the start of a line to continue the conversation; `%s` alone does nothing.", mention, mention))
+	}
+	if triggers["label"] {
+		if labels.Review != "" {
+			lines = append(lines, fmt.Sprintf("- `/review` as the entire comment (nothing else in it) from a repository owner, member or collaborator re-runs this review while the `%s` label is on the pull request.", labels.Review))
+			lines = append(lines, fmt.Sprintf("- the `%s` label: runs a review.", labels.Review))
+		}
+	}
+	if triggers["merge"] && labels.Merge != "" {
+		lines = append(lines, fmt.Sprintf("- the `%s` label: merges once quack approves and checks are green.", labels.Merge))
+	}
+	if triggers["ci_fix"] && labels.Fix != "" {
+		lines = append(lines, fmt.Sprintf("- the `%s` label: fixes red CI.", labels.Fix))
+	}
+	if triggers["issue_plan"] && labels.Plan != "" {
+		lines = append(lines, fmt.Sprintf("- the `%s` label on an issue: drafts a plan.", labels.Plan))
+	}
+	if triggers["issue_implement"] && labels.Implement != "" {
+		lines = append(lines, fmt.Sprintf("- the `%s` label on an issue: implements a plan.", labels.Implement))
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "<details>\n<summary>" + commandsSummary + "</summary>\n\n" +
+		strings.Join(lines, "\n") + "\n\n</details>"
+}
+
+// reviewFooterText is footerText plus the commands block, block first - the
+// pair a posted review carries, either half optional.
+func reviewFooterText(mention string, labels Labels, triggers map[string]bool, version, publicURL, chatID string) string {
+	block := commandsBlockText(mention, labels, triggers)
+	footer := footerText(version, publicURL, chatID)
+	switch {
+	case block == "":
+		return footer
+	case footer == "":
+		return block
+	default:
+		return block + "\n\n" + footer
+	}
+}
+
+// withReviewFooter is withFooter for a posted review: same idempotent
+// append, but the commands block (see commandsBlockText) sits above the
+// <sub> line.
+func (a *App) withReviewFooter(body, chatID string) string {
+	text := reviewFooterText(a.mention, a.labels, a.triggers, a.version, a.publicURL, chatID)
+	if text == "" || strings.Contains(body, text) {
+		return body
+	}
+	if b := strings.TrimRight(body, "\n"); b != "" {
+		return b + "\n\n" + text
+	}
+	return text
 }

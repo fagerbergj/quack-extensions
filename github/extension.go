@@ -206,6 +206,7 @@ func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
 	for _, t := range cfg.Triggers {
 		triggers[t] = true
 	}
+	app.SetReviewCommands(cfg.Mention, cfg.Labels, triggers)
 	allowedUsers := make(map[string]bool, len(cfg.AllowedUsers))
 	for _, u := range cfg.AllowedUsers {
 		allowedUsers[strings.ToLower(u)] = true
