@@ -124,6 +124,123 @@ func TestSubmitReviewCarriesMarkerAndFooter(t *testing.T) {
 	}
 }
 
+func TestCommandsBlockTextOmitsDisabledTriggers(t *testing.T) {
+	labels := Labels{Review: "quack-auto-review", Merge: "quack:merge", Fix: "quack:fix", Plan: "quack:plan", Implement: "quack:implement"}
+	tests := []struct {
+		name     string
+		triggers map[string]bool
+		wantHas  []string
+		wantNot  []string
+	}{
+		{
+			name:     "only mention",
+			triggers: map[string]bool{"mention": true},
+			wantHas:  []string{"/quack <request>"},
+			wantNot:  []string{"/review", "quack:merge", "quack:fix", "quack:plan", "quack:implement"},
+		},
+		{
+			name:     "label and merge",
+			triggers: map[string]bool{"label": true, "merge": true},
+			wantHas:  []string{"/review", "quack-auto-review", "quack:merge"},
+			wantNot:  []string{"/quack <request>", "quack:fix", "quack:plan"},
+		},
+		{
+			name:     "everything",
+			triggers: map[string]bool{"mention": true, "label": true, "merge": true, "ci_fix": true, "issue_plan": true, "issue_implement": true},
+			wantHas:  []string{"/quack <request>", "/review", "quack-auto-review", "quack:merge", "quack:fix", "quack:plan", "quack:implement"},
+		},
+		{
+			name:     "nothing enabled",
+			triggers: map[string]bool{"pr_opened": true},
+			wantHas:  nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := commandsBlockText("/quack", labels, tt.triggers)
+			if len(tt.wantHas) == 0 {
+				if got != "" {
+					t.Errorf("commandsBlockText() = %q, want empty", got)
+				}
+				return
+			}
+			for _, s := range tt.wantHas {
+				if !strings.Contains(got, s) {
+					t.Errorf("commandsBlockText() missing %q: %q", s, got)
+				}
+			}
+			for _, s := range tt.wantNot {
+				if strings.Contains(got, s) {
+					t.Errorf("commandsBlockText() unexpectedly contains %q: %q", s, got)
+				}
+			}
+		})
+	}
+}
+
+func TestWithReviewFooterRendersBlockWithNoVersionOrURL(t *testing.T) {
+	app, err := NewApp("1", mustTestKeyPEM(t))
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	app.SetReviewCommands("/quack", Labels{Review: "quack-auto-review"}, map[string]bool{"mention": true, "label": true})
+	got := app.withReviewFooter("LGTM", "chat1")
+	if !strings.Contains(got, "<details>") || !strings.Contains(got, "/quack <request>") {
+		t.Errorf("withReviewFooter with no version/URL lost the commands block: %q", got)
+	}
+	if strings.Contains(got, "<sub>quack") {
+		t.Errorf("withReviewFooter added a plain footer despite no version/URL: %q", got)
+	}
+}
+
+func TestWithReviewFooterIdempotentAndSingleBlock(t *testing.T) {
+	app, err := NewApp("1", mustTestKeyPEM(t))
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	app.SetReviewCommands("/quack", Labels{Review: "quack-auto-review", Merge: "quack:merge"}, map[string]bool{"mention": true, "label": true, "merge": true})
+	app.SetFooter("0.51.26", "https://quack.example.com")
+
+	once := app.withReviewFooter("LGTM", "chat1")
+	if n := strings.Count(once, "<details>"); n != 1 {
+		t.Fatalf("commands block appears %d times, want 1: %q", n, once)
+	}
+	twice := app.withReviewFooter(once, "chat1")
+	if twice != once {
+		t.Errorf("re-rendering an already-footed review body changed it: got %q, want %q", twice, once)
+	}
+	if n := strings.Count(twice, "<details>"); n != 1 {
+		t.Errorf("commands block appears %d times after re-render, want 1: %q", n, twice)
+	}
+	if !strings.HasSuffix(twice, "</sub>") {
+		t.Errorf("plain footer not last: %q", twice)
+	}
+}
+
+// TestAppendLineAboveCommandsBlockAndFooter pins that a later check-outcome
+// line still slots above the whole trailing region, not between the
+// commands block and the <sub> line.
+func TestAppendLineAboveCommandsBlockAndFooter(t *testing.T) {
+	app, err := NewApp("1", mustTestKeyPEM(t))
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	app.SetReviewCommands("/quack", Labels{Review: "quack-auto-review"}, map[string]bool{"label": true})
+	app.SetFooter("0.51.26", "https://quack.example.com")
+	body := app.withReviewFooter("LGTM", "chat1")
+
+	got, changed := appendLine(body, "Merged as abc1234.")
+	if !changed {
+		t.Fatal("expected the outcome line to be added")
+	}
+	lineIdx := strings.Index(got, "Merged as abc1234.")
+	blockIdx := strings.Index(got, "<details>")
+	footerIdx := strings.Index(got, "<sub>quack")
+	if !(lineIdx < blockIdx && blockIdx < footerIdx) {
+		t.Errorf("outcome line not slotted above the block and footer: %q", got)
+	}
+}
+
 func mustTestKeyPEM(t *testing.T) string {
 	t.Helper()
 	pem, _ := testKeyPEM(t)

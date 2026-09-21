@@ -32,6 +32,9 @@ type App struct {
 	partialFixLabel string
 	version         string // quack build stamp; "" = omit from posted footers
 	publicURL       string // externally reachable base URL; "" = footers carry no run link
+	mention         string
+	labels          Labels
+	triggers        map[string]bool // enabled triggers; nil until SetReviewCommands runs
 
 	mu        sync.Mutex
 	tokens    map[int64]cachedToken
@@ -98,6 +101,15 @@ func (a *App) SetAPIBase(base string) {
 func (a *App) SetFooter(version, publicURL string) {
 	a.version = version
 	a.publicURL = strings.TrimRight(publicURL, "/")
+}
+
+// SetReviewCommands records the mention token, label names and enabled
+// triggers a posted review's commands block is built from - this
+// deployment's actual config, never a hardcoded default.
+func (a *App) SetReviewCommands(mention string, labels Labels, triggers map[string]bool) {
+	a.mention = mention
+	a.labels = labels
+	a.triggers = triggers
 }
 
 func LoadPrivateKey(inline, path string) (string, error) {
