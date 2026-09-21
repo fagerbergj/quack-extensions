@@ -21,6 +21,7 @@ package sdk
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"time"
@@ -97,6 +98,12 @@ const (
 	// observer must not treat it as an answer to deliver.
 	RunCancelled RunStatus = "cancelled"
 )
+
+// ArtifactSchemas is optional. Keys are artifact kinds, values JSON Schema
+// documents; quack refuses a violating write and fails boot on one it cannot compile. Nil means nothing to validate.
+type ArtifactSchemas interface {
+	ArtifactSchemas() map[string]json.RawMessage
+}
 
 // RunObserver is an optional, observation-only interface: quack calls
 // RunEnded after a dispatched run's outcome is final so extensions can

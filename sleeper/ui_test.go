@@ -781,3 +781,25 @@ func TestWriteJSONEncodeFailureIsNot200(t *testing.T) {
 		t.Errorf("body = %v, want a non-empty error message", body)
 	}
 }
+
+// Kinds come from what the extension dispatches, not from the list
+// ArtifactSchemas itself walks, so a new job without a schema fails here.
+func TestArtifactSchemasCoverEveryKind(t *testing.T) {
+	kinds := map[string]bool{"trade": true, "season-notes": true}
+	for _, stop := range []string{"draft", "review", "1"} {
+		jobs, _, err := jobsForStop(stop)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, j := range jobs {
+			kinds[j] = true
+		}
+	}
+	got := (&extension{}).ArtifactSchemas()
+	for kind := range kinds {
+		var doc map[string]any
+		if err := json.Unmarshal(got[kind], &doc); err != nil {
+			t.Errorf("kind %q: no parseable schema: %v", kind, err)
+		}
+	}
+}
