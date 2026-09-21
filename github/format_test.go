@@ -246,3 +246,22 @@ func mustTestKeyPEM(t *testing.T) string {
 	pem, _ := testKeyPEM(t)
 	return pem
 }
+
+// An agent's own trailing <details> section is review content, not the footer.
+func TestAppendLineIgnoresAgentDetailsBlock(t *testing.T) {
+	agent := "Summary.\n\n<details>\n<summary>Full findings</summary>\n\nlong list\n\n</details>"
+	got, added := appendLine(agent, "Merged.")
+	if !added || !strings.HasSuffix(got, "</details>\n\nMerged.") {
+		t.Fatalf("line must land after the agent's own section, got:\n%s", got)
+	}
+
+	a := &App{}
+	a.SetFooter("1.2.3", "https://quack.example")
+	a.SetReviewCommands("/quack", Labels{Review: "quack:review"}, map[string]bool{"mention": true, "label": true})
+	body := a.withReviewFooter(agent, "chat-1")
+	got, _ = appendLine(body, "Merged.")
+	iAgent, iLine, iCmd := strings.Index(got, "Full findings"), strings.Index(got, "Merged."), strings.Index(got, commandsSummary)
+	if !(iAgent < iLine && iLine < iCmd) {
+		t.Fatalf("want agent section, then the line, then the commands block; got:\n%s", got)
+	}
+}

@@ -74,9 +74,13 @@ func appendLine(body, line string) (string, bool) {
 	return body + "\n\n" + line, true
 }
 
+// commandsSummary identifies quack's own block, so footerRe never takes an
+// agent-written <details> section for the footer.
+const commandsSummary = "Commands quack accepts here"
+
 // footerRe matches the whole trailing footer region (commands block plus
 // <sub> line, or the line alone) so appendLine slots new lines above it.
-var footerRe = regexp.MustCompile(`(?s)\n\n(?:<details>\n<summary>[^\n]*</summary>\n\n.*?\n\n</details>(?:\n\n<sub>quack[^\n]*</sub>)?|<sub>quack[^\n]*</sub>)\s*\z`)
+var footerRe = regexp.MustCompile(`(?s)\n\n(?:<details>\n<summary>` + commandsSummary + `</summary>\n\n.*?\n\n</details>(?:\n\n<sub>quack[^\n]*</sub>)?|<sub>quack[^\n]*</sub>)\s*\z`)
 
 // withFooter appends the version/run-link footer once; body is unchanged
 // when the host set neither field or already carries this exact footer.
@@ -118,7 +122,7 @@ func commandsBlockText(mention string, labels Labels, triggers map[string]bool) 
 	}
 	if triggers["label"] {
 		if labels.Review != "" {
-			lines = append(lines, fmt.Sprintf("- `/review` as the entire comment (nothing else in it) re-runs this review while the `%s` label is on the pull request.", labels.Review))
+			lines = append(lines, fmt.Sprintf("- `/review` as the entire comment (nothing else in it) from a repository owner, member or collaborator re-runs this review while the `%s` label is on the pull request.", labels.Review))
 			lines = append(lines, fmt.Sprintf("- the `%s` label: runs a review.", labels.Review))
 		}
 	}
@@ -137,7 +141,7 @@ func commandsBlockText(mention string, labels Labels, triggers map[string]bool) 
 	if len(lines) == 0 {
 		return ""
 	}
-	return "<details>\n<summary>Commands quack accepts here</summary>\n\n" +
+	return "<details>\n<summary>" + commandsSummary + "</summary>\n\n" +
 		strings.Join(lines, "\n") + "\n\n</details>"
 }
 
