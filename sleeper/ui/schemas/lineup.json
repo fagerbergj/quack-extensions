@@ -9,16 +9,21 @@
       "type": "integer"
     },
     "team": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 60,
+      "description": "Fantasy team name (not an NFL team code)."
     },
     "team_record": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 20
     },
     "opponent": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 60
     },
     "opponent_record": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 20
     },
     "my_proj": {
       "type": "number"
@@ -26,8 +31,15 @@
     "opp_proj": {
       "type": "number"
     },
+    "plan": {
+      "type": "string",
+      "maxLength": 48,
+      "description": "Short game-plan chip, e.g. \"Close game \u00b7 favour floors\"."
+    },
     "summary": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 400,
+      "description": "Card summary, at most two sentences."
     },
     "starters": {
       "type": "array",
@@ -41,7 +53,8 @@
         ],
         "properties": {
           "slot": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 10
           },
           "player": {
             "type": "object",
@@ -91,6 +104,20 @@
           "proj": {
             "type": "number"
           },
+          "floor": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "The agent's own low estimate for this week, from matchup, snap share and team news."
+          },
+          "ceiling": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "The agent's own high estimate for this week. An inverted floor/ceiling pair is ignored by the renderer."
+          },
           "verdict": {
             "enum": [
               "start",
@@ -103,8 +130,58 @@
               "null"
             ]
           },
+          "replaces": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "required": [
+              "id",
+              "name"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "pos": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "team": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "inj": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "prac": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "proj": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "description": "The player this starter replaces in the owner's current Sleeper lineup. Its presence marks the row as a change."
+          },
           "why": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 400
           }
         }
       }
@@ -166,8 +243,21 @@
           "proj": {
             "type": "number"
           },
+          "floor": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "ceiling": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
           "why": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 400
           }
         }
       }
@@ -226,7 +316,8 @@
             }
           },
           "why": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 400
           }
         }
       }
@@ -248,7 +339,8 @@
         ],
         "properties": {
           "slot": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 10
           },
           "player": {
             "type": "object",
@@ -297,12 +389,87 @@
           },
           "proj": {
             "type": "number"
+          },
+          "floor": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "ceiling": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "watch": {
+      "type": "array",
+      "description": "Conditional actions, e.g. start a bench player if a starter's designation worsens by a stated deadline.",
+      "items": {
+        "type": "object",
+        "required": [
+          "player",
+          "text"
+        ],
+        "properties": {
+          "player": {
+            "type": "object",
+            "required": [
+              "id",
+              "name"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "pos": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "team": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "inj": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "prac": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "proj": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            }
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 400
           }
         }
       }
     },
     "source_note": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 300
     }
   },
   "required": [

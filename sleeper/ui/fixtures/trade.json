@@ -1,6 +1,7 @@
 {
-  "partner": "Rice Cooker",
-  "partner_owner": "pirates5",
+  "partner": "Gibbs Me Liberty",
+  "partner_id": "860317606291283968",
+  "partner_owner": "Shore69",
   "status": "open",
   "updated": "Today 14:20",
   "offers": [
@@ -9,51 +10,53 @@
       "when": "Yesterday 21:05",
       "give": [
         {
-          "id": "7594",
-          "name": "Chuba Hubbard",
+          "id": "7021",
+          "name": "Rico Dowdle",
           "pos": "RB",
-          "team": "CAR",
+          "team": "PIT",
           "inj": null,
           "prac": null,
-          "proj": 12.4
-        },
-        {
-          "id": "8142",
-          "name": "Alec Pierce",
-          "pos": "WR",
-          "team": "IND",
-          "inj": "Questionable",
-          "prac": null,
-          "proj": 11.6
+          "proj": 11.1
         }
       ],
       "get": [
         {
-          "id": "9997",
-          "name": "Zay Flowers",
-          "pos": "WR",
-          "team": "BAL",
-          "inj": "Questionable",
+          "id": "9481",
+          "name": "Dalton Kincaid",
+          "pos": "TE",
+          "team": "BUF",
+          "inj": null,
           "prac": null,
-          "proj": 14.0
+          "proj": 12.8
         }
       ],
       "verdict": "send",
-      "delta": "+2.0/wk for you, fits both rosters",
-      "why": "Even on projection (24.0 for 14.0); the 2-for-1 frees the bench slot you need for a QB."
+      "delta": "+1.7/wk for you, fills the TE2 gap",
+      "why": "Dowdle is buried behind Hubbard on your roster; Kincaid starts for you immediately over Loveland's bye weeks."
     },
     {
-      "by": "Rice Cooker",
+      "by": "Gibbs Me Liberty",
       "when": "Today 09:41",
       "give": [
         {
-          "id": "7594",
-          "name": "Chuba Hubbard",
-          "pos": "RB",
-          "team": "CAR",
+          "id": "9481",
+          "name": "Dalton Kincaid",
+          "pos": "TE",
+          "team": "BUF",
           "inj": null,
           "prac": null,
-          "proj": 12.4
+          "proj": 12.8
+        }
+      ],
+      "get": [
+        {
+          "id": "7021",
+          "name": "Rico Dowdle",
+          "pos": "RB",
+          "team": "PIT",
+          "inj": null,
+          "prac": null,
+          "proj": 11.1
         },
         {
           "id": "11586",
@@ -62,61 +65,41 @@
           "team": "LAR",
           "inj": null,
           "prac": null,
-          "proj": 10.6
-        }
-      ],
-      "get": [
-        {
-          "id": "9997",
-          "name": "Zay Flowers",
-          "pos": "WR",
-          "team": "BAL",
-          "inj": "Questionable",
-          "prac": null,
-          "proj": 14.0
+          "proj": 7.8
         }
       ],
       "verdict": "decline",
-      "delta": "-1.8/wk and your McCaffrey handcuff gone",
-      "why": "Corum is the piece they want because he is the piece you should keep. Pierce is the one to move while he is Questionable. Counter below."
+      "delta": "-1.0/wk and your only handcuff gone",
+      "why": "Corum is the piece they actually want; Dowdle alone was already a fair trade for them. Counter below."
     },
     {
       "by": "trade-analyst",
       "when": "Today 14:20",
       "give": [
         {
-          "id": "7594",
-          "name": "Chuba Hubbard",
+          "id": "7021",
+          "name": "Rico Dowdle",
           "pos": "RB",
-          "team": "CAR",
+          "team": "PIT",
           "inj": null,
           "prac": null,
-          "proj": 12.4
-        },
-        {
-          "id": "8142",
-          "name": "Alec Pierce",
-          "pos": "WR",
-          "team": "IND",
-          "inj": "Questionable",
-          "prac": null,
-          "proj": 11.6
+          "proj": 11.1
         }
       ],
       "get": [
         {
-          "id": "9997",
-          "name": "Zay Flowers",
-          "pos": "WR",
-          "team": "BAL",
-          "inj": "Questionable",
+          "id": "9481",
+          "name": "Dalton Kincaid",
+          "pos": "TE",
+          "team": "BUF",
+          "inj": null,
           "prac": null,
-          "proj": 14.0
+          "proj": 12.8
         }
       ],
       "verdict": "counter",
-      "delta": "your first offer, with a sweetener ready",
-      "why": "Re-send Hubbard plus Pierce; if they push back, offer to swap kickers. Rice Cooker is thin at RB after week 1 and Hubbard starts for them this week."
+      "delta": "your first offer, unchanged",
+      "why": "Re-send Dowdle alone; they need RB depth but not at the cost of your only McCaffrey handcuff."
     }
   ],
   "my_roster": [
@@ -125,9 +108,9 @@
       "name": "Joe Burrow",
       "pos": "QB",
       "team": "CIN",
-      "inj": "Questionable",
+      "inj": null,
       "prac": null,
-      "proj": 17.8
+      "proj": 18.2
     },
     {
       "id": "4034",
@@ -136,7 +119,7 @@
       "team": "SF",
       "inj": null,
       "prac": null,
-      "proj": 19.8
+      "proj": 20.7
     },
     {
       "id": "11584",
@@ -145,7 +128,7 @@
       "team": "TB",
       "inj": null,
       "prac": null,
-      "proj": 13.8
+      "proj": 13.3
     },
     {
       "id": "6794",
@@ -154,16 +137,16 @@
       "team": "MIN",
       "inj": null,
       "prac": null,
-      "proj": 17.5
+      "proj": 16.7
     },
     {
       "id": "11632",
       "name": "Malik Nabers",
       "pos": "WR",
       "team": "NYG",
-      "inj": null,
+      "inj": "Questionable",
       "prac": null,
-      "proj": 13.8
+      "proj": 13.5
     },
     {
       "id": "12517",
@@ -172,7 +155,7 @@
       "team": "CHI",
       "inj": null,
       "prac": null,
-      "proj": 11.6
+      "proj": 9.8
     },
     {
       "id": "8148",
@@ -181,7 +164,7 @@
       "team": "DET",
       "inj": null,
       "prac": null,
-      "proj": 12.6
+      "proj": 12.4
     },
     {
       "id": "1945",
@@ -190,7 +173,7 @@
       "team": "PIT",
       "inj": null,
       "prac": null,
-      "proj": 5.4
+      "proj": 7.8
     },
     {
       "id": "NE",
@@ -199,7 +182,7 @@
       "team": "NE",
       "inj": null,
       "prac": null,
-      "proj": 8.5
+      "proj": 6.5
     },
     {
       "id": "11586",
@@ -208,7 +191,7 @@
       "team": "LAR",
       "inj": null,
       "prac": null,
-      "proj": 10.6
+      "proj": 7.8
     },
     {
       "id": "11834",
@@ -217,14 +200,14 @@
       "team": "NO",
       "inj": null,
       "prac": null,
-      "proj": 9.6
+      "proj": 9.9
     },
     {
       "id": "7021",
       "name": "Rico Dowdle",
       "pos": "RB",
       "team": "PIT",
-      "inj": null,
+      "inj": "Questionable",
       "prac": null,
       "proj": 11.1
     },
@@ -235,16 +218,16 @@
       "team": "CAR",
       "inj": null,
       "prac": null,
-      "proj": 12.4
+      "proj": 14.1
     },
     {
-      "id": "8142",
-      "name": "Alec Pierce",
+      "id": "8156",
+      "name": "Rashod Bateman",
       "pos": "WR",
-      "team": "IND",
-      "inj": "Questionable",
+      "team": "BAL",
+      "inj": null,
       "prac": null,
-      "proj": 11.6
+      "proj": 10.3
     },
     {
       "id": "13281",
@@ -303,19 +286,19 @@
       "proj": 14.8
     },
     {
-      "id": "9484",
-      "name": "Tucker Kraft",
+      "id": "9481",
+      "name": "Dalton Kincaid",
       "pos": "TE",
-      "team": "GB",
+      "team": "BUF",
       "inj": null,
       "prac": null,
-      "proj": 11.8
+      "proj": 12.8
     },
     {
       "id": "8151",
       "name": "Kenneth Walker",
       "pos": "RB",
-      "team": "KC",
+      "team": "SEA",
       "inj": null,
       "prac": null,
       "proj": 16.4
@@ -373,86 +356,80 @@
       "inj": null,
       "prac": null,
       "proj": 3.3
-    },
-    {
-      "id": "9997",
-      "name": "Zay Flowers",
-      "pos": "WR",
-      "team": "BAL",
-      "inj": "Questionable",
-      "prac": null,
-      "proj": 14.0
     }
   ],
   "suggestions": [
     {
-      "partner": "Rice Cooker",
-      "partner_owner": "pirates5",
-      "record": "1-0",
+      "partner": "Gibbs Me Liberty",
+      "partner_id": "860317606291283968",
+      "partner_owner": "Shore69",
+      "record": "5th",
+      "partner_need": "needs RB",
       "give": {
-        "id": "7594",
-        "name": "Chuba Hubbard",
+        "id": "7021",
+        "name": "Rico Dowdle",
         "pos": "RB",
-        "team": "CAR",
+        "team": "PIT",
         "inj": null,
         "prac": null,
-        "proj": 12.4
+        "proj": 11.1
       },
-      "give_proj": 12.4,
+      "give_proj": 11.1,
       "get": {
-        "id": "9997",
-        "name": "Zay Flowers",
-        "pos": "WR",
-        "team": "BAL",
-        "inj": "Questionable",
+        "id": "9481",
+        "name": "Dalton Kincaid",
+        "pos": "TE",
+        "team": "BUF",
+        "inj": null,
         "prac": null,
-        "proj": 14.0
+        "proj": 12.8
       },
-      "get_proj": 14.0,
-      "note": "They start Ashton Jeanty at RB2 at 14.9; Zay Flowers sits on their bench behind three starting receivers.",
-      "partner_id": "740613226189987840"
+      "get_proj": 12.8,
+      "note": "Kincaid sits behind LaPorta on their roster; their flex is [Dobbins at 6.1 projected](https://sleeper.com/)."
     },
     {
-      "partner": "I Think I’’m Gonna Puka",
-      "partner_owner": "cmigs",
-      "record": "1-0",
+      "partner": "Pitts and Giggles",
+      "partner_id": "860265672989609984",
+      "partner_owner": "nlanner",
+      "record": "1st",
+      "partner_need": "6 WRs",
       "give": {
-        "id": "7594",
-        "name": "Chuba Hubbard",
+        "id": "11586",
+        "name": "Blake Corum",
         "pos": "RB",
-        "team": "CAR",
+        "team": "LAR",
         "inj": null,
         "prac": null,
-        "proj": 12.4
+        "proj": 7.8
       },
-      "give_proj": 12.4,
+      "give_proj": 7.8,
       "get": {
-        "id": "11604",
-        "name": "Brock Bowers",
-        "pos": "TE",
-        "team": "LV",
-        "inj": "Questionable",
+        "id": "7569",
+        "name": "Nico Collins",
+        "pos": "WR",
+        "team": "HOU",
+        "inj": "Out",
         "prac": null,
-        "proj": 13.3
+        "proj": 14.7
       },
-      "get_proj": 13.3,
-      "note": "They start Aaron Jones at RB2 at 14.0; Brock Bowers sits on their bench behind three starting receivers.",
-      "partner_id": "517804893141327872"
+      "get_proj": 14.7,
+      "note": "Their sixth WR, in reserve. Ask only if [he's cleared by Friday](https://www.nfl.com/injuries/)."
     },
     {
       "partner": "Achane Magic",
+      "partner_id": "860209887672635392",
       "partner_owner": "cdelphin",
-      "record": "0-1",
+      "record": "4th",
       "give": {
-        "id": "7594",
-        "name": "Chuba Hubbard",
+        "id": "11586",
+        "name": "Blake Corum",
         "pos": "RB",
-        "team": "CAR",
+        "team": "LAR",
         "inj": null,
         "prac": null,
-        "proj": 12.4
+        "proj": 7.8
       },
-      "give_proj": 12.4,
+      "give_proj": 7.8,
       "get": {
         "id": "10222",
         "name": "Jayden Reed",
@@ -463,9 +440,7 @@
         "proj": 11.6
       },
       "get_proj": 11.6,
-      "note": "They start D'Andre Swift at RB2 at 11.6; Jayden Reed sits on their bench behind three starting receivers.",
-      "partner_id": "860209887672635392"
+      "note": "They start D'Andre Swift at RB2 at 11.6 projected; Jayden Reed sits behind three starting receivers."
     }
-  ],
-  "partner_id": "740613226189987840"
+  ]
 }

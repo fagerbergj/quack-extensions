@@ -1,60 +1,46 @@
 {
-  "week": 2,
-  "summary": "One claim that matters: a quarterback. Burrow is Questionable and the bench has none. Rolling waivers put you 6th of 10 this week; a claim moves you to 10th.",
+  "week": 3,
+  "summary": "One quarterback swap and a tight end upgrade. Rolling waivers put you 6th of 10; a successful claim moves you to the back.",
+  "waiver_type": "rolling",
+  "my_priority": 6,
+  "teams": 10,
   "candidates": [
     {
       "rank": 1,
       "player": {
-        "id": "6804",
-        "name": "Jordan Love",
-        "pos": "QB",
-        "team": "GB",
+        "id": "13301",
+        "name": "Jonah Coleman",
+        "pos": "RB",
+        "team": "DEN",
         "inj": null,
         "prac": null,
-        "proj": 19.6
+        "proj": 7.1
       },
-      "proj": 19.6,
-      "owned_pct": 62.6,
-      "adds_24h": 0,
-      "drop": "Jordyn Tyson (IR)",
-      "why": "Insurance for Burrow and a bench upgrade. Rolling waivers: you are 6th of 10, claim him first; the second QB is the fallback."
+      "proj": 7.1,
+      "owned_pct": 18.4,
+      "adds_24h": 4210,
+      "drop": "Rico Dowdle (Q)",
+      "why": "Cover for McCaffrey, who [missed Wednesday practice](https://www.nfl.com/injuries/). Brown Tuddies, 4th in priority, is thin at RB, so claim now."
     },
     {
-      "rank": null,
+      "rank": 2,
       "player": {
-        "id": "8161",
-        "name": "Malik Willis",
-        "pos": "QB",
-        "team": "MIA",
+        "id": "13302",
+        "name": "George Kittle",
+        "pos": "TE",
+        "team": "SF",
         "inj": null,
         "prac": null,
-        "proj": 18.2
+        "proj": 12.2
       },
-      "proj": 18.2,
-      "owned_pct": 28.9,
-      "adds_24h": 0,
-      "drop": "Jordyn Tyson (IR)",
-      "why": "Fallback claim if Love is gone."
+      "proj": 12.2,
+      "owned_pct": 94.0,
+      "adds_24h": 1890,
+      "drop": "Blake Corum",
+      "why": "94% rostered elsewhere, a [full practice Wednesday](https://www.nfl.com/injuries/), and a clear upgrade on Loveland."
     },
     {
-      "rank": null,
-      "player": {
-        "id": "8134",
-        "name": "Khalil Shakir",
-        "pos": "WR",
-        "team": "BUF",
-        "inj": null,
-        "prac": null,
-        "proj": 10.9
-      },
-      "proj": 10.9,
-      "owned_pct": 63.6,
-      "adds_24h": 118431,
-      "drop": "Devaughn Vele",
-      "why": "Trending add of the day at 64% owned; a WR4 with a floor. Only if Love is gone."
-    },
-    {
-      "rank": null,
+      "rank": 3,
       "player": {
         "id": "5001",
         "name": "Dalton Schultz",
@@ -67,43 +53,47 @@
       "proj": 10.4,
       "owned_pct": 35.9,
       "adds_24h": 0,
-      "drop": "Devaughn Vele",
-      "why": "Streaming TE2 if Loveland sits; otherwise skip."
-    },
-    {
-      "rank": null,
-      "player": {
-        "id": "8136",
-        "name": "Rachaad White",
-        "pos": "RB",
-        "team": "WAS",
-        "inj": null,
-        "prac": null,
-        "proj": 8.8
-      },
-      "proj": 8.8,
-      "owned_pct": 62.0,
-      "adds_24h": 0,
-      "drop": "Devaughn Vele",
-      "why": "Depth only; below your bench RBs."
-    },
-    {
-      "rank": null,
-      "player": {
-        "id": "GB",
-        "name": "Green Bay Packers DEF",
-        "pos": "DEF",
-        "team": "GB",
-        "inj": null,
-        "prac": null,
-        "proj": 8.6
-      },
-      "proj": 8.6,
-      "owned_pct": 27.1,
-      "adds_24h": 0,
-      "drop": "New England Patriots DEF",
-      "why": "Same projection as your DEF; not worth the claim."
+      "drop": "Blake Corum",
+      "why": "Fallback if Kittle goes earlier; it only runs if claim 2 fails."
     }
   ],
-  "source_note": "Owned %: Sleeper research week 2. Adds: Sleeper trending, 24h. Waiver type: rolling (priority 6 of 10); FAAB not in use."
+  "also_checked": [
+    {
+      "player": {
+        "id": "13303",
+        "name": "Michael Wilson",
+        "pos": "WR",
+        "team": "ARI",
+        "inj": null,
+        "prac": null,
+        "proj": 6.2
+      },
+      "why": "87% rostered; [out with a hamstring](https://www.nfl.com/injuries/)."
+    },
+    {
+      "player": {
+        "id": "8155",
+        "name": "Kyle Pitts",
+        "pos": "TE",
+        "team": "ATL",
+        "inj": null,
+        "prac": null,
+        "proj": 8.9
+      },
+      "why": "90% rostered; not an upgrade on Kittle or Schultz this week."
+    },
+    {
+      "player": {
+        "id": "13304",
+        "name": "Denzel Boston",
+        "pos": "WR",
+        "team": "SEA",
+        "inj": null,
+        "prac": null,
+        "proj": 5.1
+      },
+      "why": "Bateman is already on your bench."
+    }
+  ],
+  "source_note": "Owned %: Sleeper research week 3. Waiver type: rolling, priority 6 of 10."
 }

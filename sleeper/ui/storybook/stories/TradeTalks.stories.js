@@ -25,3 +25,8 @@ export const NoTalksYet = { render: () => page(renderTrade({ ...envelope, found:
 // The finder suggestions state: dispatched on demand from the trade card,
 // its own artifact kind so it never overwrites a talk.
 export const TradeFinderRunning = { render: () => page(renderTrade({ ...envelope, found: false }, [], 0, partners, { found: false, running: true, runnable: true }), '52rem') }
+
+// Backward compatibility: suggestions written before partner_need existed -
+// the row renders without the need chip.
+const legacyFinder = { ...finder, data: { ...tradeFinder, suggestions: tradeFinder.suggestions.map(({ partner_need, ...rest }) => rest) } }
+export const Legacy = { render: () => page(renderTrade({ ...envelope, found: false }, [], 0, partners, legacyFinder), '52rem') }

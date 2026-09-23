@@ -54,8 +54,23 @@ async function checks() {
   const tradeFinder = poisonNumbers(await loadFixture('trade-finder'))
   out.push(['renderTrade (finder)', R.renderTrade(doneEnvelope(null), talks, 0, partners, doneEnvelope(tradeFinder))])
 
+  // mdText() parses markdown [text](url) out of agent-written prose fields
+  // (why/note/text/summary); each hostile link shape below must come out
+  // either as a real safe <a> (label escaped) or as fully escaped literal
+  // text - never a live javascript: href, a broken-out <script>, or a raw tag.
+  const mdCases = [
+    '[click me](javascript:alert(1))',
+    '[<img src=x onerror=alert(1)>](https://example.com)',
+    '[text](https://example.com/"><script>alert(1)</script>)',
+  ]
+  const cleanLineup = await loadFixture('lineup')
+  for (const payload of mdCases) {
+    const poisoned = { ...cleanLineup, starters: cleanLineup.starters.map((s, i) => i === 0 ? { ...s, why: payload } : s) }
+    out.push([`renderLineup (md link: ${payload.slice(0, 24)}…)`, R.renderLineup(doneEnvelope(poisoned))])
+  }
+
   const digest = poisonNumbers(await loadFixture('digest'))
-  out.push(['renderDigest', R.renderDigest(doneEnvelope(digest))])
+  out.push(['renderDigest', R.renderDigest(doneEnvelope(digest), 'Substation Supremacy')])
 
   const trends = poisonNumbers(await loadFixture('trends'))
   out.push(['renderTrends', R.renderTrends(doneEnvelope(trends))])
@@ -99,6 +114,14 @@ async function main() {
     if (/<img\s[^>]*onerror=/i.test(html)) {
       failed++
       console.error(`FAIL ${name}: an unescaped <img onerror=...> tag reached the output`)
+    }
+    if (/href\s*=\s*["']?\s*javascript:/i.test(html)) {
+      failed++
+      console.error(`FAIL ${name}: a javascript: URL reached a live href`)
+    }
+    if (/<script[\s>]/i.test(html)) {
+      failed++
+      console.error(`FAIL ${name}: an unescaped <script> tag reached the output`)
     }
   }
   console.log(`security-check: ${results.length} renders checked, ${failed} failure(s)`)

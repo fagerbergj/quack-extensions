@@ -23,6 +23,96 @@ export const isSafeHref = url => /^https?:\/\//i.test(String(url ?? ''))
 // path enforces it, so a string value would otherwise pass esc()-free.
 export const int = n => (n != null && Number.isFinite(Number(n)) ? Number(n) : '')
 
+// Renders markdown [text](url) as a real <a> (http/https only); everything
+// else, including a non-http(s) link, is escaped literal text.
+const MD_LINK = /\[([^\]]*)\]\(([^)]*)\)/g
+export function mdText(s) {
+  const str = String(s ?? '')
+  let out = '', last = 0, m
+  MD_LINK.lastIndex = 0
+  while ((m = MD_LINK.exec(str))) {
+    out += esc(str.slice(last, m.index))
+    out += isSafeHref(m[2]) ? `<a href="${esc(m[2])}" target="_blank" rel="noopener noreferrer">${esc(m[1])}</a>` : esc(m[0])
+    last = MD_LINK.lastIndex
+  }
+  return out + esc(str.slice(last))
+}
+
+// A <details> wrapper whose closed state CSS-line-clamps its own <summary>
+// to 2 lines (page.css's .sl-clamp) - one content source, no duplicated text.
+export function clampBlock(innerHTML) {
+  return `<details class="sl-clamp"><summary>${innerHTML}</summary></details>`
+}
+
+// DEF names are "<City words> <Nickname> DEF"; the lineup columns need just
+// the city, which is every word but the last two.
+function teamCity(name) {
+  const words = String(name || '').trim().split(/\s+/)
+  return words.length >= 3 && words[words.length - 1] === 'DEF' ? words.slice(0, -2).join(' ') : name
+}
+
+// "Justin Jefferson" -> "J. Jefferson" - the opponent lineup column has no
+// room for full names next to a range bar.
+function abbrevName(name) {
+  const words = String(name || '').trim().split(/\s+/)
+  return words.length < 2 ? name : `${words[0][0]}. ${words.slice(1).join(' ')}`
+}
+
+// slotPlayerName picks the display form for one lineup row: DEF is always
+// city-only (both sides); a non-DEF opponent is abbreviated to save width.
+function slotPlayerName(player, mine) {
+  if (!player) return ''
+  if (player.pos === 'DEF') return teamCity(player.name)
+  return mine ? player.name : abbrevName(player.name)
+}
+
+// Standard normal CDF via the Abramowitz-Stegun erf approximation (good to
+// ~1e-7) - good enough for an illustrative win chance, no stats dependency.
+function erf(x) {
+  const s = x < 0 ? -1 : 1
+  x = Math.abs(x)
+  const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741, a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911
+  const t = 1 / (1 + p * x)
+  const y = 1 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x)
+  return s * y
+}
+const normalCdf = x => 0.5 * (1 + erf(x / Math.SQRT2))
+
+// Treats each team's floor/ceiling as its 10th/90th percentile (normal,
+// z=1.2816) to get a variance, then P(win) = Phi(diff / sqrt(var1 + var2)).
+const Z90 = 1.2815515655446004
+function winChance(myProj, oppProj, myFloor, myCeiling, oppFloor, oppCeiling) {
+  const v1 = ((myCeiling - myFloor) / (2 * Z90)) ** 2
+  const v2 = ((oppCeiling - oppFloor) / (2 * Z90)) ** 2
+  const sd = Math.sqrt(v1 + v2)
+  return sd > 0 ? normalCdf((myProj - oppProj) / sd) : myProj >= oppProj ? 1 : 0
+}
+
+// Sums floor/ceiling across a starters array; null unless every item has
+// both (a partial team range would understate the spread, not just miss a row).
+function teamRange(starters) {
+  if (!starters?.length || starters.some(s => s.floor == null || s.ceiling == null)) return null
+  let floor = 0, ceiling = 0
+  for (const s of starters) { floor += s.floor; ceiling += s.ceiling }
+  return ceiling >= floor ? { floor, ceiling } : null
+}
+
+// One shared 0..scale axis for every bar in the card, so rows stay visually
+// comparable: the highest ceiling, rounded up to a multiple of 4.
+function barScale(starters) {
+  const max = Math.max(4, ...starters.map(s => s.ceiling).filter(c => c != null))
+  return Math.ceil(max / 4) * 4
+}
+
+// Floor-ceiling range bar with the projection tick; an inverted pair (a
+// stray agent value) is dropped rather than rendered backwards.
+function rangeBar(floor, ceiling, proj, scale) {
+  if (floor == null || ceiling == null || ceiling < floor) return ''
+  const left = (100 * floor / scale).toFixed(1), width = (100 * (ceiling - floor) / scale).toFixed(1)
+  const tick = proj != null ? (100 * proj / scale).toFixed(1) : null
+  return `<div class="sl-bar"><span class="sl-range" aria-label="floor ${num(floor, 0)}, ceiling ${num(ceiling, 0)}"><span class="sl-band" style="left:${left}%;width:${width}%"></span>${tick != null ? `<span class="sl-tick" style="left:${tick}%"></span>` : ''}</span><span class="sl-rng num">${num(floor, 0)}–${num(ceiling, 0)}</span></div>`
+}
+
 // Ties only when non-zero - mirrors sleeper.recordString (Go) so a team's
 // record never disagrees between the header and any per-team row.
 export const record = t => (t?.ties ? `${int(t.wins) || 0}-${int(t.losses) || 0}-${int(t.ties) || 0}` : `${int(t?.wins) || 0}-${int(t?.losses) || 0}`)
@@ -67,25 +157,15 @@ export function injBadge(p) {
   return `<span class="qk-badge ${cls}">${esc(p.inj)}</span>`
 }
 
-export function personHTML(player, sm) {
-  if (!player) return ''
-  return `<span class="sl-p">${avatarHTML(player, sm)}<span>${esc(player.name)} <span class="sl-keep">${esc(player.pos || '')}${player.team ? ' · ' + esc(player.team) : ''}</span> ${injBadge(player)}</span></span>`
-}
-
-export function verdictBadge(verdict, confidence, why) {
-  const label = verdict === 'start' ? 'Start' : verdict === 'sit' ? 'Sit' : verdict
-  const okCls = verdict === 'start' ? 'qk-badge--ok' : ''
-  const pct = confidence != null ? ` · ${int(confidence)}%` : ''
-  return `<span class="qk-badge hint ${okCls}" title="${esc(why || '')}" tabindex="0">${esc(label)}${pct}</span>`
-}
-
-// meta: {title, agent, status:'not_run'|'running'|'done', example, chatHref}
+// meta adds optional chips: [rawHTML, ...], decision-context pills (e.g.
+// "2 changes") rendered next to the title, apart from the status meta.
 export function jobHead(meta) {
   let m
   if (meta.status === 'running') m = `<span class="qk-badge qk-badge--warn">Running</span><span>${esc(meta.agent || '')} · started just now</span>`
   else if (meta.status === 'done') m = `${meta.example ? '<span class="qk-badge">Example</span>' : ''}<span class="qk-badge qk-badge--ok">From chat</span><span>${esc(meta.agent || '')}</span><a href="${esc(meta.chatHref || '#')}" target="_top">Open chat</a>`
   else m = '<span class="qk-badge">Not run</span>'
-  return `<div class="sl-sec__head"><h2>${esc(meta.title)}</h2><div class="sl-sec__meta">${m}</div></div>`
+  const chips = (meta.chips || []).join('')
+  return `<div class="sl-sec__head"><div class="sl-sec__title"><h2>${esc(meta.title)}</h2>${chips}</div><div class="sl-sec__meta">${m}</div></div>`
 }
 
 // emptyNoun is the fixed, job-general noun for the "not run yet" copy - the
@@ -113,36 +193,115 @@ export function invalidBody(text) {
   return `<div class="sl-sec__body sl-invalid"><p class="sl-invalid__notice">Output is not in the expected format</p><pre class="sl-invalid__raw">${esc(text)}</pre></div>`
 }
 
+// One starter row: your player against the opponent's at that slot. A
+// `replaces` row is highlighted and always expandable; a plain row only if it has a `why`.
+function lineupRow(row, scale, oppBySlot) {
+  const changed = !!row.replaces
+  const opp = oppBySlot[row.slot]
+  const canExpand = changed || row.why
+  const meLine = `<div class="sl-line"><span class="sl-who">${esc(slotPlayerName(row.player, true))}</span>${changed ? ' <span class="sl-dir sl-dir--in">IN</span>' : ''}${injBadge(row.player)}<span class="sl-pts num">${num(row.proj)}</span></div>${rangeBar(row.floor, row.ceiling, row.proj, scale)}`
+  const oppCell = opp ? `<span class="sl-opp num">${esc(slotPlayerName(opp.player, false))}<b>${num(opp.proj)}</b></span>` : '<span class="sl-opp"></span>'
+  const summaryInner = `<span class="sl-slot">${esc(row.slot)}${canExpand ? '<span class="ms sl-xchev" aria-hidden="true">expand_more</span>' : ''}</span><div class="sl-me">${meLine}</div>${oppCell}`
+  if (!canExpand) return `<div class="sl-lrow${changed ? ' sl-lrow--changed' : ''}">${summaryInner}</div>`
+  const why = changed
+    ? `<span class="sl-was">over ${esc(row.replaces.name)} ${injBadge(row.replaces)}.</span> ${mdText(row.why || '')}`
+    : mdText(row.why || '')
+  return `<details class="sl-xrow"><summary class="sl-lrow${changed ? ' sl-lrow--changed' : ''}">${summaryInner}</summary><p class="sl-why sl-xwhy">${why}</p></details>`
+}
+
+// Bench/reserve rows are folded, compact (name, proj, range as text - no bar).
+function foldedRow(item) {
+  const range = item.floor != null && item.ceiling != null ? ` · ${num(item.floor, 0)}–${num(item.ceiling, 0)}` : ''
+  return `<tr title="${esc(item.why || '')}"><td class="cell">${esc(item.player.name)}${injBadge(item.player)}</td><td class="num">${num(item.proj)}${range}</td></tr>`
+}
+
 // state: {job, title, agent, status, example, chatHref, found, data, what, running}
 export function renderLineup(state) {
-  const head = jobHead(state)
+  const clean = state.found && !state.invalid
+  const changes = clean ? (state.data.starters || []).filter(s => s.replaces).length : 0
+  const chips = []
+  if (changes) chips.push(`<span class="qk-chip sl-chip--accent">${changes} change${changes === 1 ? '' : 's'}</span>`)
+  if (clean && state.data.plan) chips.push(`<span class="qk-chip">${esc(state.data.plan)}</span>`)
+  const head = jobHead({ ...state, chips })
   if (state.invalid) return section('sec-lineup', head + invalidBody(state.text))
   if (!state.found) return section('sec-lineup', head + emptyBody(state.job, state.title, state.what, state.running, state.runnable))
   const d = state.data
-  const rows = d.starters.map(row => `<tr title="${esc(row.why || '')}"><td>${esc(row.slot)}</td><td class="cell">${personHTML(row.player)}</td><td class="num">${num(row.proj)}</td><td>${verdictBadge(row.verdict, row.confidence, row.why)}</td></tr>`).join('')
-  const benchRows = (d.bench || []).map(b => `<tr title="${esc(b.why || '')}"><td>BN</td><td class="cell">${personHTML(b.player)}</td><td class="num">${num(b.proj)}</td><td>${verdictBadge('sit', null, b.why)}</td></tr>`).join('')
-  const reserve = d.reserve || []
-  const irRows = reserve.map(rv => `<tr title="${esc(rv.why || '')}"><td>IR</td><td class="cell">${personHTML(rv.player)}</td><td class="num">–</td><td><span class="qk-badge">IR</span></td></tr>`).join('')
-  const oppRows = (d.opponent_starters || []).map(o => `<tr><td>${esc(o.slot)}</td><td class="cell">${personHTML(o.player, true)}</td><td class="num">${num(o.proj)}</td></tr>`).join('')
-  return section('sec-lineup', head + `
-    <div class="sl-score"><div><b>${num(d.my_proj)}</b><span>${esc(d.team)} · ${esc(d.team_record || '')}<br>projected</span></div><div class="vs">vs</div><div><b>${num(d.opp_proj)}</b><span>${esc(d.opponent)} · ${esc(d.opponent_record || '')}<br>projected</span></div></div>
-    <div class="sl-sec__body">
-    <p class="sl-summary">${esc(d.summary || '')}</p>
-    <div class="qk-table-wrap"><table class="qk-table"><thead><tr><th>Slot</th><th>Player</th><th class="num">Proj</th><th>Start / sit</th></tr></thead><tbody>${rows}<tr class="divider"><td colspan="4">Bench · ${(d.bench || []).length} of ${d.bench_slots ? int(d.bench_slots) : (d.bench || []).length}</td></tr>${benchRows}${irRows ? `<tr class="divider"><td colspan="4">Injured reserve · ${reserve.length} of ${d.reserve_slots ? int(d.reserve_slots) : 1}, outside the roster count</td></tr>${irRows}` : ''}</tbody></table></div>
-    <details class="sl-fold"><summary>${esc(d.opponent)}'s lineup · ${num(d.opp_proj)} projected</summary><div class="qk-table-wrap"><table class="qk-table"><thead><tr><th>Slot</th><th>Starter</th><th class="num">Proj</th></tr></thead><tbody>${oppRows}</tbody></table></div></details>
-    <p class="sl-src">${esc(d.source_note || '')}</p></div>`)
+  const starters = d.starters || []
+  const scale = barScale(starters)
+  const oppBySlot = Object.fromEntries((d.opponent_starters || []).map(o => [o.slot, o]))
+  const rows = starters.map(row => lineupRow(row, scale, oppBySlot)).join('')
+  const bench = d.bench || [], reserve = d.reserve || []
+
+  const myRange = teamRange(starters)
+  const oppRange = teamRange(d.opponent_starters || [])
+  const hasProj = d.my_proj != null && d.opp_proj != null
+  const winPct = myRange && oppRange && hasProj ? Math.round(100 * winChance(d.my_proj, d.opp_proj, myRange.floor, myRange.ceiling, oppRange.floor, oppRange.ceiling)) : null
+  const h2h = d.opponent ? `<div class="sl-h2h" aria-label="Week ${int(d.week)} matchup">
+    <div class="sl-team"><span class="sl-name">${esc(d.team)}</span><span class="sl-rec">${esc(d.team_record || '')} · you</span>${hasProj ? `<span class="sl-tot num">${num(d.my_proj)}</span>` : ''}${myRange ? `<span class="sl-rng-lbl num">range ${num(myRange.floor, 0)}–${num(myRange.ceiling, 0)}</span>` : ''}</div>
+    ${winPct != null ? `<div class="sl-odds"><span class="sl-pct num">${winPct}%</span><span class="sl-lbl">to win</span></div>` : '<div></div>'}
+    <div class="sl-team sl-team--r"><span class="sl-name">${esc(d.opponent)}</span><span class="sl-rec">${esc(d.opponent_record || '')}</span>${hasProj ? `<span class="sl-tot num">${num(d.opp_proj)}</span>` : ''}${oppRange ? `<span class="sl-rng-lbl num">range ${num(oppRange.floor, 0)}–${num(oppRange.ceiling, 0)}</span>` : ''}</div>
+  </div>` : ''
+  const watch = (d.watch || []).map(w => `<div class="sl-watch"><span class="ms" aria-hidden="true">schedule</span><p><b>Watch ${esc(w.player?.name || '')}${injBadge(w.player)}.</b> ${mdText(w.text || '')}</p></div>`).join('')
+  return section('sec-lineup', head + h2h + `
+    <div class="sl-lineup" aria-label="Your starters against your opponent's">
+    <div class="sl-lrow sl-lrow--head"><span>Slot</span><span>You · floor–ceiling</span><span class="sl-r">Them</span></div>
+    ${rows}
+    </div>
+    ${watch}
+    <details class="sl-fold"><summary>Bench · ${bench.length}</summary><div class="qk-table-wrap"><table class="qk-table">${bench.map(foldedRow).join('')}</table></div></details>
+    ${reserve.length ? `<details class="sl-fold"><summary>Injured reserve · ${reserve.length}</summary><div class="qk-table-wrap"><table class="qk-table">${reserve.map(foldedRow).join('')}</table></div></details>` : ''}
+    <div class="sl-sec__body"><p class="sl-src">${mdText(d.source_note || '')}</p></div>`)
+}
+
+// "Rolling waivers · you're 6th of 10 · submit in this order" - built from
+// the three optional fields rather than stored, so it can't drift from them.
+function waiverSub(d) {
+  if (!d.waiver_type) return ''
+  const label = { rolling: 'Rolling waivers', faab: 'FAAB', 'reverse standings': 'Reverse-standings waivers' }[d.waiver_type.toLowerCase()] || esc(d.waiver_type)
+  const pos = d.my_priority != null && d.teams != null ? ` · you're ${int(d.my_priority)}${ordinal(d.my_priority)} of ${int(d.teams)}` : ''
+  return `<p class="sl-sub">${label}${pos} · submit in this order</p>`
+}
+const ordinal = n => (n % 10 === 1 && n % 100 !== 11 ? 'st' : n % 10 === 2 && n % 100 !== 12 ? 'nd' : n % 10 === 3 && n % 100 !== 13 ? 'rd' : 'th')
+
+// How-claims-run copy is picked by waiver_type - each type resolves ties
+// and ordering differently, so one blurb would mislead two of the three.
+const CLAIM_RULES = {
+  rolling: 'Claims process in waiver order, and a successful claim sends you to the back. Two claims can name the same drop; once one succeeds, the other is skipped (<a href="https://support.sleeper.com/en/articles/3978623-why-is-my-waiver-claim-invalid" target="_blank" rel="noopener noreferrer">Sleeper</a>).',
+  faab: 'Highest bid wins each player; ties go to whoever is earlier in waiver order. A failed bid does not spend the budget, so a fallback claim on the same drop is safe to submit alongside your top bid.',
+  'reverse standings': 'Claims process worst-record-first for the week, then reset next week regardless of who won a claim. Two claims can name the same drop; once one succeeds, the other is skipped.',
 }
 
 export function renderWaivers(state) {
-  const head = jobHead(state)
+  const claims = state.found && !state.invalid ? (state.data.candidates || []).length : 0
+  const chips = claims ? [`<span class="qk-chip sl-chip--accent">${claims} claim${claims === 1 ? '' : 's'}</span>`] : []
+  const head = jobHead({ ...state, chips })
   if (state.invalid) return section('sec-waivers', head + invalidBody(state.text))
   if (!state.found) return section('sec-waivers', head + emptyBody(state.job, state.title, state.what, state.running, state.runnable))
   const d = state.data
-  const rows = d.candidates.map(c => `<tr><td>${int(c.rank)}</td><td class="cell">${personHTML(c.player)}<div class="why">${esc(c.why || '')}</div></td><td class="num">${num(c.proj)}</td><td class="num">${c.owned_pct == null ? '–' : num(c.owned_pct, 0) + '%'}</td><td class="num">${c.adds_24h ? int(c.adds_24h).toLocaleString() : '–'}</td><td>${esc(c.drop || '')}</td></tr>`).join('')
-  return section('sec-waivers', head + `<div class="sl-sec__body">
-    <p class="sl-summary">${esc(d.summary || '')}</p>
-    <div class="qk-table-wrap"><table class="qk-table"><thead><tr><th>#</th><th>Add and reasoning</th><th class="num">Proj</th><th class="num">Owned</th><th class="num">Adds 24h</th><th>Drop</th></tr></thead><tbody>${rows}</tbody></table></div>
-    <p class="sl-src">${esc(d.source_note || '')}</p></div>`)
+  const candidates = d.candidates || []
+  // Flags a claim whose drop repeats an earlier claim's - it only runs if
+  // that earlier claim fails, which the row's meta text should say plainly.
+  const seenDrops = new Set()
+  const rows = candidates.map((c, i) => {
+    const dup = c.drop && seenDrops.has(c.drop)
+    if (c.drop) seenDrops.add(c.drop)
+    const dropMeta = dup ? `same drop as ${candidates.findIndex(x => x.drop === c.drop) + 1}` : ''
+    const addLine = `<div class="sl-line"><span class="sl-dir sl-dir--in">ADD</span><span class="sl-who">${esc(c.player.name)}</span><span class="sl-meta">${esc(c.player.pos || '')}${c.player.team ? ' · ' + esc(c.player.team) : ''}</span>${injBadge(c.player)}<span class="sl-pts num">${num(c.proj)}</span></div>`
+    const dropLine = c.drop ? `<div class="sl-line"><span class="sl-dir sl-dir--out">DROP</span><span class="sl-who">${esc(c.drop)}</span>${dropMeta ? `<span class="sl-meta">${dropMeta}</span>` : ''}</div>` : ''
+    const body = `<span class="sl-tag num">${int(c.rank) || i + 1}</span><div class="sl-pair">${addLine}${dropLine}</div>`
+    if (!c.why) return `<div class="sl-row">${body}</div>`
+    return `<details class="sl-xrow"><summary class="sl-row">${body}<span class="ms sl-xchev" aria-hidden="true">expand_more</span></summary><p class="sl-why sl-xwhy">${mdText(c.why)}</p></details>`
+  }).join('')
+  const alsoChecked = d.also_checked || []
+  const alsoBody = alsoChecked.length
+    ? `<details class="sl-fold"><summary>Also checked · ${alsoChecked.length}</summary><div class="sl-fold-body"><ul>${alsoChecked.map(a => `<li>${esc(a.player.name)} (${esc(a.player.pos || '')}): ${mdText(a.why)}</li>`).join('')}</ul></div></details>`
+    : ''
+  const rulesText = d.waiver_type && CLAIM_RULES[d.waiver_type.toLowerCase()]
+  const rulesBody = rulesText
+    ? `<details class="sl-fold"><summary>How claims run</summary><div class="sl-fold-body"><p>${rulesText}</p></div></details>`
+    : ''
+  return section('sec-waivers', head + waiverSub(d) + `<div class="sl-rows">${rows}</div>${alsoBody}${rulesBody}
+    <div class="sl-sec__body"><p class="sl-src">${mdText(d.source_note || '')}</p></div>`)
 }
 
 function tradeSide(label, players) {
@@ -159,6 +318,18 @@ function runAttrs(runnable) {
   return runnable ? '' : ' disabled title="no agent bound yet"'
 }
 
+// One suggestion row: partner + record/place + partner_need chip, GIVE/GET
+// lines with projections, a Start-talk button; note sits behind the expand.
+function tradeFinderRow(f, runnable) {
+  const startBtn = `<button class="qk-btn" data-run="trade" data-partner="${esc(f.partner_id || f.partner)}" data-partner-name="${esc(f.partner)}"${runAttrs(runnable)}><span class="ms" aria-hidden="true">forum</span>Start talk</button>`
+  const partnerLine = `<div class="sl-partner"><b>${esc(f.partner)}</b>${f.record ? `<span class="sl-meta">${esc(f.record)}</span>` : ''}${f.partner_need ? `<span class="qk-chip">${esc(f.partner_need)}</span>` : ''}${startBtn}</div>`
+  const giveLine = `<div class="sl-line"><span class="sl-dir sl-dir--out">GIVE</span><span class="sl-who">${esc(f.give.name)}</span><span class="sl-meta">${esc(f.give.pos || '')}</span>${injBadge(f.give)}<span class="sl-pts num sl-keep">${num(f.give_proj)}</span></div>`
+  const getLine = `<div class="sl-line"><span class="sl-dir sl-dir--in">GET</span><span class="sl-who">${esc(f.get.name)}</span><span class="sl-meta">${esc(f.get.pos || '')}</span>${injBadge(f.get)}<span class="sl-pts num">${num(f.get_proj)}</span></div>`
+  const body = `<div class="sl-pair">${partnerLine}${giveLine}${getLine}</div>`
+  if (!f.note) return `<div class="sl-row sl-row--trade">${body}</div>`
+  return `<details class="sl-xrow"><summary class="sl-row sl-row--trade">${body}<span class="ms sl-xchev" aria-hidden="true">expand_more</span></summary><p class="sl-why sl-xwhy">${mdText(f.note)}</p></details>`
+}
+
 // finder: the trade-finder job's own artifactEnvelope ({found, example,
 // running, data}) - a separate kind so a finder run never overwrites a talk.
 function tradeFinder(finder, runnable = true) {
@@ -172,8 +343,8 @@ function tradeFinder(finder, runnable = true) {
     return `<h3 class="sl-h3">Suggested trades</h3><div class="sl-empty"><span>${esc(msg)}</span> ${cta}</div>`
   }
   const badge = finder?.example ? ' <span class="qk-badge">Example</span>' : ''
-  const items = suggestions.map(f => `<li><div><b>${esc(f.partner)}</b> <span class="sl-keep">${esc(f.partner_owner || '')}${f.record ? ' · ' + esc(f.record) : ''}</span><div class="sl-keep">Give ${esc(f.give.name)} (${num(f.give_proj)}) for ${esc(f.get.name)} (${num(f.get_proj)}). ${esc(f.note || '')}</div></div><button class="qk-btn" data-run="trade" data-partner="${esc(f.partner_id || f.partner)}" data-partner-name="${esc(f.partner)}"${runAttrs(runnable)}>Start talk</button></li>`).join('')
-  return `<h3 class="sl-h3">Suggested trades${badge}</h3><ul class="sl-finds">${items}</ul>${cta}`
+  const rows = suggestions.map(f => tradeFinderRow(f, runnable)).join('')
+  return `<h3 class="sl-h3">Suggested trades${badge}</h3><div class="sl-rows">${rows}</div>${cta}`
 }
 
 function talkPartnerSelect(partners) {
@@ -189,7 +360,9 @@ function talkPartnerSelect(partners) {
 // talk" select - runJob reads it when a click carries no data-partner.
 // finder: the trade-finder job's own artifactEnvelope, for the suggestions CTA.
 export function renderTrade(state, talks, talkIdx, partners, finder) {
-  const head = jobHead(state)
+  const partnerCount = finder?.data?.suggestions?.length || 0
+  const chips = partnerCount ? [`<span class="qk-chip">${partnerCount} partner${partnerCount === 1 ? '' : 's'}</span>`] : []
+  const head = jobHead({ ...state, chips })
   const anyFound = talks.some(t => t.found)
   const finderRunnable = finder?.runnable !== false
   if (!anyFound) {
@@ -207,7 +380,7 @@ export function renderTrade(state, talks, talkIdx, partners, finder) {
   if (cur.invalid) return section('sec-trade', head + `<div class="sl-sec__body">${talkbar}</div>` + invalidBody(cur.text))
   const d = cur.data
   const offers = d?.offers?.length
-    ? d.offers.map(o => `<li class="sl-offer ${o.by === 'You' ? 'mine' : ''}"><div class="sl-offer__who"><b>${esc(o.by)}</b>${esc(o.when)}</div><div><div class="sl-sides">${tradeSide('You give', o.give)}${tradeSide('You get', o.get)}</div><p class="sl-eval"><span class="qk-badge ${o.verdict === 'send' ? 'qk-badge--ok' : o.verdict === 'decline' ? 'qk-badge--err' : 'qk-badge--warn'}">${esc(o.verdict)}</span> <b>${esc(o.delta)}</b> · ${esc(o.why)}</p></div></li>`).join('')
+    ? d.offers.map(o => `<li class="sl-offer ${o.by === 'You' ? 'mine' : ''}"><div class="sl-offer__who"><b>${esc(o.by)}</b>${esc(o.when)}</div><div><div class="sl-sides">${tradeSide('You give', o.give)}${tradeSide('You get', o.get)}</div><p class="sl-eval"><span class="qk-badge ${o.verdict === 'send' ? 'qk-badge--ok' : o.verdict === 'decline' ? 'qk-badge--err' : 'qk-badge--warn'}">${esc(o.verdict)}</span> <b>${esc(o.delta)}</b> · ${mdText(o.why)}</p></div></li>`).join('')
     : `<li class="sl-empty">No offers yet.</li>`
   const compose = d
     ? `<form class="sl-compose" id="compose" data-partner="${esc(cur.partner)}"><div><label for="give">You give</label><select id="give" class="sl-select sl-multi" multiple size="5">${(d.my_roster || []).map(tradeOption).join('')}</select></div><div><label for="get">You get from ${esc(cur.partner)}</label><select id="get" class="sl-select sl-multi" multiple size="5">${(d.partner_roster || []).map(tradeOption).join('')}</select></div><button class="qk-btn qk-btn--primary" data-run="trade" data-partner="${esc(cur.partner_id)}" data-partner-name="${esc(cur.partner)}" type="button"${runAttrs(runnable)}>Evaluate counter</button></form>`
@@ -220,16 +393,17 @@ export function renderTrade(state, talks, talkIdx, partners, finder) {
     <p class="sl-src">One chat per talk; every offer or counter is a new turn, so the analyst keeps the whole negotiation in context.</p></div>`)
 }
 
-export function renderDigest(state) {
+// myTeam: state.season's own me.team, from /api/season - never the
+// artifact's own g.mine flag, which prod showed marking the wrong game.
+export function renderDigest(state, myTeam) {
   const head = jobHead(state)
   if (state.invalid) return section('sec-digest', head + invalidBody(state.text))
   if (!state.found) return section('sec-digest', head + emptyBody(state.job, state.title, state.what, state.running, state.runnable))
   const d = state.data
-  const rows = d.games.map(g => `<tr class="${g.mine ? 'sl-mine' : ''}"><td>${esc(g.home)}</td><td class="num">${num(g.home_pts, 2)}</td><td class="num">${num(g.away_pts, 2)}</td><td>${esc(g.away)}</td><td class="num">${num(g.margin, 2)}</td><td>${esc(g.top_scorers || '')}</td></tr>`).join('')
-  return section('sec-digest', head + `<div class="sl-sec__body">
-    <p class="sl-summary">${esc(d.summary || '')}</p>
-    <div class="qk-table-wrap"><table class="qk-table"><thead><tr><th>Home</th><th class="num">Pts</th><th class="num">Pts</th><th>Away</th><th class="num">Margin</th><th>Top scorers</th></tr></thead><tbody>${rows}</tbody></table></div>
-    <p class="sl-src">${esc(d.source_note || '')}</p></div>`)
+  const games = d.games.map(g => `<div class="sl-game${myTeam && (g.home === myTeam || g.away === myTeam) ? ' sl-game--mine' : ''}"><span class="sl-t">${esc(g.home)} vs ${esc(g.away)}</span><span class="sl-s num">${num(g.home_pts, 1)} – ${num(g.away_pts, 1)}</span>${g.top_scorers ? `<span class="sl-keep">${esc(g.top_scorers)}</span>` : ''}</div>`).join('')
+  const summary = d.summary ? `<div class="sl-sec__body">${clampBlock(mdText(d.summary))}</div>` : ''
+  return section('sec-digest', head + summary + `<div class="sl-games">${games}</div>
+    <div class="sl-sec__body"><p class="sl-src">${mdText(d.source_note || '')}</p></div>`)
 }
 
 export function renderTrends(state) {
@@ -238,11 +412,12 @@ export function renderTrends(state) {
   if (!state.found) return section('sec-trends', head + emptyBody(state.job, state.title, state.what, state.running, state.runnable))
   const d = state.data
   const items = d.items.map(i => {
-    const who = i.player ? `<span class="sl-p">${avatarHTML(i.player, true)}<span><b>${esc(i.player.name)}</b> ${esc(i.text)}</span></span>` : (isSafeHref(i.link) ? `${esc(i.text)} <a href="${esc(i.link)}" target="_blank" rel="noopener">source</a>` : esc(i.text))
+    const text = i.player ? `<b>${esc(i.player.name)}</b> ${mdText(i.text)}` : (isSafeHref(i.link) ? `${mdText(i.text)} <a href="${esc(i.link)}" target="_blank" rel="noopener noreferrer">source</a>` : mdText(i.text))
+    const who = i.player ? `<span class="sl-p">${avatarHTML(i.player, true)}<span>${clampBlock(text)}</span></span>` : clampBlock(text)
     return `<li><time>${esc(i.time)}</time><div>${who}<span class="qk-chip src">${esc(i.source)}</span></div></li>`
   }).join('')
   return section('sec-trends', head + `<div class="sl-sec__body"><ul class="sl-timeline">${items}</ul>
-    <p class="sl-src">${esc(d.source_note || '')}</p></div>`)
+    <p class="sl-src">${mdText(d.source_note || '')}</p></div>`)
 }
 
 export function renderRetro(state) {
@@ -254,7 +429,7 @@ export function renderRetro(state) {
   const swing = r.left >= Math.abs((r.opp ?? 0) - r.started) && !r.won
   return section('sec-retro', head + `<div class="sl-sec__body">
     <div class="sl-stats"><div class="sl-stat"><span>Started</span><b>${num(r.started, 2)}</b><small>${r.won ? 'won' : 'lost'}${r.opp != null ? ' to ' + num(r.opp, 2) : ''}</small></div><div class="sl-stat"><span>Best possible</span><b>${num(r.best, 2)}</b><small>from the players you owned</small></div><div class="sl-stat"><span>Left on the bench</span><b>${num(r.left, 1)}</b><small>${swing ? 'more than the margin: a winnable week' : 'less than the margin'}</small></div></div>
-    <p class="sl-summary">${esc(r.summary || '')}</p>
+    ${r.summary ? clampBlock(mdText(r.summary)) : ''}
     ${misses ? `<div class="qk-table-wrap"><table class="qk-table"><thead><tr><th>Slot</th><th>Started</th><th class="num">Pts</th><th>Better option</th><th class="num">Pts</th><th class="num">Swing</th></tr></thead><tbody>${misses}</tbody></table></div>` : ''}</div>`)
 }
 
@@ -307,9 +482,9 @@ export function renderDraftSide(state) {
   if (!d.clock && !d.plan) return ''
   let html = ''
   if (d.clock) html = section('draft-clock', `<div class="sl-sec__head"><h2>On the clock</h2><div class="sl-sec__meta">${state.example ? '<span class="qk-badge">Example</span>' : ''}<span>${esc(state.agent || '')}</span></div></div><div class="sl-sec__body">
-    <div class="sl-clock"><b>Pick ${int(d.clock.pick_no)} (${esc(d.clock.pick_label || '')}) · ${int(d.clock.seconds_left)}s left</b>${esc(d.clock.note)}</div>
+    <div class="sl-clock"><b>Pick ${int(d.clock.pick_no)} (${esc(d.clock.pick_label || '')}) · ${int(d.clock.seconds_left)}s left</b>${mdText(d.clock.note)}</div>
     <p class="sl-src">Live drafts poll the picks feed every few seconds while you are within three picks of the clock.</p></div>`)
-  if (d.plan) html += section('draft-plan', `<div class="sl-sec__head"><h2>Draft plan</h2><div class="sl-sec__meta">${state.example ? '<span class="qk-badge">Example</span>' : ''}<span>${esc(state.agent || '')} · pre-draft</span></div></div><div class="sl-sec__body"><div class="sl-tiers">${d.plan.map(p => `<div><b>${esc(p.title)}</b><span>${esc(p.note)}</span></div>`).join('')}</div></div>`)
+  if (d.plan) html += section('draft-plan', `<div class="sl-sec__head"><h2>Draft plan</h2><div class="sl-sec__meta">${state.example ? '<span class="qk-badge">Example</span>' : ''}<span>${esc(state.agent || '')} · pre-draft</span></div></div><div class="sl-sec__body"><div class="sl-tiers">${d.plan.map(p => `<div><b>${esc(p.title)}</b><span>${mdText(p.note)}</span></div>`).join('')}</div></div>`)
   return html
 }
 
@@ -339,7 +514,7 @@ export function renderSeasonNotes(state) {
     return section('side-notes', head + body)
   }
   const d = state.data
-  return section('side-notes', head + `<div class="sl-sec__body"><ul class="sl-notes">${(d.notes || []).map(n => `<li>${esc(n)}</li>`).join('')}</ul></div>`)
+  return section('side-notes', head + `<div class="sl-sec__body"><ul class="sl-notes">${(d.notes || []).map(n => `<li>${clampBlock(mdText(n))}</li>`).join('')}</ul></div>`)
 }
 
 export function renderSeasonAtGlance(x) {
@@ -350,7 +525,7 @@ export function renderSeasonAtGlance(x) {
 export function renderCrossSeason(x) {
   const items = x?.cross_season_summary
   if (!items?.length) return ''
-  return section('side-cross', `<div class="sl-sec__head"><h2>Recurring patterns</h2><div class="sl-sec__meta"><span class="qk-badge">Example</span></div></div><div class="sl-sec__body"><ul class="sl-mistakes">${items.map(i => `<li><b>${esc(i.n)}</b><p>${esc(i.text)}<br><small>${esc(i.detail || '')}</small></p></li>`).join('')}</ul></div>`)
+  return section('side-cross', `<div class="sl-sec__head"><h2>Recurring patterns</h2><div class="sl-sec__meta"><span class="qk-badge">Example</span></div></div><div class="sl-sec__body"><ul class="sl-mistakes">${items.map(i => `<li><b>${esc(i.n)}</b>${clampBlock(`${mdText(i.text)}${i.detail ? '<br><small>' + mdText(i.detail) + '</small>' : ''}`)}</li>`).join('')}</ul></div>`)
 }
 
 export function renderStandingsSide(season) {
