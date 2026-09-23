@@ -36,16 +36,19 @@
         ],
         "properties": {
           "slot": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 10
           },
           "started_name": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 60
           },
           "started_pts": {
             "type": "number"
           },
           "better_name": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 60
           },
           "better_pts": {
             "type": "number"
@@ -57,7 +60,8 @@
       }
     },
     "summary": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 400
     }
   },
   "required": [

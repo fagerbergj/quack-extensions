@@ -6,13 +6,15 @@
   "type": "object",
   "properties": {
     "season": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 20
     },
     "draft_id": {
       "type": "string"
     },
     "type": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 40
     },
     "rounds": {
       "type": "integer"
@@ -122,7 +124,8 @@
           "type": "integer"
         },
         "note": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 400
         }
       }
     },
@@ -135,10 +138,12 @@
         "type": "object",
         "properties": {
           "title": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 40
           },
           "note": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 400
           }
         }
       }
@@ -209,13 +214,15 @@
             }
           },
           "drafted_as": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20
           },
           "finished": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "maxLength": 20
           },
           "pts": {
             "type": "number"
@@ -240,7 +247,8 @@
       "type": [
         "string",
         "null"
-      ]
+      ],
+      "maxLength": 400
     }
   },
   "required": [

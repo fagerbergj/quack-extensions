@@ -179,7 +179,7 @@ function renderMain() {
     return
   }
   if (isPastWeek()) {
-    main.innerHTML = R.renderRetro(jobEnvelope(JOBS[5], `Week ${state.stop} in hindsight`)) + R.renderDigest(jobEnvelope(JOBS[3], `Week ${state.stop} recap`)) + (isCurrentSeason() ? R.renderTrends(jobEnvelope(JOBS[4])) : '')
+    main.innerHTML = R.renderRetro(jobEnvelope(JOBS[5], `Week ${state.stop} in hindsight`)) + R.renderDigest(jobEnvelope(JOBS[3], `Week ${state.stop} recap`), state.season.me?.team) + (isCurrentSeason() ? R.renderTrends(jobEnvelope(JOBS[4])) : '')
     if (isCurrentSeason()) {
       side.innerHTML = currentSide()
     } else {
@@ -193,7 +193,7 @@ function renderMain() {
   const finder = { ...(state.artifacts.jobs || {})['trade-finder'], running: state.running.has('trade-finder'), runnable: state.runnableJobs.has('trade-finder') }
   main.innerHTML = R.renderLineup(jobEnvelope(JOBS[0], 'Start / sit')) + R.renderWaivers(jobEnvelope(JOBS[1], 'Waivers')) +
     R.renderTrade(jobEnvelope(JOBS[2], 'Trade talks'), talks, state.talkIdx, partners, finder) +
-    R.renderDigest(jobEnvelope(JOBS[3], `Week ${state.stop} preview`)) + R.renderTrends(jobEnvelope(JOBS[4], 'Trends and news'))
+    R.renderDigest(jobEnvelope(JOBS[3], `Week ${state.stop} preview`), state.season.me?.team) + R.renderTrends(jobEnvelope(JOBS[4], 'Trends and news'))
   side.innerHTML = currentSide()
 }
 

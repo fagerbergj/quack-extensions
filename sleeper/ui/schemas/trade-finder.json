@@ -25,16 +25,24 @@
         ],
         "properties": {
           "partner": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 60
           },
           "partner_id": {
             "type": "string"
           },
           "partner_owner": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 60
           },
           "record": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20
+          },
+          "partner_need": {
+            "type": "string",
+            "maxLength": 32,
+            "description": "e.g. \"needs RB\"."
           },
           "give": {
             "type": "object",
@@ -133,7 +141,8 @@
             "type": "number"
           },
           "note": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 400
           }
         }
       }

@@ -11,7 +11,8 @@
     "notes": {
       "type": "array",
       "items": {
-        "type": "string"
+        "type": "string",
+        "maxLength": 400
       }
     }
   },

@@ -1,76 +1,79 @@
 {
-  "league": "1124857466211995648",
-  "week": 2,
+  "league": "1356407594683482112",
+  "week": 3,
   "updated": "Today 14:20",
   "suggestions": [
     {
-      "partner": "Rice Cooker",
-      "partner_owner": "pirates5",
-      "record": "1-0",
+      "partner": "Gibbs Me Liberty",
+      "partner_id": "860317606291283968",
+      "partner_owner": "Shore69",
+      "record": "5th",
+      "partner_need": "needs RB",
       "give": {
-        "id": "7594",
-        "name": "Chuba Hubbard",
+        "id": "7021",
+        "name": "Rico Dowdle",
         "pos": "RB",
-        "team": "CAR",
+        "team": "PIT",
         "inj": null,
         "prac": null,
-        "proj": 12.4
+        "proj": 11.1
       },
-      "give_proj": 12.4,
+      "give_proj": 11.1,
       "get": {
-        "id": "9997",
-        "name": "Zay Flowers",
-        "pos": "WR",
-        "team": "BAL",
-        "inj": "Questionable",
+        "id": "9481",
+        "name": "Dalton Kincaid",
+        "pos": "TE",
+        "team": "BUF",
+        "inj": null,
         "prac": null,
-        "proj": 14.0
+        "proj": 12.8
       },
-      "get_proj": 14.0,
-      "note": "They start Ashton Jeanty at RB2 at 14.9; Zay Flowers sits on their bench behind three starting receivers.",
-      "partner_id": "740613226189987840"
+      "get_proj": 12.8,
+      "note": "Kincaid sits behind LaPorta on their roster; their flex is [Dobbins at 6.1 projected](https://sleeper.com/)."
     },
     {
-      "partner": "I Think I’m Gonna Puka",
-      "partner_owner": "cmigs",
-      "record": "1-0",
+      "partner": "Pitts and Giggles",
+      "partner_id": "860265672989609984",
+      "partner_owner": "nlanner",
+      "record": "1st",
+      "partner_need": "6 WRs",
       "give": {
-        "id": "7594",
-        "name": "Chuba Hubbard",
+        "id": "11586",
+        "name": "Blake Corum",
         "pos": "RB",
-        "team": "CAR",
+        "team": "LAR",
         "inj": null,
         "prac": null,
-        "proj": 12.4
+        "proj": 7.8
       },
-      "give_proj": 12.4,
+      "give_proj": 7.8,
       "get": {
-        "id": "11604",
-        "name": "Brock Bowers",
-        "pos": "TE",
-        "team": "LV",
-        "inj": "Questionable",
+        "id": "7569",
+        "name": "Nico Collins",
+        "pos": "WR",
+        "team": "HOU",
+        "inj": "Out",
         "prac": null,
-        "proj": 13.3
+        "proj": 14.7
       },
-      "get_proj": 13.3,
-      "note": "They start Aaron Jones at RB2 at 14.0; Brock Bowers sits on their bench behind three starting receivers.",
-      "partner_id": "517804893141327872"
+      "get_proj": 14.7,
+      "note": "Their sixth WR, in reserve. Ask only if [he's cleared by Friday](https://www.nfl.com/injuries/)."
     },
     {
       "partner": "Achane Magic",
+      "partner_id": "860209887672635392",
       "partner_owner": "cdelphin",
-      "record": "0-1",
+      "record": "4th",
       "give": {
-        "id": "7594",
-        "name": "Chuba Hubbard",
+        "id": "11586",
+        "name": "Blake Corum",
         "pos": "RB",
-        "team": "CAR",
+        "team": "LAR",
         "inj": null,
         "prac": null,
-        "proj": 12.4
+        "proj": 7.8
       },
-      "give_proj": 12.4,
+      "give_proj": 7.8,
       "get": {
         "id": "10222",
         "name": "Jayden Reed",
@@ -81,8 +84,7 @@
         "proj": 11.6
       },
       "get_proj": 11.6,
-      "note": "They start D'Andre Swift at RB2 at 11.6; Jayden Reed sits on their bench behind three starting receivers.",
-      "partner_id": "860209887672635392"
+      "note": "They start D'Andre Swift at RB2 at 11.6 projected; Jayden Reed sits behind three starting receivers."
     }
   ]
 }
