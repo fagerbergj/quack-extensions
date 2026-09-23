@@ -88,13 +88,17 @@ function winChance(myProj, oppProj, myFloor, myCeiling, oppFloor, oppCeiling) {
   return sd > 0 ? normalCdf((myProj - oppProj) / sd) : myProj >= oppProj ? 1 : 0
 }
 
-// Sums floor/ceiling across a starters array; null unless every item has
-// both (a partial team range would understate the spread, not just miss a row).
+// Sums each player's own variance (same z as winChance), not the raw
+// floors/ceilings - that would assume every starter busts or booms together.
 function teamRange(starters) {
   if (!starters?.length || starters.some(s => s.floor == null || s.ceiling == null)) return null
-  let floor = 0, ceiling = 0
-  for (const s of starters) { floor += s.floor; ceiling += s.ceiling }
-  return ceiling >= floor ? { floor, ceiling } : null
+  let mean = 0, variance = 0
+  for (const s of starters) {
+    mean += s.proj
+    variance += ((s.ceiling - s.floor) / (2 * Z90)) ** 2
+  }
+  const spread = Z90 * Math.sqrt(variance)
+  return { floor: mean - spread, ceiling: mean + spread }
 }
 
 // One shared 0..scale axis for every bar in the card, so rows stay visually

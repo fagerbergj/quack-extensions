@@ -103,6 +103,9 @@
 .av--i { display: inline-flex; align-items: center; justify-content: center; font-size: .625rem; font-weight: 600; color: var(--qk-muted); }
 .av--sm { width: 22px; height: 22px; }
 details.sl-fold { border-top: 1px solid var(--qk-border); margin: .75rem -1rem 0; padding: 0 1rem; }
+/* These cards place a fold directly in the unpadded section (no 1rem body
+   padding to cancel), so the -1rem trick above would run it past the edge. */
+.sl-sec > details.sl-fold { margin: 0; }
 details.sl-fold summary { cursor: pointer; padding: .625rem 0; font-size: .8125rem; font-weight: 600; color: var(--qk-muted); list-style: none; display: flex; align-items: center; gap: .5rem; }
 details.sl-fold summary::-webkit-details-marker { display: none; }
 details.sl-fold summary::before { content: ''; width: .4rem; height: .4rem; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform .15s; }
