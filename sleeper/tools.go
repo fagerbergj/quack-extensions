@@ -139,6 +139,12 @@ func playerName(dump map[string]sleepergen.Player, playerID string) string {
 	return playerNameOf(p)
 }
 
+// playerPosition resolves a player_id's position via the dump - "DEF" for a
+// team-defense id (e.g. "CAR"), same as sleeper_free_agents.
+func playerPosition(dump map[string]sleepergen.Player, playerID string) string {
+	return strVal(dump[playerID].Position)
+}
+
 // rosterFor finds a league's roster by roster_id.
 func rosterFor(rosters []sleepergen.Roster, rosterID int) (sleepergen.Roster, bool) {
 	for _, r := range rosters {

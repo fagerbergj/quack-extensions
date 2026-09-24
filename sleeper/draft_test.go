@@ -2,6 +2,7 @@ package sleeper
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/fagerbergj/quack-extensions/sleeper/sleepergen"
@@ -156,6 +157,44 @@ func TestDraftRoundsFallsBackToStartingSlotCount(t *testing.T) {
 	if got := e.draftRounds(context.Background(), d); got != 12 {
 		t.Errorf("draftRounds = %d, want 12 (settings.rounds takes priority)", got)
 	}
+}
+
+// TestADPDeltaAndVerdict covers the fix: the tool, not the agent, computes
+// pick_no - adp and the value/reach verdict, using real prod-grader shapes.
+func TestADPDeltaAndVerdict(t *testing.T) {
+	cases := []struct {
+		name        string
+		pickNo      int
+		adp         float32
+		noADP       bool
+		wantDelta   *float32
+		wantVerdict string
+	}{
+		{"Loveland reach: pick 35 vs ADP 106", 35, 106, false, f32ptr(-71), "reach"},
+		{"Hubbard value: pick 86 vs ADP 50", 86, 50, false, f32ptr(36), "value"},
+		{"fair: within the 8-pick band", 20, 15, false, f32ptr(5), "fair"},
+		{"missing ADP: delta and verdict both omitted", 12, 999, true, nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotDelta, gotVerdict := adpDeltaAndVerdict(tc.pickNo, tc.adp, tc.noADP)
+			if (gotDelta == nil) != (tc.wantDelta == nil) || (gotDelta != nil && *gotDelta != *tc.wantDelta) {
+				t.Errorf("delta = %v, want %v", f32str(gotDelta), f32str(tc.wantDelta))
+			}
+			if gotVerdict != tc.wantVerdict {
+				t.Errorf("verdict = %q, want %q", gotVerdict, tc.wantVerdict)
+			}
+		})
+	}
+}
+
+func f32ptr(v float32) *float32 { return &v }
+
+func f32str(v *float32) string {
+	if v == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("%v", *v)
 }
 
 func TestBestAvailableExcludesPickedAndCapsPerPosition(t *testing.T) {
