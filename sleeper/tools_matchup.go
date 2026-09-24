@@ -76,6 +76,28 @@ type bestByProjectionSlot struct {
 	Projection float32 `json:"projection"`
 }
 
+// swapPlayer is a best_lineup player who did not actually start.
+type swapPlayer struct {
+	Name   string  `json:"name"`
+	Pos    string  `json:"pos"`
+	Points float32 `json:"points"`
+}
+
+// swapOut is the started player a swap's in-player is paired against.
+type swapOut struct {
+	Slot   string  `json:"slot"`
+	Name   string  `json:"name"`
+	Points float32 `json:"points"`
+}
+
+// swap is one real lineup change: a best_lineup player paired with the
+// started player whose slot they could legally fill - not a same-slot-label comparison, which false-positives on a reordered RB1/RB2.
+type swap struct {
+	In    swapPlayer `json:"in"`
+	Out   swapOut    `json:"out"`
+	Swing float32    `json:"swing"`
+}
+
 type side struct {
 	RosterID         int                    `json:"roster_id"`
 	Team             string                 `json:"team"`
@@ -86,6 +108,7 @@ type side struct {
 	BestPoints       float32                `json:"best_points,omitempty"`
 	LeftOnBench      float32                `json:"left_on_bench,omitempty"`
 	BestLineup       []bestLineupSlot       `json:"best_lineup,omitempty"`
+	Swaps            []swap                 `json:"swaps,omitempty"`
 	FreeAgentHits    []freeAgentHit         `json:"free_agent_hits,omitempty"`
 	BestByProjection []bestByProjectionSlot `json:"best_by_projection,omitempty"`
 }
@@ -196,7 +219,82 @@ func addRetroFields(me *side, league *sleepergen.League, mine sleepergen.Matchup
 	me.BestPoints = best
 	me.LeftOnBench = round2(best - mine.Points)
 	me.BestLineup = bestLineupSlots(league.RosterPositions, assignment, mine.PlayersPoints, dump)
+	me.Swaps = buildSwaps(me.Starters, assignment, mine.PlayersPoints, dump)
 	me.FreeAgentHits = freeAgentHits(me.Starters, matchups, dump, stats)
+}
+
+// buildSwaps pairs each best_lineup player who didn't start with the
+// weakest eligible started player, highest in-points paired first; empty when both lineups are the same set of players.
+func buildSwaps(starters []lineupSlot, assignment lineupAssignment, points map[string]float32, dump map[string]sleepergen.Player) []swap {
+	startedSet := make(map[string]bool, len(starters))
+	for _, s := range starters {
+		startedSet[s.PlayerID] = true
+	}
+	bestSet := map[string]bool{}
+	for _, pid := range assignment.bySlot {
+		if pid != "" {
+			bestSet[pid] = true
+		}
+	}
+	return pairSwaps(inPlayers(assignment, startedSet, points, dump), outPlayers(starters, bestSet))
+}
+
+// inPlayers is every best_lineup player absent from the started lineup,
+// highest points first (the pairing order buildSwaps promises).
+func inPlayers(assignment lineupAssignment, startedSet map[string]bool, points map[string]float32, dump map[string]sleepergen.Player) []swapPlayer {
+	var out []swapPlayer
+	for _, pid := range assignment.bySlot {
+		if pid == "" || startedSet[pid] {
+			continue
+		}
+		out = append(out, swapPlayer{Name: playerName(dump, pid), Pos: positionOf(dump, pid), Points: points[pid]})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Points > out[j].Points })
+	return out
+}
+
+// outPlayers is every started player absent from best_lineup - the slots
+// an in-player might legally have filled instead.
+func outPlayers(starters []lineupSlot, bestSet map[string]bool) []lineupSlot {
+	var out []lineupSlot
+	for _, s := range starters {
+		if s.PlayerID != "" && s.PlayerID != "0" && !bestSet[s.PlayerID] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// pairSwaps greedily pairs each in-player (already highest-points-first)
+// with its lowest-scoring still-unpaired eligible out-player.
+func pairSwaps(ins []swapPlayer, outs []lineupSlot) []swap {
+	used := make([]bool, len(outs))
+	var swaps []swap
+	for _, in := range ins {
+		idx := weakestEligibleOut(in.Pos, outs, used)
+		if idx < 0 {
+			continue
+		}
+		used[idx] = true
+		out := outs[idx]
+		swaps = append(swaps, swap{In: in, Out: swapOut{Slot: out.Slot, Name: out.Name, Points: out.Points}, Swing: round2(in.Points - out.Points)})
+	}
+	return swaps
+}
+
+// weakestEligibleOut finds the lowest-scoring unused out slot pos could
+// legally fill, or -1 when none is left.
+func weakestEligibleOut(pos string, outs []lineupSlot, used []bool) int {
+	best := -1
+	for i, o := range outs {
+		if used[i] || (o.Slot != pos && !flexEligible(o.Slot, pos)) {
+			continue
+		}
+		if best < 0 || o.Points < outs[best].Points {
+			best = i
+		}
+	}
+	return best
 }
 
 // bestLineupSlots labels a bestLineup assignment with the lineup

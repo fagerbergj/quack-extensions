@@ -155,6 +155,40 @@ func TestAddRetroFieldsFlexPromotesFromBench(t *testing.T) {
 	if me.LeftOnBench != 2 {
 		t.Errorf("left_on_bench = %v, want 2 (32 best - 30 started)", me.LeftOnBench)
 	}
+	if len(me.Swaps) != 1 {
+		t.Fatalf("swaps = %+v, want exactly one (bench RB2 in for started WR2)", me.Swaps)
+	}
+	sw := me.Swaps[0]
+	if sw.In.Pos != "RB" || sw.In.Points != 7 || sw.Out.Slot != "FLEX" || sw.Out.Points != 5 || sw.Swing != 2 {
+		t.Errorf("swap = %+v, want in RB@7 out FLEX@5 swing 2", sw)
+	}
+}
+
+// TestBuildSwapsSameSetSwappedOrderIsZeroSwaps: bestLineup fills strict
+// slots by points, so a slot-by-slot comparison of a reordered RB1/RB2 would wrongly report two misses.
+func TestBuildSwapsSameSetSwappedOrderIsZeroSwaps(t *testing.T) {
+	dump := playerDumpAt("QB1", "QB", "RB1", "RB", "RB2", "RB")
+	league := &sleepergen.League{RosterPositions: []string{"QB", "RB", "RB", "BN"}}
+	// Started RB1 (lower scorer) then RB2 (higher scorer); bestLineup's
+	// top-N-per-slot fill assigns the higher scorer to the first RB slot.
+	m := sleepergen.Matchup{
+		Points:        29,
+		Players:       []string{"QB1", "RB1", "RB2"},
+		Starters:      []string{"QB1", "RB1", "RB2"},
+		PlayersPoints: map[string]float32{"QB1": 10, "RB1": 8, "RB2": 11},
+	}
+	me := &side{Starters: []lineupSlot{
+		{Slot: "QB", PlayerID: "QB1", Points: 10},
+		{Slot: "RB", PlayerID: "RB1", Points: 8},
+		{Slot: "RB", PlayerID: "RB2", Points: 11},
+	}}
+	assignment := bestLineup(league.RosterPositions, m.Players, m.PlayersPoints, dump)
+	if assignment.bySlot[1] != "RB2" || assignment.bySlot[2] != "RB1" {
+		t.Fatalf("assignment = %+v, want RB2 then RB1 (solver fills by points, not start order)", assignment.bySlot)
+	}
+	if swaps := buildSwaps(me.Starters, assignment, m.PlayersPoints, dump); len(swaps) != 0 {
+		t.Errorf("swaps = %+v, want none - same two players started, just in swapped slots", swaps)
+	}
 }
 
 func TestFreeAgentHits(t *testing.T) {
