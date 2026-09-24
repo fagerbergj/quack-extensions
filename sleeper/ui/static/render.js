@@ -460,7 +460,7 @@ export function renderRetro(state) {
   if (!state.found) return section('sec-retro', head + emptyBody(state.job, state.title, state.what, state.running, state.runnable))
   const r = state.data
   const misses = (r.misses || []).map(m => `<tr><td>${esc(m.slot)}</td><td>${esc(m.started_name)}</td><td class="num">${num(m.started_pts, 2)}</td><td>${esc(m.better_name)}</td><td class="num">${num(m.better_pts, 2)}</td><td class="num">+${num(m.swing, 2)}</td><td>${whyCell(m)}</td></tr>`).join('')
-  const waiverMisses = (r.waiver_misses || []).map(w => `<tr><td>${esc(w.name)}</td><td class="num">${num(w.pts, 2)}</td><td>${esc(w.over_name)}</td><td class="num">${num(w.over_pts, 2)}</td><td>${whyCell(w)}</td></tr>`).join('')
+  const waiverMisses = (r.waiver_misses || []).map(w => `<tr><td>${esc(w.name)} <small>${esc(w.pos || '')}</small></td><td class="num">${num(w.pts, 2)}</td><td>${esc(w.over_name)}</td><td class="num">${num(w.over_pts, 2)}</td><td>${whyCell(w)}</td></tr>`).join('')
   const lessons = (r.lessons || []).length ? `<div class="sl-sec__body"><p class="sl-sub">Lessons for next week</p><ul class="sl-notes">${r.lessons.map(l => `<li>${clampBlock(mdText(l))}</li>`).join('')}</ul></div>` : ''
   const swing = r.left >= Math.abs((r.opp ?? 0) - r.started) && !r.won
   return section('sec-retro', head + `<div class="sl-sec__body">
