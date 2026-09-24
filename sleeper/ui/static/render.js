@@ -197,6 +197,23 @@ export function invalidBody(text) {
   return `<div class="sl-sec__body sl-invalid"><p class="sl-invalid__notice">Output is not in the expected format</p><pre class="sl-invalid__raw">${esc(text)}</pre></div>`
 }
 
+// pairOppBySlot matches opponent_starters' raw, unnumbered slots (RB, RB...)
+// to my own numbered slots (RB1, RB2...): the Nth opponent at a base position pairs with the Nth of mine.
+function pairOppBySlot(myStarters, oppStarters) {
+  const basePos = slot => String(slot || '').replace(/\d+$/, '')
+  const queues = {}
+  for (const o of oppStarters || []) {
+    const pos = basePos(o.slot)
+    ;(queues[pos] = queues[pos] || []).push(o)
+  }
+  const out = {}
+  for (const s of myStarters || []) {
+    const q = queues[basePos(s.slot)]
+    if (q && q.length) out[s.slot] = q.shift()
+  }
+  return out
+}
+
 // One starter row: your player against the opponent's at that slot. A
 // `replaces` row is highlighted and always expandable; a plain row only if it has a `why`.
 function lineupRow(row, scale, oppBySlot) {
@@ -232,7 +249,7 @@ export function renderLineup(state) {
   const d = state.data
   const starters = d.starters || []
   const scale = barScale(starters)
-  const oppBySlot = Object.fromEntries((d.opponent_starters || []).map(o => [o.slot, o]))
+  const oppBySlot = pairOppBySlot(starters, d.opponent_starters || [])
   const rows = starters.map(row => lineupRow(row, scale, oppBySlot)).join('')
   const bench = d.bench || [], reserve = d.reserve || []
 
@@ -424,17 +441,34 @@ export function renderTrends(state) {
     <p class="sl-src">${mdText(d.source_note || '')}</p></div>`)
 }
 
+// knowMarker: knowable is optional (undefined shows nothing); a knowable
+// miss is a mistake, luck is variance, not a bad call.
+function knowMarker(knowable) {
+  if (knowable == null) return ''
+  return knowable ? '<span class="qk-badge qk-badge--err">knowable</span>' : '<span class="qk-badge">luck</span>'
+}
+
+// whyCell renders a miss/waiver_miss's optional why behind a clamped
+// <details>, same pattern as a lineup row's why.
+function whyCell(item) {
+  return `${knowMarker(item.knowable)}${item.why ? clampBlock(mdText(item.why)) : ''}`
+}
+
 export function renderRetro(state) {
   const head = jobHead(state)
   if (state.invalid) return section('sec-retro', head + invalidBody(state.text))
   if (!state.found) return section('sec-retro', head + emptyBody(state.job, state.title, state.what, state.running, state.runnable))
   const r = state.data
-  const misses = (r.misses || []).map(m => `<tr><td>${esc(m.slot)}</td><td>${esc(m.started_name)}</td><td class="num">${num(m.started_pts, 2)}</td><td>${esc(m.better_name)}</td><td class="num">${num(m.better_pts, 2)}</td><td class="num">+${num(m.swing, 2)}</td></tr>`).join('')
+  const misses = (r.misses || []).map(m => `<tr><td>${esc(m.slot)}</td><td>${esc(m.started_name)}</td><td class="num">${num(m.started_pts, 2)}</td><td>${esc(m.better_name)}</td><td class="num">${num(m.better_pts, 2)}</td><td class="num">+${num(m.swing, 2)}</td><td>${whyCell(m)}</td></tr>`).join('')
+  const waiverMisses = (r.waiver_misses || []).map(w => `<tr><td>${esc(w.name)} <small>${esc(w.pos || '')}</small></td><td class="num">${num(w.pts, 2)}</td><td>${esc(w.over_name)}</td><td class="num">${num(w.over_pts, 2)}</td><td>${whyCell(w)}</td></tr>`).join('')
+  const lessons = (r.lessons || []).length ? `<div class="sl-sec__body"><p class="sl-sub">Lessons for next week</p><ul class="sl-notes">${r.lessons.map(l => `<li>${clampBlock(mdText(l))}</li>`).join('')}</ul></div>` : ''
   const swing = r.left >= Math.abs((r.opp ?? 0) - r.started) && !r.won
   return section('sec-retro', head + `<div class="sl-sec__body">
     <div class="sl-stats"><div class="sl-stat"><span>Started</span><b>${num(r.started, 2)}</b><small>${r.won ? 'won' : 'lost'}${r.opp != null ? ' to ' + num(r.opp, 2) : ''}</small></div><div class="sl-stat"><span>Best possible</span><b>${num(r.best, 2)}</b><small>from the players you owned</small></div><div class="sl-stat"><span>Left on the bench</span><b>${num(r.left, 1)}</b><small>${swing ? 'more than the margin: a winnable week' : 'less than the margin'}</small></div></div>
     ${r.summary ? clampBlock(mdText(r.summary)) : ''}
-    ${misses ? `<div class="qk-table-wrap"><table class="qk-table"><thead><tr><th>Slot</th><th>Started</th><th class="num">Pts</th><th>Better option</th><th class="num">Pts</th><th class="num">Swing</th></tr></thead><tbody>${misses}</tbody></table></div>` : ''}</div>`)
+    ${misses ? `<div class="qk-table-wrap"><table class="qk-table"><thead><tr><th>Slot</th><th>Started</th><th class="num">Pts</th><th>Better option</th><th class="num">Pts</th><th class="num">Swing</th><th>Why</th></tr></thead><tbody>${misses}</tbody></table></div>` : ''}</div>
+    ${waiverMisses ? `<div class="sl-sec__body"><p class="sl-sub">Free agents who outscored your starters</p><div class="qk-table-wrap"><table class="qk-table"><thead><tr><th>Player</th><th class="num">Pts</th><th>Instead of</th><th class="num">Pts</th><th>Why</th></tr></thead><tbody>${waiverMisses}</tbody></table></div></div>` : ''}
+    ${lessons}`)
 }
 
 export function renderDraftBoard(state) {

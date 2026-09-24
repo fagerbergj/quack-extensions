@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"slices"
 	"testing"
+
+	"github.com/fagerbergj/quack-extensions/sleeper/sleepergen"
 )
 
 // TestGetHistoryKnownValues pins derived numbers independently checked
@@ -182,7 +185,34 @@ func TestBestLineupPointsMatchesBruteForce(t *testing.T) {
 		if got != want {
 			t.Fatalf("trial %d: slots=%v ids=%v points=%v: bestLineupPoints = %v, want %v (brute force)", trial, slotPositions, ids, points, got, want)
 		}
+		if msg := assignmentProblem(slotPositions, bestLineup(slotPositions, ids, points, dump), points, dump); msg != "" {
+			t.Fatalf("trial %d: slots=%v ids=%v points=%v: %s", trial, slotPositions, ids, points, msg)
+		}
 	}
+}
+
+// assignmentProblem checks the reconstructed per-slot lineup itself: eligible, no repeats, sums to the total.
+func assignmentProblem(slots []string, a lineupAssignment, points map[string]float32, dump map[string]sleepergen.Player) string {
+	seen := map[string]bool{}
+	var sum float32
+	for i, pid := range a.bySlot {
+		if pid == "" {
+			continue
+		}
+		if seen[pid] {
+			return fmt.Sprintf("player %s assigned twice: %v", pid, a.bySlot)
+		}
+		seen[pid] = true
+		pos := *dump[pid].Position
+		if !slices.Contains(flexKindEligible[slots[i]], pos) && pos != slots[i] {
+			return fmt.Sprintf("player %s (%s) not eligible for slot %s", pid, pos, slots[i])
+		}
+		sum += points[pid]
+	}
+	if sum != a.total {
+		return fmt.Sprintf("assigned points sum %v != total %v", sum, a.total)
+	}
+	return ""
 }
 
 // bruteForceFlexAssignment enumerates every subset+permutation of players

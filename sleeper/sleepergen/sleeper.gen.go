@@ -229,6 +229,7 @@ type PlayerStatEntry struct {
 	Company      *string                 `json:"company,omitempty"`
 	Date         *string                 `json:"date,omitempty"`
 	GameId       *string                 `json:"game_id,omitempty"`
+	IsAwayTeam   *bool                   `json:"is_away_team,omitempty"`
 	LastModified *int                    `json:"last_modified,omitempty"`
 	Opponent     *string                 `json:"opponent,omitempty"`
 	Player       *map[string]interface{} `json:"player,omitempty"`

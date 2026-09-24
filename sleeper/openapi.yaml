@@ -845,6 +845,7 @@ components:
         date: { type: string, nullable: true }
         game_id: { type: string, nullable: true }
         week_shard: { type: string, nullable: true }
+        is_away_team: { type: boolean, nullable: true }
         last_modified: { type: integer }
         updated_at: { type: integer }
         stats:
