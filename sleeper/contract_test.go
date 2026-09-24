@@ -80,7 +80,7 @@ func fixtureCases() []fixtureCase {
 		{"schedule", "/schedule/nfl/regular/2026", func() any { return &[]sleepergen.Game{} }, "Game", "array"},
 		{"research", "/players/nfl/research/regular/2026/2", func() any { return &map[string]sleepergen.ResearchEntry{} }, "", ""},
 		{"player season stats", "/stats/nfl/player/6797?season_type=regular&season=2026", func() any { return &sleepergen.PlayerStatEntry{} }, "PlayerStatEntry", "object"},
-		{"player game log", "/stats/nfl/player/6797?grouping=week&season=2026&season_type=regular", func() any { return &[]sleepergen.PlayerStatEntry{} }, "PlayerStatEntry", "array"},
+		{"player game log", "/stats/nfl/player/6797?grouping=week&season=2026&season_type=regular", func() any { return &map[string]*sleepergen.PlayerStatEntry{} }, "PlayerStatEntry", "map"},
 		{"past league", "/v1/league/" + pastLeague, func() any { return &sleepergen.League{} }, "League", "object"},
 		{"past rosters", "/v1/league/" + pastLeague + "/rosters", func() any { return &[]sleepergen.Roster{} }, "Roster", "array"},
 		{"past winners bracket", "/v1/league/" + pastLeague + "/winners_bracket", func() any { return &[]sleepergen.BracketMatch{} }, "BracketMatch", "array"},
@@ -219,7 +219,9 @@ func jsonInstances(raw []byte, shape string) ([]map[string]any, error) {
 		}
 		out := make([]map[string]any, 0, len(m))
 		for _, v := range m {
-			out = append(out, v)
+			if v != nil { // a keyed-by-week map carries null for unplayed weeks
+				out = append(out, v)
+			}
 		}
 		return out, nil
 	default:

@@ -420,15 +420,22 @@ func (c *Client) fetchPlayerGameLog(ctx context.Context, playerID, season string
 	if err != nil {
 		return nil, fmt.Errorf("sleeper: read game log %s %s: %w", playerID, season, err)
 	}
-	var entries []sleepergen.PlayerStatEntry
+	// grouping=week returns {"1": entry, "2": entry, "3": null, ...}, keyed by week.
+	var byWeek map[string]*sleepergen.PlayerStatEntry
 	if resp.StatusCode == http.StatusNotFound || strings.TrimSpace(string(body)) == "null" {
 		return nil, fmt.Errorf("%w (status %s): %s", ErrNotFound, resp.Status, string(body))
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("sleeper: unexpected response (status %s): %s", resp.Status, string(body))
 	}
-	if err := json.Unmarshal(body, &entries); err != nil {
+	if err := json.Unmarshal(body, &byWeek); err != nil {
 		return nil, fmt.Errorf("sleeper: decode game log %s %s: %w", playerID, season, err)
+	}
+	entries := make([]sleepergen.PlayerStatEntry, 0, len(byWeek))
+	for _, e := range byWeek {
+		if e != nil {
+			entries = append(entries, *e)
+		}
 	}
 	return entries, nil
 }

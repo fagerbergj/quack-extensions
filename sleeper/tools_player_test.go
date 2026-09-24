@@ -42,7 +42,7 @@ func TestGetPlayerRequiresIDOrName(t *testing.T) {
 	}
 }
 
-// TestGetPlayerGameLog fixture carries weeks 1-2 for player 6797; week 2
+// TestGetPlayerGameLog: the recorded live fixture is keyed by week with nulls for unplayed weeks; week 2
 // is the fixture league's current (in-progress) week, so only week 1 must survive.
 func TestGetPlayerGameLog(t *testing.T) {
 	e := testExtension(t)
@@ -54,14 +54,14 @@ func TestGetPlayerGameLog(t *testing.T) {
 		t.Fatalf("game_log = %+v, want exactly week 1 (week 2 is the current week)", got.GameLog)
 	}
 	w := got.GameLog[0]
-	if w.Week != 1 || w.Opp != "PIT" {
-		t.Errorf("week/opp = %d/%q, want 1/PIT", w.Week, w.Opp)
+	if w.Week != 1 || w.Opp != "ARI" {
+		t.Errorf("week/opp = %d/%q, want 1/ARI", w.Week, w.Opp)
 	}
-	if w.SnapPct == nil || *w.SnapPct != 93 {
-		t.Errorf("snap_pct = %v, want 93 (65/70)", w.SnapPct)
+	if w.SnapPct == nil || *w.SnapPct != 100 {
+		t.Errorf("snap_pct = %v, want 100 (55/55)", w.SnapPct)
 	}
-	if w.Carries != 2 || w.PtsPPR != 15.16 {
-		t.Errorf("carries/pts_ppr = %v/%v, want 2/15.16", w.Carries, w.PtsPPR)
+	if w.Carries != 5 || w.PtsPPR != 14.26 {
+		t.Errorf("carries/pts_ppr = %v/%v, want 5/14.26", w.Carries, w.PtsPPR)
 	}
 }
 
