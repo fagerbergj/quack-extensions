@@ -192,20 +192,28 @@ func (e *extension) getMatchup(ctx context.Context, a matchupArgs) (matchupResul
 	if hasOpp {
 		result.Opponent = buildSide(league, opp, rosters, names, dump, proj)
 	}
-	if weekIsComplete(week, league, state) {
-		stats, err := e.client.WeekStats(ctx, season, week)
-		if err != nil {
-			return matchupResult{}, fmt.Errorf("sleeper_matchup: stats: %w", err)
-		}
-		addRetroFields(&result.Me, league, mine, matchups, dump, proj, stats)
-	} else {
-		result.Me.BestByProjection = bestByProjectionSlots(league.RosterPositions, mine.Players, proj, dump)
+	if err := e.addWeekFields(ctx, &result.Me, league, state, season, week, mine, matchups, dump, proj); err != nil {
+		return matchupResult{}, err
 	}
 	return result, nil
 }
 
 // weekIsComplete reports whether a week's scoring is final: strictly
 // before the live current week, or the season itself has finished.
+// addWeekFields: a finished week gets the retro fields, a live week the projection baseline.
+func (e *extension) addWeekFields(ctx context.Context, me *side, league *sleepergen.League, state *sleepergen.NflState, season string, week int, mine sleepergen.Matchup, matchups []sleepergen.Matchup, dump map[string]sleepergen.Player, proj map[string]sleepergen.StatMap) error {
+	if !weekIsComplete(week, league, state) {
+		me.BestByProjection = bestByProjectionSlots(league.RosterPositions, mine.Players, proj, dump)
+		return nil
+	}
+	stats, err := e.client.WeekStats(ctx, season, week)
+	if err != nil {
+		return fmt.Errorf("sleeper_matchup: stats: %w", err)
+	}
+	addRetroFields(me, league, mine, matchups, dump, proj, stats)
+	return nil
+}
+
 func weekIsComplete(week int, league *sleepergen.League, state *sleepergen.NflState) bool {
 	return league.Status == "complete" || week < state.Week
 }

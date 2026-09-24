@@ -415,7 +415,7 @@ func (c *Client) fetchPlayerGameLog(ctx context.Context, playerID, season string
 	if err != nil {
 		return nil, fmt.Errorf("sleeper: get game log %s %s: %w", playerID, season, err)
 	}
-	defer resp.Body.Close() //nolint:bodyclose // closed here; body is fully read below, not streamed to a caller
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("sleeper: read game log %s %s: %w", playerID, season, err)
