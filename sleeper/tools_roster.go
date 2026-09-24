@@ -205,6 +205,27 @@ func nonBenchSlots(positions []string) []string {
 	return out
 }
 
+// numberedSlots labels a repeated position with a count suffix (RB, RB ->
+// RB1, RB2), matching the lineup artifact's naming; a lone slot keeps its bare code.
+func numberedSlots(positions []string) []string {
+	slots := nonBenchSlots(positions)
+	counts := map[string]int{}
+	for _, s := range slots {
+		counts[s]++
+	}
+	seen := make(map[string]int, len(counts))
+	out := make([]string, len(slots))
+	for i, s := range slots {
+		if counts[s] == 1 {
+			out[i] = s
+			continue
+		}
+		seen[s]++
+		out[i] = fmt.Sprintf("%s%d", s, seen[s])
+	}
+	return out
+}
+
 func toSet(ids *[]string) map[string]bool {
 	out := map[string]bool{}
 	if ids == nil {

@@ -1,0 +1,30 @@
+[
+  {
+    "player_id": "6797",
+    "season": "2026",
+    "season_type": "regular",
+    "week": 1,
+    "opponent": "PIT",
+    "team": "LAC",
+    "stats": {
+      "off_snp": 65,
+      "tm_off_snp": 70,
+      "rush_att": 2,
+      "pts_ppr": 15.16
+    }
+  },
+  {
+    "player_id": "6797",
+    "season": "2026",
+    "season_type": "regular",
+    "week": 2,
+    "opponent": "JAX",
+    "team": "LAC",
+    "stats": {
+      "off_snp": 40,
+      "tm_off_snp": 45,
+      "rush_att": 1,
+      "pts_ppr": 14.26
+    }
+  }
+]

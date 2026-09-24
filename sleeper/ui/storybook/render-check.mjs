@@ -58,7 +58,7 @@ function contentType(file) {
 
 // Pinned so a renamed story file, a deleted variant export, or a broken
 // glob (which would otherwise just shrink the loop silently) fails loudly.
-const EXPECTED_STORIES = 60
+const EXPECTED_STORIES = 61
 
 async function storyIDs() {
   const index = JSON.parse(await readFile(path.join(ROOT, 'index.json'), 'utf8'))

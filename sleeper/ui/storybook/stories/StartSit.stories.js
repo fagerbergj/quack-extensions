@@ -24,3 +24,10 @@ const legacyData = {
 }
 const legacyEnvelope = { ...envelope, data: legacyData }
 export const Legacy = { render: () => page(renderLineup(legacyEnvelope)) }
+
+// Regression coverage: sleeper_matchup returns opponent slots unnumbered
+// (RB, RB...), which used to clobber the second same-position entry in a plain {slot: player} map.
+const unnumberedSlot = s => s.replace(/\d+$/, '')
+const realOpponentData = { ...lineup, opponent_starters: (lineup.opponent_starters || []).map(o => ({ ...o, slot: unnumberedSlot(o.slot) })) }
+const realOpponentEnvelope = { ...envelope, data: realOpponentData }
+export const RealOpponentSlots = { render: () => page(renderLineup(realOpponentEnvelope)) }

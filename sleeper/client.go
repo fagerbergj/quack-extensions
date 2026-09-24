@@ -2,8 +2,10 @@ package sleeper
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -382,6 +384,53 @@ func (c *Client) PlayerSeasonStats(ctx context.Context, playerID, season string)
 		}
 		return okJSON(resp.JSON200, resp.HTTPResponse, resp.Body)
 	})
+}
+
+// PlayerGameLog adds the `grouping=week` query param the generated
+// aggregate call omits, and decodes the per-week array it returns.
+func (c *Client) PlayerGameLog(ctx context.Context, playerID, season string) ([]sleepergen.PlayerStatEntry, error) {
+	out, err := cached(c, "player_game_log:"+playerID+":"+season, ttlStatMap, func() ([]sleepergen.PlayerStatEntry, error) {
+		return c.fetchPlayerGameLog(ctx, playerID, season)
+	})
+	if err != nil && errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	return out, err
+}
+
+func (c *Client) fetchPlayerGameLog(ctx context.Context, playerID, season string) ([]sleepergen.PlayerStatEntry, error) {
+	raw, ok := c.gen.ClientInterface.(*sleepergen.Client)
+	if !ok {
+		return nil, fmt.Errorf("sleeper: unexpected generated client type %T", c.gen.ClientInterface)
+	}
+	params := &sleepergen.GetPlayerSeasonStatsParams{SeasonType: "regular", Season: season}
+	req, err := sleepergen.NewGetPlayerSeasonStatsRequest(raw.Server, playerID, params)
+	if err != nil {
+		return nil, fmt.Errorf("sleeper: game log request %s %s: %w", playerID, season, err)
+	}
+	q := req.URL.Query()
+	q.Set("grouping", "week")
+	req.URL.RawQuery = q.Encode()
+	resp, err := raw.Client.Do(req.WithContext(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("sleeper: get game log %s %s: %w", playerID, season, err)
+	}
+	defer resp.Body.Close() //nolint:bodyclose // closed here; body is fully read below, not streamed to a caller
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("sleeper: read game log %s %s: %w", playerID, season, err)
+	}
+	var entries []sleepergen.PlayerStatEntry
+	if resp.StatusCode == http.StatusNotFound || strings.TrimSpace(string(body)) == "null" {
+		return nil, fmt.Errorf("%w (status %s): %s", ErrNotFound, resp.Status, string(body))
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("sleeper: unexpected response (status %s): %s", resp.Status, string(body))
+	}
+	if err := json.Unmarshal(body, &entries); err != nil {
+		return nil, fmt.Errorf("sleeper: decode game log %s %s: %w", playerID, season, err)
+	}
+	return entries, nil
 }
 
 func (c *Client) SeasonStats(ctx context.Context, season string) (map[string]sleepergen.StatMap, error) {
