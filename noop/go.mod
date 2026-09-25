@@ -3,7 +3,7 @@ module github.com/fagerbergj/quack-extensions/noop
 go 1.26.6
 
 require (
-	github.com/fagerbergj/quack-extensions/sdk v0.14.0
+	github.com/fagerbergj/quack-extensions/sdk v0.15.0
 	github.com/go-chi/chi/v5 v5.3.2
 	google.golang.org/adk/v2 v2.4.0
 	gopkg.in/yaml.v3 v3.0.1
