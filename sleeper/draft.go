@@ -5,6 +5,7 @@ package sleeper
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 
@@ -25,6 +26,11 @@ var offensePositions = []string{"QB", "RB", "WR", "TE", "K", "DEF"}
 // bestAvailablePerPosition caps how many names sleeper_draft lists per
 // position - enough for a tier read without flooding the result.
 const bestAvailablePerPosition = 5
+
+// adpDeltaThreshold: pick_no - adp at or beyond this many picks is a value
+// pick ("value") or a reach ("reach") - the same 8-pick band
+// sleeper/ui/static/render.js's renderDraftBoard uses for its fell/reach classes.
+const adpDeltaThreshold = 8
 
 type draftArgs struct {
 	DraftID  string `json:"draft_id,omitempty"`
@@ -48,6 +54,11 @@ type draftPick struct {
 	Position string  `json:"position"`
 	ADP      float32 `json:"adp,omitempty"`
 	NoADP    bool    `json:"no_adp,omitempty"`
+	// ADPDelta/ADPVerdict are the tool's own call, not the agent's - pick_no
+	// minus adp, and "value"/"reach"/"fair" against adpDeltaThreshold. Never
+	// recompute these from ADP by hand; sign errors invert steal and reach.
+	ADPDelta   *float32 `json:"adp_delta,omitempty"`
+	ADPVerdict string   `json:"adp_verdict,omitempty"`
 }
 
 type draftResult struct {
@@ -229,13 +240,34 @@ func draftPicksOut(picks []sleepergen.DraftPick, names map[int]string, proj map[
 	out := make([]draftPick, len(picks))
 	for i, p := range picks {
 		adp := proj[p.PlayerId]["adp_dd_ppr"]
+		noADP := adp >= noADPSentinel
 		out[i] = draftPick{
 			PickNo: p.PickNo, Round: p.Round, Slot: p.DraftSlot, RosterID: p.RosterId, Team: names[p.RosterId],
 			PlayerID: p.PlayerId, Name: pickPlayerName(p), Position: pickPosition(p),
-			ADP: adp, NoADP: adp >= noADPSentinel,
+			ADP: adp, NoADP: noADP,
 		}
+		out[i].ADPDelta, out[i].ADPVerdict = adpDeltaAndVerdict(p.PickNo, adp, noADP)
 	}
 	return out
+}
+
+// adpDeltaAndVerdict computes how many picks a player fell past (positive)
+// or was reached ahead of (negative) their ADP, and the verdict that
+// follows from adpDeltaThreshold. Nil/"" when there's no real ADP to compare.
+func adpDeltaAndVerdict(pickNo int, adp float32, noADP bool) (*float32, string) {
+	if noADP || adp <= 0 {
+		return nil, ""
+	}
+	delta := math.Round(float64(float32(pickNo)-adp)*10) / 10
+	delta32 := float32(delta)
+	verdict := "fair"
+	switch {
+	case delta >= adpDeltaThreshold:
+		verdict = "value"
+	case delta <= -adpDeltaThreshold:
+		verdict = "reach"
+	}
+	return &delta32, verdict
 }
 
 func pickPlayerName(p sleepergen.DraftPick) string {

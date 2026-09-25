@@ -20,6 +20,7 @@ func TestGetTransactions(t *testing.T) {
 	if len(got.Transactions) == 0 {
 		t.Fatal("expected transactions across weeks 1-2")
 	}
+	var sawDEF bool
 	for _, tx := range got.Transactions {
 		if tx.Type == "" || tx.Status == "" {
 			t.Errorf("transaction %+v missing type/status", tx)
@@ -31,7 +32,47 @@ func TestGetTransactions(t *testing.T) {
 			if m.Name == "" || m.Name == m.PlayerID {
 				t.Errorf("move %+v did not resolve a player name", m)
 			}
+			if m.Position == "" {
+				t.Errorf("move %+v did not resolve a position", m)
+			}
+			// A team-defense id (e.g. "BAL") must label position "DEF", not
+			// read as an unrelated mechanic - see TestGetTransactionsLabelsDefensePosition.
+			if m.Position == "DEF" {
+				sawDEF = true
+			}
 		}
+	}
+	if !sawDEF {
+		t.Fatal("expected at least one DEF move in weeks 1-2 fixtures (test assumption changed)")
+	}
+}
+
+// TestGetTransactionsLabelsDefensePosition covers the fix: a team-defense
+// add/drop (player_id "BAL") must resolve name "Baltimore Ravens" and
+// position "DEF", the same way sleeper_free_agents labels a DEF entry -
+// not just a bare team code that reads as a league-specific mechanic.
+func TestGetTransactionsLabelsDefensePosition(t *testing.T) {
+	e := testExtension(t)
+	got, err := e.getTransactions(context.Background(), transactionsArgs{WeeksBack: 2})
+	if err != nil {
+		t.Fatalf("getTransactions: %v", err)
+	}
+	var found *moveEntry
+	for _, tx := range got.Transactions {
+		for _, m := range append(append([]moveEntry{}, tx.Adds...), tx.Drops...) {
+			if m.PlayerID == "BAL" {
+				found = &m
+			}
+		}
+	}
+	if found == nil {
+		t.Fatal("expected a BAL (Ravens DEF) move in weeks 1-2 fixtures (test assumption changed)")
+	}
+	if found.Position != "DEF" {
+		t.Errorf("BAL move position = %q, want DEF", found.Position)
+	}
+	if found.Name != "Baltimore Ravens" {
+		t.Errorf("BAL move name = %q, want Baltimore Ravens", found.Name)
 	}
 }
 

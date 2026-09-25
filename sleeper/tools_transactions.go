@@ -23,6 +23,7 @@ type transactionsArgs struct {
 type moveEntry struct {
 	PlayerID string `json:"player_id"`
 	Name     string `json:"name"`
+	Position string `json:"position"`
 	Team     string `json:"team"`
 }
 
@@ -129,7 +130,9 @@ func playerMoves(m *map[string]int, names map[int]string, dump map[string]sleepe
 	}
 	out := make([]moveEntry, 0, len(*m))
 	for pid, rid := range *m {
-		out = append(out, moveEntry{PlayerID: pid, Name: playerName(dump, pid), Team: names[rid]})
+		out = append(out, moveEntry{
+			PlayerID: pid, Name: playerName(dump, pid), Position: playerPosition(dump, pid), Team: names[rid],
+		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PlayerID < out[j].PlayerID })
 	return out
