@@ -541,6 +541,29 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/Game" }
 
+  /scores/nfl/regular/{season}/{week}:
+    get:
+      operationId: getWeekScores
+      x-undocumented: true
+      summary: One week's games with kickoff instant, venue, and live-score metadata - probed live; may vanish.
+      parameters:
+        - name: season
+          in: path
+          required: true
+          schema: { type: string }
+        - name: week
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/GameScore" }
+
 components:
   schemas:
     User:
@@ -808,10 +831,68 @@ components:
       properties:
         game_id: { type: string }
         week: { type: integer }
-        date: { type: string, nullable: true }
+        date:
+          type: string
+          nullable: true
+          description: Calendar date in US Eastern time (a Monday 8:15pm ET game is that Monday, though its UTC kickoff is Tuesday). No time of day - see GameScore.start_time.
         status: { type: string, nullable: true }
         home: { type: string }
         away: { type: string }
+
+    GameScore:
+      description: One game from /scores; game_id joins it to Game.
+      type: object
+      required: [game_id, week, start_time, metadata]
+      properties:
+        game_id: { type: string }
+        week: { type: integer }
+        date: { type: string, nullable: true }
+        status: { type: string, nullable: true }
+        start_time:
+          type: integer
+          format: int64
+          description: Kickoff instant, Unix epoch milliseconds (equals metadata.date_time).
+        season: { type: string }
+        season_type: { type: string }
+        sport: { type: string }
+        metadata: { $ref: "#/components/schemas/GameScoreMetadata" }
+        provider_id: { type: string, nullable: true }
+        provider_week: { type: integer, nullable: true }
+        schedule_hash: { type: string, nullable: true }
+        reactions: { type: object, nullable: true, additionalProperties: true }
+        total_comments: { type: integer }
+        total_reactions: { type: integer }
+        total_views: { type: integer }
+        last_updated: { type: integer, format: int64 }
+        updated_at: { type: integer, format: int64 }
+
+    GameScoreMetadata:
+      description: >-
+        Only the fields tools read are typed; the ~60 others (live score, odds,
+        forecast, geo_lat/geo_long) pass through as additional properties.
+      type: object
+      additionalProperties: true
+      properties:
+        status:
+          type: string
+          description: >-
+            Observed: "scheduled", "created", "closed", "postponed", "cancelled",
+            "flex-schedule". flex-schedule marks a flex-eligible game whose start_time
+            is a placeholder; a postponed game keeps its original start_time.
+        date_time: { type: string }
+        stadium_details: { $ref: "#/components/schemas/Stadium" }
+
+    Stadium:
+      type: object
+      properties:
+        name: { type: string }
+        city: { type: string }
+        state: { type: string }
+        country: { type: string }
+        zip: { type: string }
+        type: { type: string, description: '"outdoor", "dome", or "retractable_dome"' }
+        playing_surface: { type: string }
+        capacity: { type: integer }
 
     StatMap:
       description: A player's weekly projection or stat line, keyed by Sleeper's stat abbreviation.

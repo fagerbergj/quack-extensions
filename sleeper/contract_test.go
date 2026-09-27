@@ -78,6 +78,7 @@ func fixtureCases() []fixtureCase {
 		{"stats w1", "/v1/stats/nfl/regular/2026/1", func() any { return &map[string]sleepergen.StatMap{} }, "", ""},
 		{"depth chart", "/players/nfl/TB/depth_chart", func() any { return &map[string][]string{} }, "", ""},
 		{"schedule", "/schedule/nfl/regular/2026", func() any { return &[]sleepergen.Game{} }, "Game", "array"},
+		{"scores w2", "/scores/nfl/regular/2026/2", func() any { return &[]sleepergen.GameScore{} }, "GameScore", "array"},
 		{"research", "/players/nfl/research/regular/2026/2", func() any { return &map[string]sleepergen.ResearchEntry{} }, "", ""},
 		{"player season stats", "/stats/nfl/player/6797?season_type=regular&season=2026", func() any { return &sleepergen.PlayerStatEntry{} }, "PlayerStatEntry", "object"},
 		{"player game log", "/stats/nfl/player/6797?grouping=week&season=2026&season_type=regular", func() any { return &map[string]*sleepergen.PlayerStatEntry{} }, "PlayerStatEntry", "map"},

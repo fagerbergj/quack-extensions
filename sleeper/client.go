@@ -25,6 +25,10 @@ const (
 	ttlStatMap     = time.Hour
 	ttlChain       = 24 * time.Hour
 
+	// ttlKickoff: kickoff/venue only move on a flex decision, announced
+	// days ahead; lock state is computed per call from the kickoff itself.
+	ttlKickoff = 6 * time.Hour
+
 	// ttlLive covers endpoints a tool wants fresh during an active event
 	// (waivers processing, a live draft, trending heat).
 	ttlLive = 2 * time.Minute
@@ -354,10 +358,24 @@ func (c *Client) Player(ctx context.Context, playerID string) (*sleepergen.Playe
 
 //nolint:dupl // see Rosters
 func (c *Client) Schedule(ctx context.Context, season string) ([]sleepergen.Game, error) {
-	return cachedList(c, "schedule:"+season, ttlStatMap, func() (*[]sleepergen.Game, *http.Response, []byte, error) {
+	return cachedList(c, "schedule:"+season, ttlLive, func() (*[]sleepergen.Game, *http.Response, []byte, error) {
 		resp, err := c.gen.GetScheduleWithResponse(ctx, season)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("sleeper: get schedule %s: %w", season, err)
+		}
+		return resp.JSON200, resp.HTTPResponse, resp.Body, nil
+	})
+}
+
+// WeekScores is read for kickoff and venue; its live-score fields are up to ttlKickoff stale.
+//
+//nolint:dupl // see Rosters
+func (c *Client) WeekScores(ctx context.Context, season string, week int) ([]sleepergen.GameScore, error) {
+	key := fmt.Sprintf("scores:%s:%d", season, week)
+	return cachedList(c, key, ttlKickoff, func() (*[]sleepergen.GameScore, *http.Response, []byte, error) {
+		resp, err := c.gen.GetWeekScoresWithResponse(ctx, season, week)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("sleeper: get scores %s week %d: %w", season, week, err)
 		}
 		return resp.JSON200, resp.HTTPResponse, resp.Body, nil
 	})
