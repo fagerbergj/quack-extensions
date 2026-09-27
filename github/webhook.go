@@ -62,6 +62,7 @@ type issueCommentPayload struct {
 	rawEvent        json.RawMessage // originating webhook JSON → envelope's <event> block.
 	eventName       string          // originating webhook dotted name.
 	checkSHA        string          // CI commit: write the "check-runs" input artifact. "" = plan/review/mention run.
+	explain         bool            // /explain: own per-user chat, no delivery, nothing posted but the chat link.
 	// issueDeliverableCache memoizes classifyIssueDeliverable for one dispatch:
 	// shared by pointer across every copy of p passed to
 	// buildEnvelope/buildWorkerAsk/deliverableIsPlan, so a live classifier
@@ -194,21 +195,17 @@ func (e *Extension) handleIssueComment(w http.ResponseWriter, body []byte) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	// A bare "/review" re-runs the label-triggered review: cycling the label
-	// off/on fast enough coalesces into no webhook at all, so the label alone
-	// can't re-trigger.
-	if e.isReviewCommand(p) {
+	if cmd, task, ok := e.prCommand(&p); ok {
 		if e.rejectDisallowedInvoker(w, p.Repository.Owner.Login+"/"+p.Repository.Name, "issue", p.Issue.Number, p.Comment.User.Login) {
 			return
 		}
 		p.rawEvent = json.RawMessage(body)
 		p.eventName = "issue_comment." + p.Action
-		p.isLabelTrigger = true // same run the labeled event dispatches, not a mention
 		slog.Info("github webhook received", "component", "github",
 			"repo", p.Repository.Owner.Login+"/"+p.Repository.Name, "pr", p.Issue.Number,
-			"command", "/review", "user", p.Comment.User.Login, "installation", p.Installation.ID)
+			"command", cmd, "user", p.Comment.User.Login, "installation", p.Installation.ID)
 		e.spawn(func() { e.ackReaction(p) })
-		e.spawn(func() { e.dispatch(p, autoReviewTask) })
+		e.spawn(func() { e.dispatch(p, task) })
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
@@ -616,19 +613,40 @@ func (e *Extension) ackLabelReaction(p issuesPayload) {
 	}
 }
 
-// isReviewCommand reports whether a comment is a bare "/review" (surrounding
-// whitespace allowed) from a write/admin author on a PR carrying the review
-// label. Gated on the same "label" trigger as the labeled-event path.
-func (e *Extension) isReviewCommand(p issueCommentPayload) bool {
-	if !e.triggers["label"] || p.Action != "created" || p.Issue.PullRequest == nil {
+// prCommand matches a bare PR slash command and shapes p for its dispatch.
+func (e *Extension) prCommand(p *issueCommentPayload) (cmd, task string, ok bool) {
+	switch {
+	// A bare "/review" re-runs the label-triggered review: cycling the label
+	// off/on fast enough coalesces into no webhook at all.
+	case e.isReviewCommand(*p):
+		p.isLabelTrigger = true // same run the labeled event dispatches, not a mention
+		return "/review", autoReviewTask, true
+	case e.isPRCommand(*p, "explain", "/explain"):
+		return "/explain", shapeExplain(p), true
+	}
+	return "", "", false
+}
+
+// isPRCommand reports whether a comment is exactly cmd (surrounding
+// whitespace allowed) on a PR, from a write/admin author, with trigger enabled.
+func (e *Extension) isPRCommand(p issueCommentPayload, trigger, cmd string) bool {
+	if !e.triggers[trigger] || p.Action != "created" || p.Issue.PullRequest == nil {
 		return false
 	}
-	if strings.TrimSpace(p.Comment.Body) != "/review" {
+	if strings.TrimSpace(p.Comment.Body) != cmd {
 		return false
 	}
 	switch p.Comment.AuthorAssociation {
 	case "OWNER", "MEMBER", "COLLABORATOR": // write or admin
-	default:
+		return true
+	}
+	return false
+}
+
+// isReviewCommand: a bare "/review" on a PR carrying the review label, gated
+// on the same "label" trigger as the labeled-event path.
+func (e *Extension) isReviewCommand(p issueCommentPayload) bool {
+	if !e.isPRCommand(p, "label", "/review") {
 		return false
 	}
 	for _, l := range p.Issue.Labels {
@@ -762,7 +780,7 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 		login = runUserID
 	}
 	// Dedup: one run per session — second trigger is dropped, not queued (#665, #668).
-	sessionID := fmt.Sprintf("github-%s-%s-%d", owner, repo, number)
+	sessionID := sessionIDFor(p, login)
 	chatID := globalChatID(sessionID)
 	claimedAt, claimed := e.claimOrAck(p, sessionID, owner, repo, number)
 	if !claimed {
@@ -789,22 +807,12 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 		gh = e.loadGithubContext(ctx, chatID, owner, repo, number, isPR, p.Comment.ID, true)
 	}
 
-	// Never run a label-triggered work request blind — #467 failure mode.
-	if p.isLabelTrigger && gh.contextUnavailable {
-		slog.Warn("github: label-triggered work request has no usable GitHub context; aborting rather than running blind",
-			"component", "github", "repo", owner+"/"+repo, "issue", number)
-		abortCtx, abortCancel := context.WithTimeout(context.Background(), reactionTimeout)
-		abortMsg := "Could not load this issue from GitHub; not running. Re-apply the label to retry."
-		if err := e.app.postIssueComment(abortCtx, owner, repo, number, abortMsg); err != nil {
-			slog.Warn("github: abort comment failed", "component", "github", "repo", owner+"/"+repo, "issue", number, "err", err)
-		}
-		abortCancel()
+	if e.abortBlind(p, gh, owner, repo, number) {
 		clearInflight()
 		return
 	}
 
-	// Compute permission grant once — authorship-check failure denies rather than grants.
-	_, allowedKinds := e.grantForDispatch(ctx, owner, repo, number, isPR, gh)
+	allowedKinds := e.dispatchGrant(ctx, p, owner, repo, number, isPR, gh)
 
 	p.issueDeliverableCache = &issueDeliverableResult{}
 	isPlan := e.deliverableIsPlan(ctx, p, task, allowedKinds, isPR)
@@ -818,10 +826,7 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 	workerAsk := e.buildWorkerAsk(ctx, p, task, gh, allowedKinds, manifest)
 	contextItems := e.nodeContextItems(ctx, owner, repo, number, p.checkSHA)
 
-	title := strings.TrimSpace(p.Issue.Title)
-	if title == "" {
-		title = truncate(task, 80)
-	}
+	title := dispatchTitle(p, task)
 
 	setup := &sdk.Setup{Repo: p.Repository.CloneURL, BaseRef: setupBaseRef(p, gh), WorkBranch: fmt.Sprintf("quack/issue-%d", number)}
 	if isPR {
@@ -858,7 +863,7 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 	// Stored BEFORE Dispatch: RunEnded can fire as soon as Dispatch returns.
 	e.pending.Store(chatID, &pendingRun{
 		sessionID: sessionID, claimedAt: claimedAt, owner: owner, repo: repo, number: number,
-		isPR: isPR, login: login, gh: gh, isPlan: isPlan, isLabelTrigger: p.isLabelTrigger,
+		isPR: isPR, login: login, gh: gh, isPlan: isPlan, isLabelTrigger: p.isLabelTrigger, explain: p.explain,
 		dispatched: req, defaultBranch: p.Repository.DefaultBranch, installationID: p.Installation.ID,
 	})
 	// Durable twin of the above (#65): e.pending is in-memory only, so a run
@@ -884,7 +889,62 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 		if derr := e.store.DeletePendingRun(ctx, chatID); derr != nil {
 			slog.Warn("github: DeletePendingRun after failed dispatch", "component", "github", "repo", owner+"/"+repo, "issue", number, "err", derr)
 		}
+		return
 	}
+	if p.explain {
+		e.postExplainLink(ctx, owner, repo, number, login, chatID)
+	}
+}
+
+// sessionIDFor keys the run's chat: one per issue/PR, or per requester for /explain.
+func sessionIDFor(p issueCommentPayload, login string) string {
+	owner, repo, number := p.Repository.Owner.Login, p.Repository.Name, p.Issue.Number
+	if p.explain {
+		return explainSessionID(owner, repo, number, login)
+	}
+	return fmt.Sprintf("github-%s-%s-%d", owner, repo, number)
+}
+
+// dispatchTitle: the chat title - the issue/PR title, else the task.
+func dispatchTitle(p issueCommentPayload, task string) string {
+	title := strings.TrimSpace(p.Issue.Title)
+	if title == "" {
+		title = truncate(task, 80)
+	}
+	if p.explain {
+		return "Explain: " + title
+	}
+	return title
+}
+
+// dispatchGrant computes the run's delivery grant once; authorship-check
+// failure denies rather than grants. Non-nil empty = deny-all (nil = unrestricted).
+func (e *Extension) dispatchGrant(ctx context.Context, p issueCommentPayload, owner, repo string, number int, isPR bool, gh githubContext) []string {
+	if p.explain {
+		return []string{}
+	}
+	_, allowedKinds := e.grantForDispatch(ctx, owner, repo, number, isPR, gh)
+	return allowedKinds
+}
+
+// abortBlind refuses a label-triggered or /explain run with no usable GitHub
+// context (#467) and says so on the thread; true means do not dispatch.
+func (e *Extension) abortBlind(p issueCommentPayload, gh githubContext, owner, repo string, number int) bool {
+	if !gh.contextUnavailable || !(p.isLabelTrigger || p.explain) {
+		return false
+	}
+	slog.Warn("github: work request has no usable GitHub context; aborting rather than running blind",
+		"component", "github", "repo", owner+"/"+repo, "issue", number)
+	abortCtx, abortCancel := context.WithTimeout(context.Background(), reactionTimeout)
+	defer abortCancel()
+	abortMsg := "Could not load this issue from GitHub; not running. Re-apply the label to retry."
+	if p.explain {
+		abortMsg = "Could not load this pull request from GitHub; not running. Comment /explain again to retry."
+	}
+	if err := e.app.postIssueComment(abortCtx, owner, repo, number, abortMsg); err != nil {
+		slog.Warn("github: abort comment failed", "component", "github", "repo", owner+"/"+repo, "issue", number, "err", err)
+	}
+	return true
 }
 
 // nodeContextItems: the CI-check detail a checkSHA-scoped run injects per
@@ -935,6 +995,9 @@ func (e *Extension) claimOrAck(p issueCommentPayload, sessionID, owner, repo str
 			e.spawn(func() { e.ackReaction(p) })
 		} else {
 			e.spawn(func() { e.ackIssue(owner, repo, number) })
+		}
+		if p.explain {
+			e.spawn(func() { e.postExplainLinkNow(owner, repo, number, p.Comment.User.Login, globalChatID(sessionID)) })
 		}
 		return claimedAt, false
 	}

@@ -136,7 +136,7 @@ func TestCommandsBlockTextOmitsDisabledTriggers(t *testing.T) {
 			name:     "only mention",
 			triggers: map[string]bool{"mention": true},
 			wantHas:  []string{"/quack <request>"},
-			wantNot:  []string{"/review", "quack:merge", "quack:fix", "quack:plan", "quack:implement"},
+			wantNot:  []string{"/review", "/explain", "quack:merge", "quack:fix", "quack:plan", "quack:implement"},
 		},
 		{
 			name:     "label and merge",
@@ -146,8 +146,8 @@ func TestCommandsBlockTextOmitsDisabledTriggers(t *testing.T) {
 		},
 		{
 			name:     "everything",
-			triggers: map[string]bool{"mention": true, "label": true, "merge": true, "ci_fix": true, "issue_plan": true, "issue_implement": true},
-			wantHas:  []string{"/quack <request>", "/review", "quack-auto-review", "quack:merge", "quack:fix", "quack:plan", "quack:implement"},
+			triggers: map[string]bool{"mention": true, "label": true, "merge": true, "ci_fix": true, "issue_plan": true, "issue_implement": true, "explain": true},
+			wantHas:  []string{"/quack <request>", "/review", "/explain", "quack-auto-review", "quack:merge", "quack:fix", "quack:plan", "quack:implement"},
 		},
 		{
 			name:     "nothing enabled",

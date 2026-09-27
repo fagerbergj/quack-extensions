@@ -59,7 +59,7 @@ const (
 var validTriggers = map[string]bool{
 	"mention": true, "pr_opened": true, "label": true,
 	"issue_plan": true, "issue_implement": true, "merge": true,
-	"ci_fix": true,
+	"ci_fix": true, "explain": true,
 }
 
 // config is this extension's own YAML shape, under extensions.github in
@@ -135,7 +135,7 @@ func (c *config) applyLabelDefaults(log func(string, ...any)) error {
 	}
 	for _, t := range c.Triggers {
 		if !validTriggers[t] {
-			return fmt.Errorf("github: triggers has unknown entry %q (want mention, pr_opened, label, issue_plan, issue_implement, merge, or ci_fix)", t)
+			return fmt.Errorf("github: triggers has unknown entry %q (want mention, pr_opened, label, issue_plan, issue_implement, merge, ci_fix, or explain)", t)
 		}
 	}
 	if c.Labels.Review == "" {
