@@ -2,6 +2,7 @@ package sleeper
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -66,10 +67,15 @@ func TestGetSchedule(t *testing.T) {
 		}
 	}
 	// The fixture's schedule status is a stale "pre_game"; locked must follow the kickoff instead.
+	g := got.Games[0]
 	want := scheduleGame{GameID: "202610201", Home: "ARI", Away: "SEA", Date: "2026-09-20", Status: "pre_game",
-		Kickoff: "2026-09-20T20:25:00Z", Locked: true, Venue: "State Farm Stadium", City: "Glendale", Roof: "retractable_dome"}
-	if got.Games[0] != want {
-		t.Errorf("games[0] = %+v, want %+v", got.Games[0], want)
+		Kickoff: "2026-09-20T20:25:00Z", Venue: "State Farm Stadium", City: "Glendale", Roof: "retractable_dome"}
+	if g.Locked == nil || !*g.Locked {
+		t.Errorf("games[0].locked = %v, want true", g.Locked)
+	}
+	g.Locked = nil
+	if g != want {
+		t.Errorf("games[0] = %+v, want %+v", g, want)
 	}
 	if got.Note != "" {
 		t.Errorf("note = %q, want empty", got.Note)
@@ -86,7 +92,7 @@ func TestGetScheduleWithoutScores(t *testing.T) {
 		t.Fatalf("want games plus a note, got %+v", got)
 	}
 	for _, g := range got.Games {
-		if g.Kickoff != "" || !g.Locked {
+		if g.Kickoff != "" || g.Locked == nil || !*g.Locked {
 			t.Errorf("game %+v: want no kickoff, locked from status complete", g)
 		}
 	}
@@ -97,28 +103,47 @@ func TestWithKickoff(t *testing.T) {
 	score := func(start time.Time, status string) *sleepergen.GameScore {
 		return &sleepergen.GameScore{StartTime: start.UnixMilli(), Metadata: sleepergen.GameScoreMetadata{Status: &status}}
 	}
+	yes, no := true, false
 	tests := []struct {
 		name       string
 		status     string
 		score      *sleepergen.GameScore
 		wantKick   string
 		wantTBD    bool
-		wantLocked bool
+		wantLocked *bool
 	}{
-		{"kickoff now locks", "pre_game", score(now, "created"), "2026-09-27T17:00:00Z", false, true},
-		{"future kickoff open", "pre_game", score(now.Add(time.Minute), "scheduled"), "2026-09-27T17:01:00Z", false, false},
-		{"flex placeholder hidden", "pre_game", score(now.Add(-time.Hour), "flex-schedule"), "", true, false},
-		{"no score, in progress", "in_game", nil, "", false, true},
-		{"no score, canceled", "canceled", nil, "", false, false},
+		{"kickoff now locks", "pre_game", score(now, "created"), "2026-09-27T17:00:00Z", false, &yes},
+		{"future kickoff open", "pre_game", score(now.Add(time.Minute), "scheduled"), "2026-09-27T17:01:00Z", false, &no},
+		{"stale future kickoff, complete", "complete", score(now.Add(time.Hour), "scheduled"), "2026-09-27T18:00:00Z", false, &yes},
+		{"flex placeholder in the past", "pre_game", score(now.Add(-time.Hour), "flex-schedule"), "", true, nil},
+		{"flex, in progress", "in_game", score(now.Add(time.Hour), "flex-schedule"), "", true, &yes},
+		{"no start_time", "pre_game", &sleepergen.GameScore{}, "", false, nil},
+		{"postponed keeps stale start_time", "postponed", score(now.Add(-time.Hour), "postponed"), "", false, nil},
+		{"cancelled after it started", "complete", score(now.Add(-time.Hour), "cancelled"), "", false, &yes},
+		{"canceled in schedule only", "canceled", score(now.Add(-time.Hour), "scheduled"), "", false, nil},
+		{"no score, in progress", "in_game", nil, "", false, &yes},
+		{"no score, pre_game", "pre_game", nil, "", false, nil},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := withKickoff(scheduleGame{Status: tc.status}, tc.score, now)
-			if got.Kickoff != tc.wantKick || got.KickoffTBD != tc.wantTBD || got.Locked != tc.wantLocked {
-				t.Errorf("got kickoff=%q tbd=%v locked=%v, want %q %v %v", got.Kickoff, got.KickoffTBD, got.Locked, tc.wantKick, tc.wantTBD, tc.wantLocked)
+			if got.Kickoff != tc.wantKick || got.KickoffTBD != tc.wantTBD || !sameBoolPtr(got.Locked, tc.wantLocked) {
+				t.Errorf("got kickoff=%q tbd=%v locked=%v, want %q %v %v", got.Kickoff, got.KickoffTBD, fmtBoolPtr(got.Locked), tc.wantKick, tc.wantTBD, fmtBoolPtr(tc.wantLocked))
+			}
+			if got.Venue != "" || got.Roof != "" {
+				t.Errorf("nil stadium produced venue %q roof %q", got.Venue, got.Roof)
 			}
 		})
 	}
+}
+
+func sameBoolPtr(a, b *bool) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
+
+func fmtBoolPtr(b *bool) string {
+	if b == nil {
+		return "<unknown>"
+	}
+	return fmt.Sprint(*b)
 }
 
 // TestResolveWeekRequiresExplicitWeekForPinnedSeason covers the fix: a

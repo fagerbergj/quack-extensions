@@ -124,7 +124,7 @@ type GameScoreMetadata struct {
 	DateTime       *string  `json:"date_time,omitempty"`
 	StadiumDetails *Stadium `json:"stadium_details,omitempty"`
 
-	// Status "scheduled", "created", "closed", or "flex-schedule" - the last marks a flex-eligible game whose start_time is a placeholder, not a real kickoff.
+	// Status Observed: "scheduled", "created", "closed", "postponed", "cancelled", "flex-schedule". flex-schedule marks a flex-eligible game whose start_time is a placeholder; a postponed game keeps its original start_time.
 	Status               *string                `json:"status,omitempty"`
 	AdditionalProperties map[string]interface{} `json:"-"`
 }

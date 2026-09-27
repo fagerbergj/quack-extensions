@@ -161,7 +161,7 @@ type scheduleGame struct {
 	Date       string `json:"date,omitempty"`
 	Kickoff    string `json:"kickoff,omitempty"`
 	KickoffTBD bool   `json:"kickoff_tbd,omitempty"`
-	Locked     bool   `json:"locked"`
+	Locked     *bool  `json:"locked,omitempty"`
 	Status     string `json:"status,omitempty"`
 	Venue      string `json:"venue,omitempty"`
 	City       string `json:"city,omitempty"`
@@ -179,11 +179,15 @@ func (e *extension) scheduleTool() tool.Tool {
 	t, _ := functiontool.New[scheduleArgs, scheduleResult](
 		functiontool.Config{
 			Name: "sleeper_schedule",
-			Description: "Get the NFL schedule for a week (default the current week). Per game: kickoff " +
-				"(RFC3339 UTC; convert to the user's zone yourself), locked (kickoff has passed as of " +
-				"fetched_at - lineup locked), date (US Eastern calendar date), status, venue, city, and " +
-				"roof (outdoor/dome/retractable_dome). kickoff_tbd marks an unscheduled flex game; a " +
-				"missing kickoff means the time is unknown, not that the game has none.",
+			Description: "Get the NFL schedule for a week (default the current week). Per game: status " +
+				"(pre_game, in_game, complete, canceled, postponed), date (US Eastern calendar date), " +
+				"kickoff (RFC3339 UTC), locked (true once kickoff has passed as of fetched_at or the game " +
+				"is in_game/complete; absent = unknown, treat as possibly locked), venue, city, roof " +
+				"(outdoor/dome/retractable_dome). Without kickoff, lock state comes from status only. " +
+				"kickoff_tbd marks a flex game whose time is not set yet. Canceled/postponed games carry " +
+				"no kickoff; ignore their lock state. To say when a game starts for the user, get their " +
+				"local time and zone from the current_date tool and convert kickoff into that zone, " +
+				"minding daylight-saving changes between now and kickoff.",
 		},
 		func(ctx adkagent.Context, a scheduleArgs) (scheduleResult, error) { return e.getSchedule(ctx, a) },
 	)
@@ -203,16 +207,16 @@ func (e *extension) getSchedule(ctx context.Context, a scheduleArgs) (scheduleRe
 	if err != nil {
 		return scheduleResult{}, fmt.Errorf("sleeper_schedule: %w", err)
 	}
-	res := scheduleResult{Week: week, FetchedAt: nowRFC3339()}
+	now := time.Now()
+	res := scheduleResult{Week: week, FetchedAt: now.UTC().Format(time.RFC3339)}
 	scores, err := e.client.WeekScores(ctx, season, week)
 	if err != nil {
-		res.Note = fmt.Sprintf("kickoff times unavailable: %v", err)
+		e.logWarn("sleeper_schedule: scores fetch failed", "season", season, "week", week, "error", err)
 	}
 	byID := make(map[string]*sleepergen.GameScore, len(scores))
 	for i := range scores {
 		byID[scores[i].GameId] = &scores[i]
 	}
-	now := time.Now()
 	for _, g := range games {
 		if g.Week != week {
 			continue
@@ -220,27 +224,39 @@ func (e *extension) getSchedule(ctx context.Context, a scheduleArgs) (scheduleRe
 		sg := scheduleGame{GameID: g.GameId, Home: g.Home, Away: g.Away, Date: strVal(g.Date), Status: strVal(g.Status)}
 		res.Games = append(res.Games, withKickoff(sg, byID[g.GameId], now))
 	}
+	if len(scores) == 0 && len(res.Games) > 0 {
+		res.Note = "kickoff times unavailable from Sleeper this call; locked reflects game status only"
+	}
 	return res, nil
 }
 
 // withKickoff joins on game_id, never on teams, so a missing score leaves
 // kickoff empty rather than borrowing another game's time.
 func withKickoff(g scheduleGame, s *sleepergen.GameScore, now time.Time) scheduleGame {
-	g.Locked = g.Status == "in_game" || g.Status == "complete"
+	statusLocked := g.Status == "in_game" || g.Status == "complete"
+	if statusLocked {
+		g.Locked = &statusLocked
+	}
 	if s == nil {
 		return g
 	}
 	if sd := s.Metadata.StadiumDetails; sd != nil {
 		g.Venue, g.City, g.Roof = strVal(sd.Name), strVal(sd.City), strVal(sd.Type)
 	}
-	if strVal(s.Metadata.Status) == "flex-schedule" {
+	switch strVal(s.Metadata.Status) {
+	case "flex-schedule":
 		g.KickoffTBD = true
 		return g
+	case "postponed", "cancelled": // postponed games keep their original, now meaningless, start_time
+		return g
 	}
-	if s.StartTime > 0 {
-		k := time.UnixMilli(s.StartTime).UTC()
-		g.Kickoff = k.Format(time.RFC3339)
-		g.Locked = !k.After(now)
+	if g.Status == "canceled" || g.Status == "postponed" || s.StartTime <= 0 {
+		return g
 	}
+	k := time.UnixMilli(s.StartTime).UTC()
+	g.Kickoff = k.Format(time.RFC3339)
+	// The schedule's status (2m cache) can be newer than a 6h-cached start_time.
+	locked := statusLocked || !k.After(now)
+	g.Locked = &locked
 	return g
 }

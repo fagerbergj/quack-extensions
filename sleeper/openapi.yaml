@@ -876,8 +876,9 @@ components:
         status:
           type: string
           description: >-
-            "scheduled", "created", "closed", or "flex-schedule" - the last marks
-            a flex-eligible game whose start_time is a placeholder, not a real kickoff.
+            Observed: "scheduled", "created", "closed", "postponed", "cancelled",
+            "flex-schedule". flex-schedule marks a flex-eligible game whose start_time
+            is a placeholder; a postponed game keeps its original start_time.
         date_time: { type: string }
         stadium_details: { $ref: "#/components/schemas/Stadium" }
 
