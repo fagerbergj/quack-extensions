@@ -18,22 +18,36 @@ const localLayout = "Mon Jan 2 3:04 PM MST"
 
 // clock is one tool call's single "now" plus the zone its *_local fields render in.
 type clock struct {
-	now time.Time
-	loc *time.Location
+	now    time.Time
+	loc    *time.Location
+	tzNote string
 }
 
-// newClock resolves the optional `tz` tool argument (an IANA zone name),
-// falling back to the process's local zone.
-func newClock(tz string) (clock, error) {
-	loc := time.Local
-	if tz = strings.TrimSpace(tz); tz != "" {
-		l, err := time.LoadLocation(tz)
-		if err != nil {
-			return clock{}, fmt.Errorf("tz %q is not a valid IANA time zone name (e.g. America/Chicago): %w", tz, err)
-		}
-		loc = l
+// loadZone accepts only region-style IANA names (or UTC): abbreviations like
+// EST load as fixed offsets and are an hour off during DST.
+func loadZone(name string) (*time.Location, error) {
+	if name != "UTC" && !strings.Contains(name, "/") {
+		return nil, fmt.Errorf("%q is not a region-style IANA zone name like America/Chicago", name)
 	}
-	return clock{now: time.Now(), loc: loc}, nil
+	return time.LoadLocation(name)
+}
+
+// newClock picks the display zone: the `tz` override, else the configured
+// timezone, else the process zone. A bad override falls back with a tz_note.
+func (e *extension) newClock(tz string) clock {
+	c := clock{now: time.Now(), loc: time.Local}
+	if e.loc != nil {
+		c.loc = e.loc
+	}
+	if tz = strings.TrimSpace(tz); tz != "" {
+		loc, err := loadZone(tz)
+		if err != nil {
+			c.tzNote = fmt.Sprintf("tz ignored (%v); times are in %s", err, c.loc)
+			return c
+		}
+		c.loc = loc
+	}
+	return c
 }
 
 func (c clock) local(t time.Time) string { return t.In(c.loc).Format(localLayout) }
@@ -47,10 +61,11 @@ type callContext struct {
 	ScheduleNote   string `json:"schedule_note,omitempty"`
 	FetchedAt      string `json:"fetched_at"`
 	FetchedAtLocal string `json:"fetched_at_local"`
+	TZNote         string `json:"tz_note,omitempty"`
 }
 
 func newCallContext(c clock, week int, season string, state *sleepergen.NflState) callContext {
-	cc := callContext{Week: week, FetchedAt: c.now.UTC().Format(time.RFC3339), FetchedAtLocal: c.local(c.now)}
+	cc := callContext{Week: week, FetchedAt: c.now.UTC().Format(time.RFC3339), FetchedAtLocal: c.local(c.now), TZNote: c.tzNote}
 	switch {
 	case season != state.Season:
 		cc.WeekNote = fmt.Sprintf("season %s week %d, not the live NFL season (%s)", season, week, state.Season)
@@ -60,7 +75,17 @@ func newCallContext(c clock, week int, season string, state *sleepergen.NflState
 	default:
 		cc.CurrentWeek = state.Week
 	}
+	if state.SeasonType != "regular" {
+		cc.addWeekNote(fmt.Sprintf("NFL %s season; the regular-season schedule does not apply", state.SeasonType))
+	}
 	return cc
+}
+
+func (cc *callContext) addWeekNote(note string) {
+	if cc.WeekNote != "" {
+		note = cc.WeekNote + "; " + note
+	}
+	cc.WeekNote = note
 }
 
 // nowRFC3339 stamps a tool result's fetched_at - the time this tool call

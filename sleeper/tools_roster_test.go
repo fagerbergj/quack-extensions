@@ -32,7 +32,7 @@ func TestGetRoster(t *testing.T) {
 		if p.Game == nil && p.NoGameReason == "" {
 			t.Errorf("player %+v has neither a game nor a no_game_reason", p)
 		}
-		if p.Game != nil && (p.Game.Opponent == "" || p.Game.Kickoff == "" || p.Game.Locked == nil) {
+		if p.Game != nil && (p.Game.NFLOpponent == "" || p.Game.Kickoff == "" || p.Game.Locked == nil) {
 			t.Errorf("player %s game %+v missing opponent/kickoff/locked", p.Name, p.Game)
 		}
 	}

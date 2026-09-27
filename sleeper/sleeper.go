@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/fagerbergj/quack-extensions/sdk"
 	"github.com/go-chi/chi/v5"
@@ -38,6 +39,10 @@ type config struct {
 	// Season defaults to /v1/state/nfl's current season when zero.
 	Season int `yaml:"season"`
 
+	// Timezone is the user's IANA zone for *_local fields (e.g. ${QUACK_TIMEZONE});
+	// empty falls back to the process zone.
+	Timezone string `yaml:"timezone"`
+
 	// Fixture serves the reference example JSON (marked Example) for any
 	// artifact-backed card with no real chat yet, for demoing/QA before jobs exist.
 	Fixture bool `yaml:"fixture"`
@@ -60,12 +65,20 @@ func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
 	if cfg.Season < 0 {
 		return nil, fmt.Errorf("sleeper: season must not be negative, got %d", cfg.Season)
 	}
+	var loc *time.Location
+	if cfg.Timezone != "" {
+		l, err := loadZone(cfg.Timezone)
+		if err != nil {
+			return nil, fmt.Errorf("sleeper: timezone: %w", err)
+		}
+		loc = l
+	}
 
 	client, err := NewClient(sleeperBaseURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("sleeper: new client: %w", err)
 	}
-	return &extension{host: host, cfg: cfg, client: client}, nil
+	return &extension{host: host, cfg: cfg, client: client, loc: loc}, nil
 }
 
 // sleeperBaseURL is the production API; tests build an extension directly
@@ -76,6 +89,7 @@ type extension struct {
 	host   sdk.Host
 	cfg    config
 	client *Client
+	loc    *time.Location // config timezone; nil = time.Local
 
 	// runningMu guards running: the set of global chat ids dispatched by a
 	// job/season-notes run that hasn't RunEnded yet (in-memory only - see

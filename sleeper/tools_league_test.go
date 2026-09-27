@@ -171,31 +171,47 @@ func TestResolveWeekRequiresExplicitWeekForPinnedSeason(t *testing.T) {
 }
 
 func TestNewClock(t *testing.T) {
-	if _, err := newClock("America/Chicgo"); err == nil || !strings.Contains(err.Error(), "America/Chicgo") {
-		t.Errorf("bad tz: err = %v, want one naming the bad zone", err)
+	chicago, _ := time.LoadLocation("America/Chicago")
+	e := &extension{}
+	if c := e.newClock(""); c.loc != time.Local || c.tzNote != "" {
+		t.Errorf("no config, no tz: loc %v note %q, want time.Local", c.loc, c.tzNote)
 	}
-	c, err := newClock("")
-	if err != nil || c.loc != time.Local {
-		t.Errorf("empty tz = %v, %v; want time.Local", c.loc, err)
+	e.loc = chicago
+	if c := e.newClock(""); c.loc != chicago {
+		t.Errorf("config zone: loc %v, want America/Chicago", c.loc)
 	}
-	e := testExtension(t)
-	if _, err := e.getSchedule(context.Background(), scheduleArgs{TZ: "Mars/Olympus"}); err == nil {
-		t.Error("getSchedule accepted an invalid tz")
+	if c := e.newClock("UTC"); c.loc.String() != "UTC" || c.tzNote != "" {
+		t.Errorf("tz UTC override: loc %v note %q", c.loc, c.tzNote)
+	}
+	for _, bad := range []string{"EST", "CDT", "Local", "America/Chicgo"} {
+		c := e.newClock(bad)
+		if c.loc != chicago || !strings.Contains(c.tzNote, bad) {
+			t.Errorf("tz %q: loc %v note %q, want config zone plus a note naming it", bad, c.loc, c.tzNote)
+		}
+	}
+	got, err := testExtension(t).getSchedule(context.Background(), scheduleArgs{TZ: "Mars/Olympus"})
+	if err != nil || got.TZNote == "" || len(got.Games) == 0 {
+		t.Errorf("bad tz must degrade, not fail: err %v tz_note %q", err, got.TZNote)
 	}
 }
 
 func TestSlateGameFor(t *testing.T) {
-	str := func(s string) *string { return &s }
 	dump := map[string]sleepergen.Player{
 		"qb":  {Team: str("LAC")},
 		"wr":  {Team: str("LV")},
 		"LAC": {Position: str("DEF")},
 		"fa":  {Position: str("RB")},
 		"bye": {Team: str("KC")},
-		"sea": {Team: str("SEA")},
+		"oak": {Team: str("OAK")},
+		"dal": {Team: str("DAL")},
 	}
-	live := scheduleGame{GameID: "g1", Home: "LAC", Away: "LV", Kickoff: "2026-09-20T20:05:00Z"}
-	sl := slate{games: []scheduleGame{live}, byTeam: map[string]scheduleGame{"LAC": live, "LV": live}}
+	live := scheduleGame{GameID: "g1", Home: "LAC", Away: "LV", Kickoff: "2026-09-20T20:05:00Z", Roof: "outdoor"}
+	void := scheduleGame{GameID: "g2", Home: "DAL", Away: "SEA", Status: "canceled"}
+	sl := slate{
+		games:  []scheduleGame{live, void},
+		byTeam: map[string]scheduleGame{"LAC": live, "LV": live, "DAL": void, "SEA": void},
+		teams:  map[string]bool{"LAC": true, "LV": true, "KC": true, "DAL": true, "SEA": true},
+	}
 	tests := []struct {
 		pid, wantOpp, wantReason string
 		wantHome, wantBye        bool
@@ -204,6 +220,8 @@ func TestSlateGameFor(t *testing.T) {
 		{"wr", "LAC", "", false, false},
 		{"LAC", "LV", "", true, false},
 		{"bye", "", "KC has no game this week (bye)", false, true},
+		{"oak", "", "unknown team code OAK", false, false},
+		{"dal", "", "DAL's game this week is canceled", false, false},
 		{"fa", "", "no NFL team (free agent or unknown player)", false, false},
 		{"missing", "", "no NFL team (free agent or unknown player)", false, false},
 		{"0", "", "empty lineup slot", false, false},
@@ -219,12 +237,67 @@ func TestSlateGameFor(t *testing.T) {
 			}
 			continue
 		}
-		if got.Game == nil || got.Game.Opponent != tc.wantOpp || got.Game.IsHome != tc.wantHome || got.Game.Kickoff != live.Kickoff {
-			t.Errorf("%s: game = %+v, want opponent %s is_home %v", tc.pid, got.Game, tc.wantOpp, tc.wantHome)
+		want := playerGame{GameID: "g1", NFLOpponent: tc.wantOpp, IsHome: tc.wantHome, Kickoff: live.Kickoff, Roof: "outdoor"}
+		if got.Game == nil || *got.Game != want {
+			t.Errorf("%s: game = %+v, want %+v", tc.pid, got.Game, want)
 		}
 	}
-	if got := (slate{}).gameFor(dump, "sea"); got.NoGameReason != "no NFL games scheduled this week" || got.Bye {
-		t.Errorf("empty slate: %+v, want no-games reason, not a bye", got)
+	empty := slate{teams: sl.teams}
+	if got := empty.gameFor(dump, "wr"); got.NoGameReason != "no NFL games scheduled this week" || got.Bye {
+		t.Errorf("empty week: %+v, want no-games reason, not a bye", got)
+	}
+	if got := (slate{noGame: "schedule unavailable"}).gameFor(dump, "qb"); got.NoGameReason != "schedule unavailable" || got.Bye {
+		t.Errorf("unavailable slate: %+v", got)
+	}
+}
+
+func TestPlayerSlateDegrades(t *testing.T) {
+	e := testExtension(t)
+	c := clock{now: time.Now(), loc: time.UTC}
+	tests := []struct {
+		name, season, wantReason, wantScheduleNote string
+		state                                      sleepergen.NflState
+		week                                       int
+	}{
+		{"schedule 404", "2030", "schedule unavailable", "schedule unavailable", sleepergen.NflState{Season: "2030", Week: 1, SeasonType: "regular"}, 1},
+		{"preseason", "2026", "NFL pre season", "", sleepergen.NflState{Season: "2026", Week: 1, SeasonType: "pre"}, 1},
+		{"past week", "2026", "games are joined only for the current NFL week", "", sleepergen.NflState{Season: "2026", Week: 2, SeasonType: "regular"}, 1},
+	}
+	for _, tc := range tests {
+		cc := callContext{Week: tc.week}
+		sl := e.playerSlate(context.Background(), &cc, tc.season, &tc.state, c, true)
+		if sl.noGame != tc.wantReason || cc.ScheduleNote != tc.wantScheduleNote {
+			t.Errorf("%s: noGame %q schedule_note %q, want %q %q", tc.name, sl.noGame, cc.ScheduleNote, tc.wantReason, tc.wantScheduleNote)
+		}
+	}
+	pre := newCallContext(c, 1, "2026", &sleepergen.NflState{Season: "2026", Week: 1, SeasonType: "pre"})
+	if !strings.Contains(pre.WeekNote, "NFL pre season") {
+		t.Errorf("preseason week_note = %q", pre.WeekNote)
+	}
+}
+
+func TestNoteWeekDone(t *testing.T) {
+	done := slate{games: []scheduleGame{{Status: "complete"}, {Status: "canceled"}}}
+	cc := callContext{Week: 3}
+	cc.noteWeekDone(done, true)
+	if !strings.Contains(cc.WeekNote, "week 4") {
+		t.Errorf("week_note = %q, want a rollover note", cc.WeekNote)
+	}
+	for _, tc := range []struct {
+		sl        slate
+		defaulted bool
+	}{{done, false}, {slate{games: []scheduleGame{{Status: "complete"}, {Status: "in_game"}}}, true}} {
+		cc := callContext{Week: 3}
+		if cc.noteWeekDone(tc.sl, tc.defaulted); cc.WeekNote != "" {
+			t.Errorf("unexpected week_note %q", cc.WeekNote)
+		}
+	}
+}
+
+func TestNFLTeamDEFWithoutTeam(t *testing.T) {
+	dump := map[string]sleepergen.Player{"TB": {Position: str("DEF"), Team: str("")}}
+	if got := nflTeam(dump, "TB"); got != "TB" {
+		t.Errorf("nflTeam(DEF TB, empty team) = %q, want TB", got)
 	}
 }
 

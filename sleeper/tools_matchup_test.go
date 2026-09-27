@@ -30,7 +30,7 @@ func TestGetMatchup(t *testing.T) {
 	}
 	for _, sd := range []side{got.Me, got.Opponent} {
 		for _, p := range sd.Starters {
-			if p.Game == nil || p.Game.Opponent == "" || p.Game.Kickoff == "" || p.Game.KickoffLocal == "" {
+			if p.Game == nil || p.Game.NFLOpponent == "" || p.Game.Kickoff == "" || p.Game.KickoffLocal == "" {
 				t.Errorf("roster %d starter %s: game %+v (reason %q), want a joined game", sd.RosterID, p.Name, p.Game, p.NoGameReason)
 			}
 		}
@@ -39,20 +39,18 @@ func TestGetMatchup(t *testing.T) {
 
 func TestGetMatchupPastWeekLabeledAndJoined(t *testing.T) {
 	e := testExtension(t)
-	got, err := e.getMatchup(context.Background(), matchupArgs{Week: 1})
+	got, err := e.getMatchup(context.Background(), matchupArgs{Week: 1, TZ: "nowhere"})
 	if err != nil {
 		t.Fatalf("getMatchup: %v", err)
 	}
-	if got.WeekNote == "" || got.CurrentWeek != 2 {
-		t.Errorf("week 1: week_note=%q current_week=%d, want a not-current label", got.WeekNote, got.CurrentWeek)
+	if got.WeekNote == "" || got.CurrentWeek != 2 || got.TZNote == "" {
+		t.Errorf("week 1: week_note=%q current_week=%d tz_note=%q, want not-current label and tz note", got.WeekNote, got.CurrentWeek, got.TZNote)
 	}
+	// Players' teams are today's, so a past week must not be joined to games.
 	for _, b := range got.Me.Bench {
-		if b.Game == nil || b.Game.Locked == nil || !*b.Game.Locked {
-			t.Errorf("bench %s: game %+v, want a locked week-1 game", b.Name, b.Game)
+		if b.Game != nil || b.NoGameReason != "games are joined only for the current NFL week" {
+			t.Errorf("bench %s: game %+v reason %q, want no join", b.Name, b.Game, b.NoGameReason)
 		}
-	}
-	if _, err := e.getMatchup(context.Background(), matchupArgs{TZ: "nowhere"}); err == nil {
-		t.Error("getMatchup accepted an invalid tz")
 	}
 }
 

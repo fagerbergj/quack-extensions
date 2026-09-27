@@ -57,7 +57,7 @@ func (e *extension) playerTool() tool.Tool {
 			Name: "sleeper_player",
 			Description: "Get one player's bio, team, depth chart order, injury/practice status, news " +
 				"timestamp, season stats, and the current NFL week's projection. Look up by `player_id` or " +
-				"`name`. " + playerGameDoc + " " + tzArgDoc,
+				"`name`. " + playerGameDoc + " " + timeDoc,
 		},
 		func(ctx adkagent.Context, a playerArgs) (playerResult, error) { return e.getPlayer(ctx, a) },
 	)
@@ -65,10 +65,7 @@ func (e *extension) playerTool() tool.Tool {
 }
 
 func (e *extension) getPlayer(ctx context.Context, a playerArgs) (playerResult, error) {
-	c, err := newClock(a.TZ)
-	if err != nil {
-		return playerResult{}, fmt.Errorf("sleeper_player: %w", err)
-	}
+	c := e.newClock(a.TZ)
 	p, err := e.resolvePlayer(ctx, a.PlayerID, a.Name)
 	if err != nil {
 		return playerResult{}, fmt.Errorf("sleeper_player: %w", err)
@@ -85,10 +82,8 @@ func (e *extension) getPlayer(ctx context.Context, a playerArgs) (playerResult, 
 	if err != nil {
 		return playerResult{}, fmt.Errorf("sleeper_player: projections: %w", err)
 	}
-	sl, err := e.weekSlate(ctx, season, week, c)
-	if err != nil {
-		return playerResult{}, fmt.Errorf("sleeper_player: schedule: %w", err)
-	}
+	cc := newCallContext(c, week, season, state)
+	sl := e.playerSlate(ctx, &cc, season, state, c, true)
 	var stats map[string]float32
 	if entry, err := e.client.PlayerSeasonStats(ctx, p.PlayerId, season); err == nil && entry.Stats != nil {
 		stats = *entry.Stats
@@ -104,8 +99,7 @@ func (e *extension) getPlayer(ctx context.Context, a playerArgs) (playerResult, 
 		SeasonStats: stats, WeekProjection: proj[p.PlayerId]["pts_ppr"], GameLog: gameLog,
 		gameInfo: sl.gameFor(map[string]sleepergen.Player{p.PlayerId: p}, p.PlayerId),
 	}
-	res.callContext = newCallContext(c, week, season, state)
-	res.ScheduleNote = sl.note
+	res.callContext = cc
 	return res, nil
 }
 

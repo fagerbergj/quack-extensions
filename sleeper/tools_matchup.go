@@ -131,7 +131,7 @@ func (e *extension) matchupTool() tool.Tool {
 			Description: "Get one fantasy week's matchup (default the current NFL week): both lineups " +
 				"with points and projections, and the fantasy opponent's record. `opponent` is the fantasy " +
 				"team; each player's NFL opponent is in their game. " + playerGameDoc + " `user`/`roster_id` " +
-				"picks my side, falling back to default_user. " + tzArgDoc,
+				"picks my side, falling back to default_user. " + timeDoc,
 		},
 		func(ctx adkagent.Context, a matchupArgs) (matchupResult, error) { return e.getMatchup(ctx, a) },
 	)
@@ -139,10 +139,7 @@ func (e *extension) matchupTool() tool.Tool {
 }
 
 func (e *extension) getMatchup(ctx context.Context, a matchupArgs) (matchupResult, error) {
-	c, err := newClock(a.TZ)
-	if err != nil {
-		return matchupResult{}, fmt.Errorf("sleeper_matchup: %w", err)
-	}
+	c := e.newClock(a.TZ)
 	leagueID, err := e.resolveLeagueID(a.LeagueID)
 	if err != nil {
 		return matchupResult{}, err
@@ -180,16 +177,10 @@ func (e *extension) getMatchup(ctx context.Context, a matchupArgs) (matchupResul
 	if err != nil {
 		return matchupResult{}, fmt.Errorf("sleeper_matchup: %w", err)
 	}
-	sl, err := e.weekSlate(ctx, season, week, c)
-	if err != nil {
-		return matchupResult{}, fmt.Errorf("sleeper_matchup: schedule: %w", err)
-	}
+	cc := newCallContext(c, week, season, state)
+	sl := e.playerSlate(ctx, &cc, season, state, c, a.Week == 0)
 	names := teamNames(rosters, users)
-	result := matchupResult{
-		callContext: newCallContext(c, week, season, state),
-		Me:          buildSide(league, mine, rosters, names, dump, proj, sl),
-	}
-	result.ScheduleNote = sl.note
+	result := matchupResult{callContext: cc, Me: buildSide(league, mine, rosters, names, dump, proj, sl)}
 	if mine.MatchupId != nil {
 		result.MatchupID = *mine.MatchupId
 	}

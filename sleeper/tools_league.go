@@ -175,20 +175,17 @@ type scheduleResult struct {
 	Games []scheduleGame `json:"games"`
 }
 
-// tzArgDoc and lockDoc are shared by every tool whose result carries games.
+// Description text shared by every tool that returns games.
 const (
-	tzArgDoc = "Pass `tz` = the user's IANA time zone as printed by the current_date tool (e.g. " +
-		"America/Chicago); kickoff_local and fetched_at_local are rendered in it and are what to show " +
-		"the user - never convert the UTC fields yourself. Without `tz` they use the server's zone. " +
-		"week/current_week/week_note say which NFL week the data covers; the default is the current week."
-	playerGameDoc = "Each player already carries their own NFL game for this week, joined in code by " +
-		"team: game {game_id, away, home, opponent, is_home, kickoff, kickoff_local, kickoff_tbd, locked, " +
-		"status, venue, city, roof}, or game=null with bye=true / no_game_reason. Use it as-is: never look " +
-		"up or reuse another game's kickoff or opponent for a player. " + lockDoc
-	lockDoc = "locked is true once kickoff has passed as of fetched_at or the game is in_game/complete; " +
-		"absent = unknown, treat as possibly locked. Only give a kickoff time for games with locked=false. " +
-		"kickoff_tbd marks a flex game whose time is not set yet. Canceled/postponed games carry no kickoff; " +
-		"ignore their lock state."
+	timeDoc = "kickoff/fetched_at are UTC; show the user kickoff_local/fetched_at_local, already in their " +
+		"zone - never convert UTC yourself. `tz` (IANA name) only overrides that zone; normally omit it. " +
+		"week/current_week/week_note say which NFL week the data covers (default: the current week)."
+	lockDoc = "locked: true once kickoff has passed as of fetched_at or the game is in_game/complete; absent " +
+		"= unknown, treat as possibly locked. Give kickoff times only for locked=false games. kickoff_tbd: " +
+		"flex game, time not set yet. Canceled/postponed games carry no kickoff."
+	playerGameDoc = "Each player's own NFL game this week is already joined in code: game {game_id, " +
+		"nfl_opponent, is_home, kickoff, kickoff_local, kickoff_tbd, locked, status, roof, venue}, or " +
+		"instead bye=true or no_game_reason. Use it as-is; never take a kickoff or opponent from another game. " + lockDoc
 )
 
 func (e *extension) scheduleTool() tool.Tool {
@@ -197,9 +194,9 @@ func (e *extension) scheduleTool() tool.Tool {
 			Name: "sleeper_schedule",
 			Description: "Get the NFL schedule for a week (default the current week). Per game: status " +
 				"(pre_game, in_game, complete, canceled, postponed), date (US Eastern calendar date), " +
-				"kickoff (RFC3339 UTC), kickoff_local, locked, venue, city, roof " +
-				"(outdoor/dome/retractable_dome). " + lockDoc + " " + tzArgDoc + " For a rostered " +
-				"player's game use sleeper_roster/sleeper_matchup/sleeper_player, which already join it.",
+				"kickoff, kickoff_local, locked, venue, city, roof (outdoor/dome/retractable_dome). " +
+				lockDoc + " " + timeDoc + " A rostered player's game is already joined by " +
+				"sleeper_roster/sleeper_matchup/sleeper_player.",
 		},
 		func(ctx adkagent.Context, a scheduleArgs) (scheduleResult, error) { return e.getSchedule(ctx, a) },
 	)
@@ -207,10 +204,7 @@ func (e *extension) scheduleTool() tool.Tool {
 }
 
 func (e *extension) getSchedule(ctx context.Context, a scheduleArgs) (scheduleResult, error) {
-	c, err := newClock(a.TZ)
-	if err != nil {
-		return scheduleResult{}, fmt.Errorf("sleeper_schedule: %w", err)
-	}
+	c := e.newClock(a.TZ)
 	season, state, err := e.season(ctx)
 	if err != nil {
 		return scheduleResult{}, err
@@ -225,7 +219,22 @@ func (e *extension) getSchedule(ctx context.Context, a scheduleArgs) (scheduleRe
 	}
 	res := scheduleResult{callContext: newCallContext(c, week, season, state), Games: sl.games}
 	res.ScheduleNote = sl.note
+	res.noteWeekDone(sl, a.Week == 0)
 	return res, nil
+}
+
+// noteWeekDone flags the gap between Monday night and Sleeper's Tuesday
+// week rollover, when the defaulted "current" week is already over.
+func (cc *callContext) noteWeekDone(sl slate, defaulted bool) {
+	if !defaulted || len(sl.games) == 0 {
+		return
+	}
+	for _, g := range sl.games {
+		if g.Status != "complete" && !voidGame(g.Status) {
+			return
+		}
+	}
+	cc.addWeekNote(fmt.Sprintf("every week-%d game is over; Sleeper has not rolled over to week %d yet", cc.Week, cc.Week+1))
 }
 
 // slate is one week's games with kickoff/lock joined, indexed by team code
@@ -233,7 +242,9 @@ func (e *extension) getSchedule(ctx context.Context, a scheduleArgs) (scheduleRe
 type slate struct {
 	games  []scheduleGame
 	byTeam map[string]scheduleGame
+	teams  map[string]bool // every team code on the season's schedule
 	note   string
+	noGame string // set when players get no join at all, e.g. schedule unavailable
 }
 
 func (e *extension) weekSlate(ctx context.Context, season string, week int, c clock) (slate, error) {
@@ -249,8 +260,9 @@ func (e *extension) weekSlate(ctx context.Context, season string, week int, c cl
 	for i := range scores {
 		byID[scores[i].GameId] = &scores[i]
 	}
-	sl := slate{byTeam: map[string]scheduleGame{}}
+	sl := slate{byTeam: map[string]scheduleGame{}, teams: map[string]bool{}}
 	for _, g := range games {
+		sl.teams[g.Home], sl.teams[g.Away] = true, true
 		if g.Week != week {
 			continue
 		}
@@ -268,39 +280,76 @@ func (e *extension) weekSlate(ctx context.Context, season string, week int, c cl
 	return sl, nil
 }
 
+// playerSlate is the slate for per-player joins. It never fails the tool,
+// and joins only the live regular-season week: the dump holds today's teams.
+func (e *extension) playerSlate(ctx context.Context, cc *callContext, season string, state *sleepergen.NflState, c clock, defaulted bool) slate {
+	switch {
+	case state.SeasonType != "regular":
+		return slate{noGame: fmt.Sprintf("NFL %s season", state.SeasonType)}
+	case season != state.Season || cc.Week != state.Week:
+		return slate{noGame: "games are joined only for the current NFL week"}
+	}
+	sl, err := e.weekSlate(ctx, season, cc.Week, c)
+	if err != nil {
+		e.logWarn("sleeper: schedule fetch failed", "season", season, "error", err)
+		cc.ScheduleNote = "schedule unavailable"
+		return slate{noGame: "schedule unavailable"}
+	}
+	cc.ScheduleNote = sl.note
+	cc.noteWeekDone(sl, defaulted)
+	return sl
+}
+
 func voidGame(status string) bool { return status == "canceled" || status == "postponed" }
 
 // gameInfo is a player's own game for the slate's week, or why there is none.
 type gameInfo struct {
-	Game         *playerGame `json:"game"`
+	Game         *playerGame `json:"game,omitempty"`
 	Bye          bool        `json:"bye,omitempty"`
 	NoGameReason string      `json:"no_game_reason,omitempty"`
 }
 
+// playerGame is the per-player slice of a scheduleGame; city/date stay in sleeper_schedule.
 type playerGame struct {
-	scheduleGame
-	Opponent string `json:"opponent"`
-	IsHome   bool   `json:"is_home"`
+	GameID       string `json:"game_id"`
+	NFLOpponent  string `json:"nfl_opponent"`
+	IsHome       bool   `json:"is_home"`
+	Kickoff      string `json:"kickoff,omitempty"`
+	KickoffLocal string `json:"kickoff_local,omitempty"`
+	KickoffTBD   bool   `json:"kickoff_tbd,omitempty"`
+	Locked       *bool  `json:"locked,omitempty"`
+	Status       string `json:"status,omitempty"`
+	Roof         string `json:"roof,omitempty"`
+	Venue        string `json:"venue,omitempty"`
 }
 
 func (sl slate) gameFor(dump map[string]sleepergen.Player, playerID string) gameInfo {
 	if playerID == "" || playerID == "0" {
 		return gameInfo{NoGameReason: "empty lineup slot"}
 	}
+	if sl.noGame != "" {
+		return gameInfo{NoGameReason: sl.noGame}
+	}
 	team := nflTeam(dump, playerID)
 	switch {
 	case team == "":
 		return gameInfo{NoGameReason: "no NFL team (free agent or unknown player)"}
+	case !sl.teams[team]:
+		return gameInfo{NoGameReason: "unknown team code " + team}
 	case len(sl.games) == 0:
 		return gameInfo{NoGameReason: "no NFL games scheduled this week"}
 	}
 	g, ok := sl.byTeam[team]
-	if !ok {
+	switch {
+	case !ok:
 		return gameInfo{Bye: true, NoGameReason: team + " has no game this week (bye)"}
+	case voidGame(g.Status):
+		return gameInfo{NoGameReason: fmt.Sprintf("%s's game this week is %s", team, g.Status)}
 	}
-	pg := playerGame{scheduleGame: g, IsHome: g.Home == team, Opponent: g.Home}
+	pg := playerGame{GameID: g.GameID, NFLOpponent: g.Home, IsHome: g.Home == team, Kickoff: g.Kickoff,
+		KickoffLocal: g.KickoffLocal, KickoffTBD: g.KickoffTBD, Locked: g.Locked, Status: g.Status, Roof: g.Roof, Venue: g.Venue}
 	if pg.IsHome {
-		pg.Opponent = g.Away
+		pg.NFLOpponent = g.Away
 	}
 	return gameInfo{Game: &pg}
 }
