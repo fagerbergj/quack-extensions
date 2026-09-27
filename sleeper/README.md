@@ -142,11 +142,12 @@ today's teams, so a past week is never joined. A schedule failure degrades to
 `no_game_reason: "schedule unavailable"` instead of failing the tool. Reserve and taxi players
 carry no game.
 
-`kickoff_local` and `fetched_at_local` render in the extension's `timezone` config (an IANA name
-such as `America/Chicago`; set it to `${QUACK_TIMEZONE}`), else the process zone. A tool's `tz`
-argument overrides it; an invalid one falls back with a `tz_note`. Only region-style names (or
-`UTC`) are accepted: `EST`/`CDT` load as fixed offsets that are an hour off in DST. `time/tzdata`
-is embedded so zones resolve in images without a zone database.
+`kickoff_local` and `fetched_at_local` render in quack's configured zone (`Host.Location`), else
+the process zone. The optional `timezone` config (an IANA name such as `America/Chicago`)
+overrides quack's zone for this extension, and a tool's `tz` argument overrides both; an invalid
+`tz` falls back with a `tz_note`. Only region-style names (or `UTC`) are accepted: `EST`/`CDT`
+load as fixed offsets that are an hour off in DST. `time/tzdata` is embedded so zones resolve in
+images without a zone database.
 
 `NewClient(baseURL, httpClient)` takes an explicit base URL so tests (and later, tools) point
 at `cmd/qa-mock` instead of the real API. Sleeper answers an unknown id with HTTP 200 and a

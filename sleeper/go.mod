@@ -44,3 +44,6 @@ require (
 	rsc.io/omap v1.2.0 // indirect
 	rsc.io/ordered v1.1.1 // indirect
 )
+
+// Dev-only: strip before tagging a release.
+replace github.com/fagerbergj/quack-extensions/sdk => ../sdk

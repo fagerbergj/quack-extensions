@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fagerbergj/quack-extensions/sdk"
 )
@@ -105,6 +106,13 @@ func TestFactoryTimezone(t *testing.T) {
 	}
 	if loc := ext.(*extension).loc; loc == nil || loc.String() != "America/Chicago" {
 		t.Errorf("loc = %v, want America/Chicago", loc)
+	}
+	denver, _ := time.LoadLocation("America/Denver")
+	if ext, _ := factory(sdk.Host{Location: denver}, nil); ext.(*extension).loc != denver {
+		t.Errorf("no config: loc = %v, want the host's America/Denver", ext.(*extension).loc)
+	}
+	if ext, _ := factory(sdk.Host{Location: denver}, []byte("timezone: America/Chicago\n")); ext.(*extension).loc.String() != "America/Chicago" {
+		t.Errorf("config and host: loc = %v, want the config's America/Chicago", ext.(*extension).loc)
 	}
 	for _, bad := range []string{"CDT", "EST", "America/Chicgo"} {
 		if _, err := factory(sdk.Host{}, []byte("timezone: "+bad+"\n")); err == nil || !strings.Contains(err.Error(), "timezone") {

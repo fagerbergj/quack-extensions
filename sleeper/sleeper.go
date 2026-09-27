@@ -39,8 +39,8 @@ type config struct {
 	// Season defaults to /v1/state/nfl's current season when zero.
 	Season int `yaml:"season"`
 
-	// Timezone is the user's IANA zone for *_local fields (e.g. ${QUACK_TIMEZONE});
-	// empty falls back to the process zone.
+	// Timezone overrides the host's zone (Host.Location) for *_local fields;
+	// an IANA name like America/Chicago. Optional.
 	Timezone string `yaml:"timezone"`
 
 	// Fixture serves the reference example JSON (marked Example) for any
@@ -65,7 +65,7 @@ func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
 	if cfg.Season < 0 {
 		return nil, fmt.Errorf("sleeper: season must not be negative, got %d", cfg.Season)
 	}
-	var loc *time.Location
+	loc := host.Location
 	if cfg.Timezone != "" {
 		l, err := loadZone(cfg.Timezone)
 		if err != nil {
@@ -89,7 +89,7 @@ type extension struct {
 	host   sdk.Host
 	cfg    config
 	client *Client
-	loc    *time.Location // config timezone; nil = time.Local
+	loc    *time.Location // config timezone, else Host.Location; nil = time.Local
 
 	// runningMu guards running: the set of global chat ids dispatched by a
 	// job/season-notes run that hasn't RunEnded yet (in-memory only - see

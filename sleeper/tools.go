@@ -33,7 +33,7 @@ func loadZone(name string) (*time.Location, error) {
 }
 
 // newClock picks the display zone: the `tz` override, else the configured
-// timezone, else the process zone. A bad override falls back with a tz_note.
+// timezone, else the host's, else the process zone. A bad override falls back with a tz_note.
 func (e *extension) newClock(tz string) clock {
 	c := clock{now: time.Now(), loc: time.Local}
 	if e.loc != nil {
