@@ -81,17 +81,9 @@ func (e *extension) getRoster(ctx context.Context, a rosterArgs) (rosterResult, 
 	if err != nil {
 		return rosterResult{}, err
 	}
-	rosterID := a.RosterID
-	if rosterID == 0 {
-		uid, err := e.resolveUserIdentifier(a.User)
-		if err != nil {
-			return rosterResult{}, err
-		}
-		id, ok := rosterIDForUser(rosters, users, uid)
-		if !ok {
-			return rosterResult{}, fmt.Errorf("sleeper_roster: no roster found for %q", uid)
-		}
-		rosterID = id
+	rosterID, err := e.resolveRosterID(a.RosterID, a.User, rosters, users)
+	if err != nil {
+		return rosterResult{}, fmt.Errorf("sleeper_roster: %w", err)
 	}
 	r, ok := rosterFor(rosters, rosterID)
 	if !ok {

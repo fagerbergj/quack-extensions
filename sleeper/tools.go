@@ -120,6 +120,23 @@ func weekForSeason(season string, state *sleepergen.NflState) (int, error) {
 	return state.Week, nil
 }
 
+// resolveRosterID returns rosterID if set, else the roster owned by user
+// (falling back to default_user).
+func (e *extension) resolveRosterID(rosterID int, user string, rosters []sleepergen.Roster, users []sleepergen.LeagueUser) (int, error) {
+	if rosterID != 0 {
+		return rosterID, nil
+	}
+	uid, err := e.resolveUserIdentifier(user)
+	if err != nil {
+		return 0, err
+	}
+	id, ok := rosterIDForUser(rosters, users, uid)
+	if !ok {
+		return 0, fmt.Errorf("no roster found for %q", uid)
+	}
+	return id, nil
+}
+
 // rosterIDForUser finds the roster a user_id (or, failing that, a
 // display/team name) owns in a league's roster list.
 func rosterIDForUser(rosters []sleepergen.Roster, users []sleepergen.LeagueUser, userOrName string) (int, bool) {

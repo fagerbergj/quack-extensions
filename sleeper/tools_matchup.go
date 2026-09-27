@@ -151,17 +151,9 @@ func (e *extension) getMatchup(ctx context.Context, a matchupArgs) (matchupResul
 	if err != nil {
 		return matchupResult{}, err
 	}
-	rosterID := a.RosterID
-	if rosterID == 0 {
-		uid, err := e.resolveUserIdentifier(a.User)
-		if err != nil {
-			return matchupResult{}, err
-		}
-		id, ok := rosterIDForUser(rosters, users, uid)
-		if !ok {
-			return matchupResult{}, fmt.Errorf("sleeper_matchup: no roster found for %q", uid)
-		}
-		rosterID = id
+	rosterID, err := e.resolveRosterID(a.RosterID, a.User, rosters, users)
+	if err != nil {
+		return matchupResult{}, fmt.Errorf("sleeper_matchup: %w", err)
 	}
 	season, state, err := e.season(ctx)
 	if err != nil {
