@@ -55,3 +55,6 @@ require (
 )
 
 // Dev-only: strip before tagging a release.
+
+// Dev-only: strip before tagging a release.
+replace github.com/fagerbergj/quack-extensions/sdk => ../sdk
