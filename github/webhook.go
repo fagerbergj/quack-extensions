@@ -780,10 +780,7 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 		login = runUserID
 	}
 	// Dedup: one run per session — second trigger is dropped, not queued (#665, #668).
-	sessionID := fmt.Sprintf("github-%s-%s-%d", owner, repo, number)
-	if p.explain {
-		sessionID = explainSessionID(owner, repo, number, login)
-	}
+	sessionID := sessionIDFor(p, login)
 	chatID := globalChatID(sessionID)
 	claimedAt, claimed := e.claimOrAck(p, sessionID, owner, repo, number)
 	if !claimed {
@@ -810,25 +807,12 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 		gh = e.loadGithubContext(ctx, chatID, owner, repo, number, isPR, p.Comment.ID, true)
 	}
 
-	// Never run a label-triggered work request blind — #467 failure mode.
-	if p.isLabelTrigger && gh.contextUnavailable {
-		slog.Warn("github: label-triggered work request has no usable GitHub context; aborting rather than running blind",
-			"component", "github", "repo", owner+"/"+repo, "issue", number)
-		abortCtx, abortCancel := context.WithTimeout(context.Background(), reactionTimeout)
-		abortMsg := "Could not load this issue from GitHub; not running. Re-apply the label to retry."
-		if err := e.app.postIssueComment(abortCtx, owner, repo, number, abortMsg); err != nil {
-			slog.Warn("github: abort comment failed", "component", "github", "repo", owner+"/"+repo, "issue", number, "err", err)
-		}
-		abortCancel()
+	if e.abortBlind(p, gh, owner, repo, number) {
 		clearInflight()
 		return
 	}
 
-	// Compute permission grant once — authorship-check failure denies rather than grants.
-	allowedKinds := []string{} // explain: deny every delivery kind
-	if !p.explain {
-		_, allowedKinds = e.grantForDispatch(ctx, owner, repo, number, isPR, gh)
-	}
+	allowedKinds := e.dispatchGrant(ctx, p, owner, repo, number, isPR, gh)
 
 	p.issueDeliverableCache = &issueDeliverableResult{}
 	isPlan := e.deliverableIsPlan(ctx, p, task, allowedKinds, isPR)
@@ -842,10 +826,7 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 	workerAsk := e.buildWorkerAsk(ctx, p, task, gh, allowedKinds, manifest)
 	contextItems := e.nodeContextItems(ctx, owner, repo, number, p.checkSHA)
 
-	title := strings.TrimSpace(p.Issue.Title)
-	if title == "" {
-		title = truncate(task, 80)
-	}
+	title := dispatchTitle(p, task)
 
 	setup := &sdk.Setup{Repo: p.Repository.CloneURL, BaseRef: setupBaseRef(p, gh), WorkBranch: fmt.Sprintf("quack/issue-%d", number)}
 	if isPR {
@@ -898,11 +879,7 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 	}
 
 	slog.Info("github run dispatched", "component", "github", "repo", owner+"/"+repo, "issue", number)
-	err := e.host.Dispatch(ctx, req)
-	if err == nil && p.explain {
-		e.postExplainLink(ctx, owner, repo, number, login, chatID)
-	}
-	if err != nil {
+	if err := e.host.Dispatch(ctx, req); err != nil {
 		slog.Error("github: dispatch failed", "component", "github", "repo", owner+"/"+repo, "issue", number, "err", err)
 		e.pending.Delete(chatID)
 		clearInflight()
@@ -912,7 +889,62 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 		if derr := e.store.DeletePendingRun(ctx, chatID); derr != nil {
 			slog.Warn("github: DeletePendingRun after failed dispatch", "component", "github", "repo", owner+"/"+repo, "issue", number, "err", derr)
 		}
+		return
 	}
+	if p.explain {
+		e.postExplainLink(ctx, owner, repo, number, login, chatID)
+	}
+}
+
+// sessionIDFor keys the run's chat: one per issue/PR, or per requester for /explain.
+func sessionIDFor(p issueCommentPayload, login string) string {
+	owner, repo, number := p.Repository.Owner.Login, p.Repository.Name, p.Issue.Number
+	if p.explain {
+		return explainSessionID(owner, repo, number, login)
+	}
+	return fmt.Sprintf("github-%s-%s-%d", owner, repo, number)
+}
+
+// dispatchTitle: the chat title - the issue/PR title, else the task.
+func dispatchTitle(p issueCommentPayload, task string) string {
+	title := strings.TrimSpace(p.Issue.Title)
+	if title == "" {
+		title = truncate(task, 80)
+	}
+	if p.explain {
+		return "Explain: " + title
+	}
+	return title
+}
+
+// dispatchGrant computes the run's delivery grant once; authorship-check
+// failure denies rather than grants. Non-nil empty = deny-all (nil = unrestricted).
+func (e *Extension) dispatchGrant(ctx context.Context, p issueCommentPayload, owner, repo string, number int, isPR bool, gh githubContext) []string {
+	if p.explain {
+		return []string{}
+	}
+	_, allowedKinds := e.grantForDispatch(ctx, owner, repo, number, isPR, gh)
+	return allowedKinds
+}
+
+// abortBlind refuses a label-triggered or /explain run with no usable GitHub
+// context (#467) and says so on the thread; true means do not dispatch.
+func (e *Extension) abortBlind(p issueCommentPayload, gh githubContext, owner, repo string, number int) bool {
+	if !gh.contextUnavailable || !(p.isLabelTrigger || p.explain) {
+		return false
+	}
+	slog.Warn("github: work request has no usable GitHub context; aborting rather than running blind",
+		"component", "github", "repo", owner+"/"+repo, "issue", number)
+	abortCtx, abortCancel := context.WithTimeout(context.Background(), reactionTimeout)
+	defer abortCancel()
+	abortMsg := "Could not load this issue from GitHub; not running. Re-apply the label to retry."
+	if p.explain {
+		abortMsg = "Could not load this pull request from GitHub; not running. Comment /explain again to retry."
+	}
+	if err := e.app.postIssueComment(abortCtx, owner, repo, number, abortMsg); err != nil {
+		slog.Warn("github: abort comment failed", "component", "github", "repo", owner+"/"+repo, "issue", number, "err", err)
+	}
+	return true
 }
 
 // nodeContextItems: the CI-check detail a checkSHA-scoped run injects per
@@ -963,6 +995,9 @@ func (e *Extension) claimOrAck(p issueCommentPayload, sessionID, owner, repo str
 			e.spawn(func() { e.ackReaction(p) })
 		} else {
 			e.spawn(func() { e.ackIssue(owner, repo, number) })
+		}
+		if p.explain {
+			e.spawn(func() { e.postExplainLinkNow(owner, repo, number, p.Comment.User.Login, globalChatID(sessionID)) })
 		}
 		return claimedAt, false
 	}
