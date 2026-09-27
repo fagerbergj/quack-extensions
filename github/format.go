@@ -126,6 +126,9 @@ func commandsBlockText(mention string, labels Labels, triggers map[string]bool) 
 			lines = append(lines, fmt.Sprintf("- the `%s` label: runs a review.", labels.Review))
 		}
 	}
+	if triggers["explain"] {
+		lines = append(lines, "- `/explain` as the entire comment from a repository owner, member or collaborator: an interactive walkthrough and quiz of this pull request in quack, linked from a reply.")
+	}
 	if triggers["merge"] && labels.Merge != "" {
 		lines = append(lines, fmt.Sprintf("- the `%s` label: merges once quack approves and checks are green.", labels.Merge))
 	}

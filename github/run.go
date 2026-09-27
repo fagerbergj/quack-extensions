@@ -35,6 +35,7 @@ type pendingRun struct {
 	gh             githubContext
 	isPlan         bool
 	isLabelTrigger bool
+	explain        bool // the walkthrough lives in quack's chat; finalize posts nothing
 
 	// dispatched is the original DispatchRequest, kept so the no-plan nudge
 	// can re-send its Run/Ask.ContextItems/Ask.NodeContext - a fresh Run/Ask
@@ -135,6 +136,7 @@ func (e *Extension) rebuildPendingRun(chatID string) (*pendingRun, error) {
 	return &pendingRun{
 		sessionID: row.SessionID, claimedAt: time.Now(), owner: row.Owner, repo: row.Repo, number: row.Number,
 		isPR: row.IsPR, login: row.Login, gh: gh, isPlan: row.IsPlan, isLabelTrigger: row.IsLabelTrigger,
+		explain:        row.SessionID == explainSessionID(row.Owner, row.Repo, row.Number, row.Login),
 		nudged:         true,
 		defaultBranch:  row.DefaultBranch,
 		installationID: row.InstallationID,
@@ -166,6 +168,10 @@ func (e *Extension) finalize(chatID string, pr *pendingRun, outcome sdk.RunOutco
 	}()
 	owner, repo, number := pr.owner, pr.repo, pr.number
 
+	if pr.explain {
+		e.host.Log.Info("github: explain run ended; nothing to post", "repo", owner+"/"+repo, "pr", number, "status", outcome.Status)
+		return
+	}
 	if e.settleDelivery(chatID, pr) {
 		return
 	}
