@@ -20,9 +20,11 @@ const maxGameLogWeeks = 5
 type playerArgs struct {
 	PlayerID string `json:"player_id,omitempty"`
 	Name     string `json:"name,omitempty"`
+	TZ       string `json:"tz,omitempty"`
 }
 
 type playerResult struct {
+	callContext
 	PlayerID            string             `json:"player_id"`
 	Name                string             `json:"name"`
 	Position            string             `json:"position,omitempty"`
@@ -34,7 +36,7 @@ type playerResult struct {
 	SeasonStats         map[string]float32 `json:"season_stats,omitempty"`
 	WeekProjection      float32            `json:"week_projection"`
 	GameLog             []gameLogWeek      `json:"game_log,omitempty"`
-	FetchedAt           string             `json:"fetched_at"`
+	gameInfo
 }
 
 // gameLogWeek is one of this season's completed weeks for a player -
@@ -54,7 +56,8 @@ func (e *extension) playerTool() tool.Tool {
 		functiontool.Config{
 			Name: "sleeper_player",
 			Description: "Get one player's bio, team, depth chart order, injury/practice status, news " +
-				"timestamp, season stats, and this week's projection. Look up by `player_id` or `name`.",
+				"timestamp, season stats, and the current NFL week's projection. Look up by `player_id` or " +
+				"`name`. " + playerGameDoc + " " + timeDoc,
 		},
 		func(ctx adkagent.Context, a playerArgs) (playerResult, error) { return e.getPlayer(ctx, a) },
 	)
@@ -62,6 +65,7 @@ func (e *extension) playerTool() tool.Tool {
 }
 
 func (e *extension) getPlayer(ctx context.Context, a playerArgs) (playerResult, error) {
+	c := e.newClock(a.TZ)
 	p, err := e.resolvePlayer(ctx, a.PlayerID, a.Name)
 	if err != nil {
 		return playerResult{}, fmt.Errorf("sleeper_player: %w", err)
@@ -78,6 +82,8 @@ func (e *extension) getPlayer(ctx context.Context, a playerArgs) (playerResult, 
 	if err != nil {
 		return playerResult{}, fmt.Errorf("sleeper_player: projections: %w", err)
 	}
+	cc := newCallContext(c, week, season, state)
+	sl := e.playerSlate(ctx, &cc, season, state, c, true)
 	var stats map[string]float32
 	if entry, err := e.client.PlayerSeasonStats(ctx, p.PlayerId, season); err == nil && entry.Stats != nil {
 		stats = *entry.Stats
@@ -86,12 +92,15 @@ func (e *extension) getPlayer(ctx context.Context, a playerArgs) (playerResult, 
 	if entries, err := e.client.PlayerGameLog(ctx, p.PlayerId, season); err == nil {
 		gameLog = buildGameLog(entries, week)
 	}
-	return playerResult{
+	res := playerResult{
 		PlayerID: p.PlayerId, Name: playerNameOf(p), Position: strVal(p.Position), Team: strVal(p.Team),
 		DepthChartOrder: intVal(p.DepthChartOrder), InjuryStatus: strVal(p.InjuryStatus),
 		PracticeDescription: strVal(p.PracticeDescription), NewsUpdated: intVal(p.NewsUpdated),
-		SeasonStats: stats, WeekProjection: proj[p.PlayerId]["pts_ppr"], GameLog: gameLog, FetchedAt: nowRFC3339(),
-	}, nil
+		SeasonStats: stats, WeekProjection: proj[p.PlayerId]["pts_ppr"], GameLog: gameLog,
+		gameInfo: sl.gameFor(map[string]sleepergen.Player{p.PlayerId: p}, p.PlayerId),
+	}
+	res.callContext = cc
+	return res, nil
 }
 
 // buildGameLog keeps weeks strictly before currentWeek (the in-progress

@@ -97,3 +97,18 @@ func TestStartNoopWithoutDailySnapshots(t *testing.T) {
 		}
 	}
 }
+
+func TestFactoryTimezone(t *testing.T) {
+	ext, err := factory(sdk.Host{}, []byte("timezone: America/Chicago\n"))
+	if err != nil {
+		t.Fatalf("timezone America/Chicago: %v", err)
+	}
+	if loc := ext.(*extension).loc; loc == nil || loc.String() != "America/Chicago" {
+		t.Errorf("loc = %v, want America/Chicago", loc)
+	}
+	for _, bad := range []string{"CDT", "EST", "America/Chicgo"} {
+		if _, err := factory(sdk.Host{}, []byte("timezone: "+bad+"\n")); err == nil || !strings.Contains(err.Error(), "timezone") {
+			t.Errorf("timezone %q: err = %v, want a timezone error", bad, err)
+		}
+	}
+}

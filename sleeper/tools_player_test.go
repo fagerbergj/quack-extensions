@@ -9,7 +9,7 @@ import (
 
 func TestGetPlayerByID(t *testing.T) {
 	e := testExtension(t)
-	got, err := e.getPlayer(context.Background(), playerArgs{PlayerID: "6797"})
+	got, err := e.getPlayer(context.Background(), playerArgs{PlayerID: "6797", TZ: "America/Chicago"})
 	if err != nil {
 		t.Fatalf("getPlayer: %v", err)
 	}
@@ -21,6 +21,11 @@ func TestGetPlayerByID(t *testing.T) {
 	}
 	if got.FetchedAt == "" {
 		t.Error("expected fetched_at to be set")
+	}
+	g := got.Game
+	if g == nil || g.GameID != "202610229" || g.NFLOpponent != "LV" || !g.IsHome || g.Roof != "outdoor" || g.Venue != "SoFi Stadium" ||
+		g.Kickoff != "2026-09-20T20:05:00Z" || g.KickoffLocal != "Sun Sep 20 3:05 PM CDT" {
+		t.Errorf("game = %+v, want week-2 LV @ LAC at SoFi, 3:05 PM CDT", g)
 	}
 }
 

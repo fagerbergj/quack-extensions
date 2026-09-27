@@ -129,11 +129,24 @@ league/rosters/users 10m, matchups and schedule 2m, players dump 24h, projection
 week scores 6h) and a player name index (lowercased "first last", last name, and DEF team codes
 -> player_ids), built from whatever `PlayersDump` last fetched. `WeekScores` (the undocumented
 `/scores/nfl/regular/{season}/{week}`) is read only for each game's kickoff (`start_time`) and
-stadium; `sleeper_schedule` joins it to the schedule on `game_id` and computes `locked` from
-kickoff vs. now on every call, so no TTL delays a lock. A `flex-schedule` game's `start_time`
-is a placeholder and is reported as `kickoff_tbd`; postponed and canceled games get no kickoff.
-`Chain` walks a league's `previous_league_id` back through past seasons (newest first, bounded
-to 10 seasons, cached 24h) for the league-history job.
+stadium; `weekSlate` (`tools_league.go`) joins it to the schedule on `game_id` and computes
+`locked` from kickoff vs. now on every call, so no TTL delays a lock. A `flex-schedule` game's
+`start_time` is a placeholder and is reported as `kickoff_tbd`; postponed and canceled games get
+no kickoff. `Chain` walks a league's `previous_league_id` back through past seasons (newest
+first, bounded to 10 seasons, cached 24h) for the league-history job.
+
+`sleeper_schedule` returns that slate. `sleeper_roster`, `sleeper_matchup`, and `sleeper_player`
+attach each player's own game from it by NFL team code (a DEF's player_id is its team), or
+`bye`/`no_game_reason`, and only for the live regular-season week: the players dump holds
+today's teams, so a past week is never joined. A schedule failure degrades to
+`no_game_reason: "schedule unavailable"` instead of failing the tool. Reserve and taxi players
+carry no game.
+
+`kickoff_local` and `fetched_at_local` render in the extension's `timezone` config (an IANA name
+such as `America/Chicago`; set it to `${QUACK_TIMEZONE}`), else the process zone. A tool's `tz`
+argument overrides it; an invalid one falls back with a `tz_note`. Only region-style names (or
+`UTC`) are accepted: `EST`/`CDT` load as fixed offsets that are an hour off in DST. `time/tzdata`
+is embedded so zones resolve in images without a zone database.
 
 `NewClient(baseURL, httpClient)` takes an explicit base URL so tests (and later, tools) point
 at `cmd/qa-mock` instead of the real API. Sleeper answers an unknown id with HTTP 200 and a

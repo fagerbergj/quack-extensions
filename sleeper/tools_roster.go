@@ -23,46 +23,25 @@ type playerRef struct {
 }
 
 type slotPlayer struct {
-	Slot     string `json:"slot"`
+	Slot     string `json:"slot,omitempty"`
 	PlayerID string `json:"player_id"`
 	Name     string `json:"name"`
-	Bye      bool   `json:"bye,omitempty"`
-}
-
-// weekTeams returns the NFL team codes with a game in week, from a
-// schedule already fetched for the season - a team missing from this set has a bye.
-func weekTeams(games []sleepergen.Game, week int) map[string]bool {
-	out := map[string]bool{}
-	for _, g := range games {
-		if g.Week != week {
-			continue
-		}
-		out[g.Home] = true
-		out[g.Away] = true
-	}
-	return out
-}
-
-// playerTeam returns a rostered player's NFL team code, falling back to the
-// player_id itself for a DEF unit (whose id already is the team code).
-func playerTeam(dump map[string]sleepergen.Player, playerID string) string {
-	if p, ok := dump[playerID]; ok && p.Team != nil && *p.Team != "" {
-		return *p.Team
-	}
-	return playerID
+	gameInfo
 }
 
 type rosterArgs struct {
 	LeagueID string `json:"league_id,omitempty"`
 	User     string `json:"user,omitempty"`
 	RosterID int    `json:"roster_id,omitempty"`
+	TZ       string `json:"tz,omitempty"`
 }
 
 type rosterResult struct {
+	callContext
 	RosterID  int          `json:"roster_id"`
 	Team      string       `json:"team"`
 	Starters  []slotPlayer `json:"starters"`
-	Bench     []playerRef  `json:"bench"`
+	Bench     []slotPlayer `json:"bench"`
 	Reserve   []playerRef  `json:"reserve,omitempty"`
 	Taxi      []playerRef  `json:"taxi,omitempty"`
 	Wins      int          `json:"wins"`
@@ -72,7 +51,6 @@ type rosterResult struct {
 	WaiverPos int          `json:"waiver_position"`
 	FaabUsed  int          `json:"faab_used"`
 	FaabLeft  int          `json:"faab_left"`
-	FetchedAt string       `json:"fetched_at"`
 }
 
 //nolint:dupl // functiontool wrapper boilerplate: each tool differs only in name/description/handler
@@ -80,9 +58,10 @@ func (e *extension) rosterTool() tool.Tool {
 	t, _ := functiontool.New[rosterArgs, rosterResult](
 		functiontool.Config{
 			Name: "sleeper_roster",
-			Description: "Get a roster: starters by slot, bench, reserve/taxi, record, fpts, waiver " +
-				"position, FAAB used/left, and which starters are on a bye this week. `league_id` falls " +
-				"back to default_league; `user` or `roster_id` picks the team, falling back to default_user.",
+			Description: "Get a roster for the current NFL week: starters by slot, bench, reserve/taxi, " +
+				"record, fpts, waiver position, FAAB used/left. " + playerGameDoc + " `league_id` falls " +
+				"back to default_league; `user` or `roster_id` picks the team, falling back to default_user. " +
+				"Reserve (IR) and taxi players carry no game. " + timeDoc,
 		},
 		func(ctx adkagent.Context, a rosterArgs) (rosterResult, error) { return e.getRoster(ctx, a) },
 	)
@@ -90,6 +69,7 @@ func (e *extension) rosterTool() tool.Tool {
 }
 
 func (e *extension) getRoster(ctx context.Context, a rosterArgs) (rosterResult, error) {
+	c := e.newClock(a.TZ)
 	leagueID, err := e.resolveLeagueID(a.LeagueID)
 	if err != nil {
 		return rosterResult{}, err
@@ -98,17 +78,9 @@ func (e *extension) getRoster(ctx context.Context, a rosterArgs) (rosterResult, 
 	if err != nil {
 		return rosterResult{}, err
 	}
-	rosterID := a.RosterID
-	if rosterID == 0 {
-		uid, err := e.resolveUserIdentifier(a.User)
-		if err != nil {
-			return rosterResult{}, err
-		}
-		id, ok := rosterIDForUser(rosters, users, uid)
-		if !ok {
-			return rosterResult{}, fmt.Errorf("sleeper_roster: no roster found for %q", uid)
-		}
-		rosterID = id
+	rosterID, err := e.resolveRosterID(a.RosterID, a.User, rosters, users)
+	if err != nil {
+		return rosterResult{}, fmt.Errorf("sleeper_roster: %w", err)
 	}
 	r, ok := rosterFor(rosters, rosterID)
 	if !ok {
@@ -126,12 +98,11 @@ func (e *extension) getRoster(ctx context.Context, a rosterArgs) (rosterResult, 
 	if err != nil {
 		return rosterResult{}, fmt.Errorf("sleeper_roster: %w", err)
 	}
-	games, err := e.client.Schedule(ctx, season)
-	if err != nil {
-		return rosterResult{}, fmt.Errorf("sleeper_roster: schedule: %w", err)
-	}
-	playing := weekTeams(games, week)
-	return buildRosterResult(league, r, dump, playing, teamNames(rosters, users)), nil
+	cc := newCallContext(c, week, season, state)
+	sl := e.playerSlate(ctx, &cc, season, state, c, true)
+	res := buildRosterResult(league, r, dump, sl, teamNames(rosters, users))
+	res.callContext = cc
+	return res, nil
 }
 
 // leagueRostersUsers is the three-call combo almost every roster/standings
@@ -152,7 +123,7 @@ func (e *extension) leagueRostersUsers(ctx context.Context, leagueID string) (*s
 	return league, rosters, users, nil
 }
 
-func buildRosterResult(league *sleepergen.League, r sleepergen.Roster, dump map[string]sleepergen.Player, playing map[string]bool, names map[int]string) rosterResult {
+func buildRosterResult(league *sleepergen.League, r sleepergen.Roster, dump map[string]sleepergen.Player, sl slate, names map[int]string) rosterResult {
 	starterSlots := nonBenchSlots(league.RosterPositions)
 	starters := make([]slotPlayer, 0, len(r.Starters))
 	onField := map[string]bool{}
@@ -162,10 +133,11 @@ func buildRosterResult(league *sleepergen.League, r sleepergen.Roster, dump map[
 			slot = starterSlots[i]
 		}
 		onField[pid] = true
-		starters = append(starters, slotPlayer{Slot: slot, PlayerID: pid, Name: playerName(dump, pid), Bye: !playing[playerTeam(dump, pid)]})
+		starters = append(starters, slotPlayer{Slot: slot, PlayerID: pid, Name: playerName(dump, pid), gameInfo: sl.gameFor(dump, pid)})
 	}
 	reserveSet, taxiSet := toSet(r.Reserve), toSet(r.Taxi)
-	var bench, reserve, taxi []playerRef
+	var bench []slotPlayer
+	var reserve, taxi []playerRef
 	for _, pid := range r.Players {
 		if onField[pid] {
 			continue
@@ -177,7 +149,7 @@ func buildRosterResult(league *sleepergen.League, r sleepergen.Roster, dump map[
 		case taxiSet[pid]:
 			taxi = append(taxi, ref)
 		default:
-			bench = append(bench, ref)
+			bench = append(bench, slotPlayer{PlayerID: pid, Name: ref.Name, gameInfo: sl.gameFor(dump, pid)})
 		}
 	}
 	return rosterResult{
@@ -188,7 +160,6 @@ func buildRosterResult(league *sleepergen.League, r sleepergen.Roster, dump map[
 		WaiverPos: r.Settings["waiver_position"],
 		FaabUsed:  r.Settings["waiver_budget_used"],
 		FaabLeft:  league.Settings["waiver_budget"] - r.Settings["waiver_budget_used"],
-		FetchedAt: nowRFC3339(),
 	}
 }
 

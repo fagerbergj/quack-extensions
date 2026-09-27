@@ -28,6 +28,30 @@ func TestGetMatchup(t *testing.T) {
 	if got.MatchupID == 0 {
 		t.Error("expected a matchup_id")
 	}
+	for _, sd := range []side{got.Me, got.Opponent} {
+		for _, p := range sd.Starters {
+			if p.Game == nil || p.Game.NFLOpponent == "" || p.Game.Kickoff == "" || p.Game.KickoffLocal == "" {
+				t.Errorf("roster %d starter %s: game %+v (reason %q), want a joined game", sd.RosterID, p.Name, p.Game, p.NoGameReason)
+			}
+		}
+	}
+}
+
+func TestGetMatchupPastWeekLabeledAndJoined(t *testing.T) {
+	e := testExtension(t)
+	got, err := e.getMatchup(context.Background(), matchupArgs{Week: 1, TZ: "nowhere"})
+	if err != nil {
+		t.Fatalf("getMatchup: %v", err)
+	}
+	if got.WeekNote == "" || got.CurrentWeek != 2 || got.TZNote == "" {
+		t.Errorf("week 1: week_note=%q current_week=%d tz_note=%q, want not-current label and tz note", got.WeekNote, got.CurrentWeek, got.TZNote)
+	}
+	// Players' teams are today's, so a past week must not be joined to games.
+	for _, b := range got.Me.Bench {
+		if b.Game != nil || b.NoGameReason != "games are joined only for the current NFL week" {
+			t.Errorf("bench %s: game %+v reason %q, want no join", b.Name, b.Game, b.NoGameReason)
+		}
+	}
 }
 
 func TestGetMatchupExplicitRoster(t *testing.T) {
@@ -120,7 +144,7 @@ func TestBenchPlayers(t *testing.T) {
 		Starters:      []string{"QB1", "RB1"},
 		PlayersPoints: map[string]float32{"QB1": 10, "RB1": 8, "RB2": 7},
 	}
-	bench := benchPlayers(m, dump, proj)
+	bench := benchPlayers(m, dump, proj, slate{})
 	if len(bench) != 1 {
 		t.Fatalf("bench = %+v, want exactly RB2 (starters and the \"0\" placeholder excluded)", bench)
 	}
@@ -148,7 +172,7 @@ func TestAddRetroFieldsFlexPromotesFromBench(t *testing.T) {
 	}}
 	proj := map[string]sleepergen.StatMap{}
 	stats := map[string]sleepergen.StatMap{}
-	addRetroFields(me, league, m, []sleepergen.Matchup{m}, dump, proj, stats)
+	addRetroFields(me, league, m, []sleepergen.Matchup{m}, dump, proj, stats, slate{})
 	if me.BestPoints != 32 {
 		t.Errorf("best_points = %v, want 32 (bench RB2 promoted into FLEX over started WR2)", me.BestPoints)
 	}
