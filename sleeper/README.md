@@ -70,7 +70,8 @@ Recorded from the live API for two leagues in owner jffagerberg's (user_id
   users, matchups for weeks 1-2, transactions for weeks 1-2, both playoff brackets, traded
   picks, the league's drafts, one draft with its picks, NFL state, trending add/drop, one
   player, the players dump, week-2 projections and stats, one team's depth chart, the season
-  schedule, player research, and one player's season stats.
+  schedule, week-2 scores (kickoff instants and venues), player research, and one player's
+  season stats.
 - **Past season**: league `1257102049204514816` (2025, complete) - league settings, rosters,
   winners bracket, matchups for weeks 1 and 14, transactions for weeks 1 and 5 (week 5 has two
   real trades - the only trade shape verified against live data; this league runs with
@@ -95,7 +96,7 @@ Recorded from the live API for two leagues in owner jffagerberg's (user_id
   a stat line yet); intersected with the same keep-set, 11 remain.
 - 2025 season stats: trimmed to the 140 players drafted in the past league.
 
-Every other fixture is the live response as-is (all under 60 KB).
+Every other fixture is the live response as-is (all under 80 KB).
 
 ## Re-recording
 
@@ -120,9 +121,13 @@ flags above) replays only what's already recorded and 404s on a miss, so CI and
 ## Client
 
 `client.go` wraps the generated client with an in-memory cache (per-endpoint TTLs from the
-issue: state 5m, league/rosters/users 10m, matchups 2m, players dump 24h, projections/stats
-1h) and a player name index (lowercased "first last", last name, and DEF team codes ->
-player_ids), built from whatever `PlayersDump` last fetched. `Chain` walks a league's
+issue: state 5m, league/rosters/users 10m, matchups and schedule 2m, players dump 24h,
+projections/stats 1h, week scores 6h) and a player name index (lowercased "first last", last
+name, and DEF team codes -> player_ids), built from whatever `PlayersDump` last fetched.
+`WeekScores` (the undocumented `/scores/nfl/regular/{season}/{week}`) is read only for each
+game's kickoff (`start_time`) and stadium; `sleeper_schedule` joins it to the schedule on
+`game_id` and computes `locked` from kickoff vs. now on every call, so no TTL delays a lock.
+A `flex-schedule` game's `start_time` is a placeholder and is reported as `kickoff_tbd`. `Chain` walks a league's
 `previous_league_id` back through past seasons (newest first, bounded to 10 seasons, cached
 24h) for the league-history job.
 

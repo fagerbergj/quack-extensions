@@ -3,6 +3,9 @@ package sleeper
 import (
 	"context"
 	"fmt"
+	"time"
+
+	"github.com/fagerbergj/quack-extensions/sleeper/sleepergen"
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
@@ -152,24 +155,35 @@ type scheduleArgs struct {
 }
 
 type scheduleGame struct {
-	GameID string `json:"game_id"`
-	Home   string `json:"home"`
-	Away   string `json:"away"`
-	Date   string `json:"date,omitempty"`
-	Status string `json:"status,omitempty"`
+	GameID     string `json:"game_id"`
+	Home       string `json:"home"`
+	Away       string `json:"away"`
+	Date       string `json:"date,omitempty"`
+	Kickoff    string `json:"kickoff,omitempty"`
+	KickoffTBD bool   `json:"kickoff_tbd,omitempty"`
+	Locked     bool   `json:"locked"`
+	Status     string `json:"status,omitempty"`
+	Venue      string `json:"venue,omitempty"`
+	City       string `json:"city,omitempty"`
+	Roof       string `json:"roof,omitempty"`
 }
 
 type scheduleResult struct {
 	Week      int            `json:"week"`
 	Games     []scheduleGame `json:"games"`
+	Note      string         `json:"note,omitempty"`
 	FetchedAt string         `json:"fetched_at"`
 }
 
 func (e *extension) scheduleTool() tool.Tool {
 	t, _ := functiontool.New[scheduleArgs, scheduleResult](
 		functiontool.Config{
-			Name:        "sleeper_schedule",
-			Description: "Get the NFL schedule for a week (default the current week): games, kickoff dates, and status.",
+			Name: "sleeper_schedule",
+			Description: "Get the NFL schedule for a week (default the current week). Per game: kickoff " +
+				"(RFC3339 UTC; convert to the user's zone yourself), locked (kickoff has passed as of " +
+				"fetched_at - lineup locked), date (US Eastern calendar date), status, venue, city, and " +
+				"roof (outdoor/dome/retractable_dome). kickoff_tbd marks an unscheduled flex game; a " +
+				"missing kickoff means the time is unknown, not that the game has none.",
 		},
 		func(ctx adkagent.Context, a scheduleArgs) (scheduleResult, error) { return e.getSchedule(ctx, a) },
 	)
@@ -189,12 +203,44 @@ func (e *extension) getSchedule(ctx context.Context, a scheduleArgs) (scheduleRe
 	if err != nil {
 		return scheduleResult{}, fmt.Errorf("sleeper_schedule: %w", err)
 	}
-	var out []scheduleGame
+	res := scheduleResult{Week: week, FetchedAt: nowRFC3339()}
+	scores, err := e.client.WeekScores(ctx, season, week)
+	if err != nil {
+		res.Note = fmt.Sprintf("kickoff times unavailable: %v", err)
+	}
+	byID := make(map[string]*sleepergen.GameScore, len(scores))
+	for i := range scores {
+		byID[scores[i].GameId] = &scores[i]
+	}
+	now := time.Now()
 	for _, g := range games {
 		if g.Week != week {
 			continue
 		}
-		out = append(out, scheduleGame{GameID: g.GameId, Home: g.Home, Away: g.Away, Date: strVal(g.Date), Status: strVal(g.Status)})
+		sg := scheduleGame{GameID: g.GameId, Home: g.Home, Away: g.Away, Date: strVal(g.Date), Status: strVal(g.Status)}
+		res.Games = append(res.Games, withKickoff(sg, byID[g.GameId], now))
 	}
-	return scheduleResult{Week: week, Games: out, FetchedAt: nowRFC3339()}, nil
+	return res, nil
+}
+
+// withKickoff joins on game_id, never on teams, so a missing score leaves
+// kickoff empty rather than borrowing another game's time.
+func withKickoff(g scheduleGame, s *sleepergen.GameScore, now time.Time) scheduleGame {
+	g.Locked = g.Status == "in_game" || g.Status == "complete"
+	if s == nil {
+		return g
+	}
+	if sd := s.Metadata.StadiumDetails; sd != nil {
+		g.Venue, g.City, g.Roof = strVal(sd.Name), strVal(sd.City), strVal(sd.Type)
+	}
+	if strVal(s.Metadata.Status) == "flex-schedule" {
+		g.KickoffTBD = true
+		return g
+	}
+	if s.StartTime > 0 {
+		k := time.UnixMilli(s.StartTime).UTC()
+		g.Kickoff = k.Format(time.RFC3339)
+		g.Locked = !k.After(now)
+	}
+	return g
 }

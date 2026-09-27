@@ -3,6 +3,7 @@ package sleeper
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/fagerbergj/quack-extensions/sleeper/sleepergen"
 )
@@ -60,9 +61,63 @@ func TestGetSchedule(t *testing.T) {
 		t.Error("expected week-2 games")
 	}
 	for _, g := range got.Games {
-		if g.Home == "" || g.Away == "" {
-			t.Errorf("game %+v missing home/away", g)
+		if g.Home == "" || g.Away == "" || g.Kickoff == "" || g.Roof == "" {
+			t.Errorf("game %+v missing home/away/kickoff/roof", g)
 		}
+	}
+	// The fixture's schedule status is a stale "pre_game"; locked must follow the kickoff instead.
+	want := scheduleGame{GameID: "202610201", Home: "ARI", Away: "SEA", Date: "2026-09-20", Status: "pre_game",
+		Kickoff: "2026-09-20T20:25:00Z", Locked: true, Venue: "State Farm Stadium", City: "Glendale", Roof: "retractable_dome"}
+	if got.Games[0] != want {
+		t.Errorf("games[0] = %+v, want %+v", got.Games[0], want)
+	}
+	if got.Note != "" {
+		t.Errorf("note = %q, want empty", got.Note)
+	}
+}
+
+func TestGetScheduleWithoutScores(t *testing.T) {
+	e := testExtension(t)
+	got, err := e.getSchedule(context.Background(), scheduleArgs{Week: 1}) // no week-1 scores fixture: 404
+	if err != nil {
+		t.Fatalf("getSchedule: %v", err)
+	}
+	if got.Note == "" || len(got.Games) == 0 {
+		t.Fatalf("want games plus a note, got %+v", got)
+	}
+	for _, g := range got.Games {
+		if g.Kickoff != "" || !g.Locked {
+			t.Errorf("game %+v: want no kickoff, locked from status complete", g)
+		}
+	}
+}
+
+func TestWithKickoff(t *testing.T) {
+	now := time.Date(2026, 9, 27, 17, 0, 0, 0, time.UTC)
+	score := func(start time.Time, status string) *sleepergen.GameScore {
+		return &sleepergen.GameScore{StartTime: start.UnixMilli(), Metadata: sleepergen.GameScoreMetadata{Status: &status}}
+	}
+	tests := []struct {
+		name       string
+		status     string
+		score      *sleepergen.GameScore
+		wantKick   string
+		wantTBD    bool
+		wantLocked bool
+	}{
+		{"kickoff now locks", "pre_game", score(now, "created"), "2026-09-27T17:00:00Z", false, true},
+		{"future kickoff open", "pre_game", score(now.Add(time.Minute), "scheduled"), "2026-09-27T17:01:00Z", false, false},
+		{"flex placeholder hidden", "pre_game", score(now.Add(-time.Hour), "flex-schedule"), "", true, false},
+		{"no score, in progress", "in_game", nil, "", false, true},
+		{"no score, canceled", "canceled", nil, "", false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := withKickoff(scheduleGame{Status: tc.status}, tc.score, now)
+			if got.Kickoff != tc.wantKick || got.KickoffTBD != tc.wantTBD || got.Locked != tc.wantLocked {
+				t.Errorf("got kickoff=%q tbd=%v locked=%v, want %q %v %v", got.Kickoff, got.KickoffTBD, got.Locked, tc.wantKick, tc.wantTBD, tc.wantLocked)
+			}
+		})
 	}
 }
 

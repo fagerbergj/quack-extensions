@@ -83,12 +83,50 @@ type DraftPick struct {
 
 // Game defines model for Game.
 type Game struct {
-	Away   string  `json:"away"`
+	Away string `json:"away"`
+
+	// Date Calendar date in US Eastern time (a Monday 8:15pm ET game is that Monday, though its UTC kickoff is Tuesday). No time of day - see GameScore.start_time.
 	Date   *string `json:"date,omitempty"`
 	GameId string  `json:"game_id"`
 	Home   string  `json:"home"`
 	Status *string `json:"status,omitempty"`
 	Week   int     `json:"week"`
+}
+
+// GameScore One game from /scores; game_id joins it to Game.
+type GameScore struct {
+	Date        *string `json:"date,omitempty"`
+	GameId      string  `json:"game_id"`
+	LastUpdated *int64  `json:"last_updated,omitempty"`
+
+	// Metadata Only the fields tools read are typed; the ~60 others (live score, odds, forecast, geo_lat/geo_long) pass through as additional properties.
+	Metadata     GameScoreMetadata       `json:"metadata"`
+	ProviderId   *string                 `json:"provider_id,omitempty"`
+	ProviderWeek *int                    `json:"provider_week,omitempty"`
+	Reactions    *map[string]interface{} `json:"reactions,omitempty"`
+	ScheduleHash *string                 `json:"schedule_hash,omitempty"`
+	Season       *string                 `json:"season,omitempty"`
+	SeasonType   *string                 `json:"season_type,omitempty"`
+	Sport        *string                 `json:"sport,omitempty"`
+
+	// StartTime Kickoff instant, Unix epoch milliseconds (equals metadata.date_time).
+	StartTime      int64   `json:"start_time"`
+	Status         *string `json:"status,omitempty"`
+	TotalComments  *int    `json:"total_comments,omitempty"`
+	TotalReactions *int    `json:"total_reactions,omitempty"`
+	TotalViews     *int    `json:"total_views,omitempty"`
+	UpdatedAt      *int64  `json:"updated_at,omitempty"`
+	Week           int     `json:"week"`
+}
+
+// GameScoreMetadata Only the fields tools read are typed; the ~60 others (live score, odds, forecast, geo_lat/geo_long) pass through as additional properties.
+type GameScoreMetadata struct {
+	DateTime       *string  `json:"date_time,omitempty"`
+	StadiumDetails *Stadium `json:"stadium_details,omitempty"`
+
+	// Status "scheduled", "created", "closed", or "flex-schedule" - the last marks a flex-eligible game whose start_time is a placeholder, not a real kickoff.
+	Status               *string                `json:"status,omitempty"`
+	AdditionalProperties map[string]interface{} `json:"-"`
 }
 
 // League defines model for League.
@@ -267,6 +305,20 @@ type Roster struct {
 	Taxi      *[]string               `json:"taxi,omitempty"`
 }
 
+// Stadium defines model for Stadium.
+type Stadium struct {
+	Capacity       *int    `json:"capacity,omitempty"`
+	City           *string `json:"city,omitempty"`
+	Country        *string `json:"country,omitempty"`
+	Name           *string `json:"name,omitempty"`
+	PlayingSurface *string `json:"playing_surface,omitempty"`
+	State          *string `json:"state,omitempty"`
+
+	// Type "outdoor", "dome", or "retractable_dome"
+	Type *string `json:"type,omitempty"`
+	Zip  *string `json:"zip,omitempty"`
+}
+
 // StatMap A player's weekly projection or stat line, keyed by Sleeper's stat abbreviation.
 type StatMap map[string]float32
 
@@ -348,6 +400,104 @@ type GetTrendingPlayersParams struct {
 
 // GetTrendingPlayersParamsType defines parameters for GetTrendingPlayers.
 type GetTrendingPlayersParamsType string
+
+// Getter for additional properties for GameScoreMetadata. Returns the specified
+// element and whether it was found
+func (a GameScoreMetadata) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for GameScoreMetadata
+func (a *GameScoreMetadata) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for GameScoreMetadata to handle AdditionalProperties
+func (a *GameScoreMetadata) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["date_time"]; found {
+		err = json.Unmarshal(raw, &a.DateTime)
+		if err != nil {
+			return fmt.Errorf("error reading 'date_time': %w", err)
+		}
+		delete(object, "date_time")
+	}
+
+	if raw, found := object["stadium_details"]; found {
+		err = json.Unmarshal(raw, &a.StadiumDetails)
+		if err != nil {
+			return fmt.Errorf("error reading 'stadium_details': %w", err)
+		}
+		delete(object, "stadium_details")
+	}
+
+	if raw, found := object["status"]; found {
+		err = json.Unmarshal(raw, &a.Status)
+		if err != nil {
+			return fmt.Errorf("error reading 'status': %w", err)
+		}
+		delete(object, "status")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for GameScoreMetadata to handle AdditionalProperties
+func (a GameScoreMetadata) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.DateTime != nil {
+		object["date_time"], err = json.Marshal(a.DateTime)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'date_time': %w", err)
+		}
+	}
+
+	if a.StadiumDetails != nil {
+		object["stadium_details"], err = json.Marshal(a.StadiumDetails)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'stadium_details': %w", err)
+		}
+	}
+
+	if a.Status != nil {
+		object["status"], err = json.Marshal(a.Status)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'status': %w", err)
+		}
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
 
 // RequestEditorFn  is the function signature for the RequestEditor callback function
 type RequestEditorFn func(ctx context.Context, req *http.Request) error
@@ -433,6 +583,9 @@ type ClientInterface interface {
 
 	// GetSchedule request
 	GetSchedule(ctx context.Context, season string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetWeekScores request
+	GetWeekScores(ctx context.Context, season string, week int, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetPlayerSeasonStats request
 	GetPlayerSeasonStats(ctx context.Context, playerId string, params *GetPlayerSeasonStatsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -542,6 +695,18 @@ func (c *Client) GetWeekProjectionsRich(ctx context.Context, season string, week
 
 func (c *Client) GetSchedule(ctx context.Context, season string, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetScheduleRequest(c.Server, season)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetWeekScores(ctx context.Context, season string, week int, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetWeekScoresRequest(c.Server, season, week)
 	if err != nil {
 		return nil, err
 	}
@@ -984,6 +1149,47 @@ func NewGetScheduleRequest(server string, season string) (*http.Request, error) 
 	}
 
 	operationPath := fmt.Sprintf("/schedule/nfl/regular/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetWeekScoresRequest generates requests for GetWeekScores
+func NewGetWeekScoresRequest(server string, season string, week int) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "season", season, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "week", week, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "integer", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/scores/nfl/regular/%s/%s", pathParam0, pathParam1)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -1936,6 +2142,9 @@ type ClientWithResponsesInterface interface {
 	// GetScheduleWithResponse request
 	GetScheduleWithResponse(ctx context.Context, season string, reqEditors ...RequestEditorFn) (*GetScheduleResponse, error)
 
+	// GetWeekScoresWithResponse request
+	GetWeekScoresWithResponse(ctx context.Context, season string, week int, reqEditors ...RequestEditorFn) (*GetWeekScoresResponse, error)
+
 	// GetPlayerSeasonStatsWithResponse request
 	GetPlayerSeasonStatsWithResponse(ctx context.Context, playerId string, params *GetPlayerSeasonStatsParams, reqEditors ...RequestEditorFn) (*GetPlayerSeasonStatsResponse, error)
 
@@ -2120,6 +2329,36 @@ func (r GetScheduleResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r GetScheduleResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetWeekScoresResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *[]GameScore
+}
+
+// Status returns HTTPResponse.Status
+func (r GetWeekScoresResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetWeekScoresResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetWeekScoresResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -2852,6 +3091,15 @@ func (c *ClientWithResponses) GetScheduleWithResponse(ctx context.Context, seaso
 	return ParseGetScheduleResponse(rsp)
 }
 
+// GetWeekScoresWithResponse request returning *GetWeekScoresResponse
+func (c *ClientWithResponses) GetWeekScoresWithResponse(ctx context.Context, season string, week int, reqEditors ...RequestEditorFn) (*GetWeekScoresResponse, error) {
+	rsp, err := c.GetWeekScores(ctx, season, week, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetWeekScoresResponse(rsp)
+}
+
 // GetPlayerSeasonStatsWithResponse request returning *GetPlayerSeasonStatsResponse
 func (c *ClientWithResponses) GetPlayerSeasonStatsWithResponse(ctx context.Context, playerId string, params *GetPlayerSeasonStatsParams, reqEditors ...RequestEditorFn) (*GetPlayerSeasonStatsResponse, error) {
 	rsp, err := c.GetPlayerSeasonStats(ctx, playerId, params, reqEditors...)
@@ -3153,6 +3401,32 @@ func ParseGetScheduleResponse(rsp *http.Response) (*GetScheduleResponse, error) 
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
 		var dest []Game
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetWeekScoresResponse parses an HTTP response from a GetWeekScoresWithResponse call
+func ParseGetWeekScoresResponse(rsp *http.Response) (*GetWeekScoresResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetWeekScoresResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest []GameScore
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
