@@ -18,7 +18,7 @@ func (*invocation) Artifacts() agent.Artifacts { return nil }
 // TestCallInfoReachesFunctionTool runs a real functiontool through ADK's own
 // tool context, so a host that attaches CallInfo to the run ctx is what a tool sees.
 func TestCallInfoReachesFunctionTool(t *testing.T) {
-	want := sdk.CallInfo{ChatID: "c1", UserID: "u1", NodeID: "n1", TurnID: "t1", AllowedDeliveryKinds: []string{}, ReadOnly: true}
+	want := sdk.CallInfo{ChatID: "c1", UserID: "u1", NodeID: "n1", TurnID: "t1", AllowedDeliveryKinds: []sdk.DeliveryKind{}, ReadOnly: true}
 	var got sdk.CallInfo
 	var gotOK bool
 	tl, err := functiontool.New(functiontool.Config{Name: "probe", Description: "probe"},

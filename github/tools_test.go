@@ -585,9 +585,9 @@ func TestPostingToolsHonorCallInfo(t *testing.T) {
 	}{
 		{"older host", bg, ""},
 		{"unrestricted", sdk.WithCallInfo(bg, sdk.CallInfo{}), ""},
-		{"comment granted", sdk.WithCallInfo(bg, sdk.CallInfo{AllowedDeliveryKinds: []string{"review", "comment"}}), ""},
-		{"deny-all", sdk.WithCallInfo(bg, sdk.CallInfo{AllowedDeliveryKinds: []string{}}), "delivery grant"},
-		{"review only", sdk.WithCallInfo(bg, sdk.CallInfo{AllowedDeliveryKinds: []string{"review"}}), "delivery grant"},
+		{"comment granted", sdk.WithCallInfo(bg, sdk.CallInfo{AllowedDeliveryKinds: []sdk.DeliveryKind{sdk.KindReview, sdk.KindComment}}), ""},
+		{"deny-all", sdk.WithCallInfo(bg, sdk.CallInfo{AllowedDeliveryKinds: []sdk.DeliveryKind{}}), "delivery grant"},
+		{"review only", sdk.WithCallInfo(bg, sdk.CallInfo{AllowedDeliveryKinds: []sdk.DeliveryKind{sdk.KindReview}}), "delivery grant"},
 		{"read-only", sdk.WithCallInfo(bg, sdk.CallInfo{ReadOnly: true}), "read-only"},
 	}
 	for name, call := range tools {

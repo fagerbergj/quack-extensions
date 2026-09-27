@@ -146,7 +146,7 @@ func postRefusal(ctx context.Context, name string) error {
 		return nil
 	case ci.ReadOnly:
 		return fmt.Errorf("%s: refused, this run is read-only and may not post to GitHub; put the text in your answer instead", name)
-	case ci.AllowedDeliveryKinds != nil && !slices.Contains(ci.AllowedDeliveryKinds, string(sdk.KindComment)):
+	case ci.AllowedDeliveryKinds != nil && !slices.Contains(ci.AllowedDeliveryKinds, sdk.KindComment):
 		return fmt.Errorf("%s: refused, this run's delivery grant does not include %q, so it may not post to GitHub; put the text in your answer instead", name, sdk.KindComment)
 	}
 	return nil

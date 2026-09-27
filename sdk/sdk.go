@@ -420,9 +420,9 @@ type CallInfo struct {
 	NodeID string
 	TurnID string
 
-	// AllowedDeliveryKinds holds DeliveryKind values; nil = unrestricted,
-	// non-nil empty = deny all, as DeliveryAuthority.AllowedKinds.
-	AllowedDeliveryKinds []string
+	// AllowedDeliveryKinds nil = unrestricted, non-nil empty = deny all,
+	// as DeliveryAuthority.AllowedKinds.
+	AllowedDeliveryKinds []DeliveryKind
 
 	// ReadOnly means the node may not write or deliver anything.
 	ReadOnly bool
