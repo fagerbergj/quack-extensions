@@ -169,6 +169,10 @@ type Host struct {
 	// callers must degrade to omitting the link.
 	PublicURL string
 
+	// Location is the user's configured zone (quack's timezone: never sets time.Local).
+	// nil when unconfigured or the host predates it - callers fall back to time.Local.
+	Location *time.Location
+
 	// Deprecated: EnsureContextDir is superseded by ReadArtifact/
 	// WriteArtifact (quack issue #1010) - a workspace-dir sibling to a
 	// dispatched run's clone, for evidence files too large or too raw for
@@ -406,6 +410,37 @@ type DeliveryAuthority struct {
 	// logic (labels, authorship, scope) down to this flat list before
 	// dispatch.
 	AllowedKinds []DeliveryKind
+}
+
+// CallInfo is what the host knows about one extension tool call. Advisory:
+// quack's gates still enforce; a tool reads it to refuse early.
+type CallInfo struct {
+	ChatID string
+	UserID string
+	NodeID string
+	TurnID string
+
+	// AllowedDeliveryKinds holds DeliveryKind values; nil = unrestricted,
+	// non-nil empty = deny all, as DeliveryAuthority.AllowedKinds.
+	AllowedDeliveryKinds []string
+
+	// ReadOnly means the node may not write or deliver anything.
+	ReadOnly bool
+}
+
+type callInfoKey struct{}
+
+// WithCallInfo is host-side. ADK tool contexts inherit values from the runner's
+// ctx but cannot be re-parented (WithAgentContext returns nil), so attach it before the run.
+func WithCallInfo(ctx context.Context, ci CallInfo) context.Context {
+	return context.WithValue(ctx, callInfoKey{}, ci)
+}
+
+// CallInfoFrom reads the host's CallInfo from a tool's agent.Context (or any
+// ctx derived from it); ok is false when the host predates CallInfo.
+func CallInfoFrom(ctx context.Context) (CallInfo, bool) {
+	ci, ok := ctx.Value(callInfoKey{}).(CallInfo)
+	return ci, ok
 }
 
 // --- Inverse capabilities: quack calls into the extension. ---
