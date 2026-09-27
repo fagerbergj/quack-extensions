@@ -25,6 +25,17 @@ func TestGetRoster(t *testing.T) {
 			t.Errorf("starter %+v has no name resolved", s)
 		}
 	}
+	if got.Week != 2 || got.FetchedAtLocal == "" {
+		t.Errorf("week/fetched_at_local = %d/%q, want 2/set", got.Week, got.FetchedAtLocal)
+	}
+	for _, p := range append(append([]slotPlayer{}, got.Starters...), got.Bench...) {
+		if p.Game == nil && p.NoGameReason == "" {
+			t.Errorf("player %+v has neither a game nor a no_game_reason", p)
+		}
+		if p.Game != nil && (p.Game.Opponent == "" || p.Game.Kickoff == "" || p.Game.Locked == nil) {
+			t.Errorf("player %s game %+v missing opponent/kickoff/locked", p.Name, p.Game)
+		}
+	}
 	if got.FaabLeft != 100-got.FaabUsed {
 		t.Errorf("faab_left = %d, want %d", got.FaabLeft, 100-got.FaabUsed)
 	}

@@ -22,6 +22,7 @@ type matchupArgs struct {
 	Week     int    `json:"week,omitempty"`
 	User     string `json:"user,omitempty"`
 	RosterID int    `json:"roster_id,omitempty"`
+	TZ       string `json:"tz,omitempty"`
 }
 
 type lineupSlot struct {
@@ -30,6 +31,7 @@ type lineupSlot struct {
 	Name       string  `json:"name"`
 	Points     float32 `json:"points"`
 	Projection float32 `json:"projection"`
+	gameInfo
 }
 
 // benchPlayer is a rostered non-starter from a completed week's matchup -
@@ -39,6 +41,7 @@ type benchPlayer struct {
 	Pos        string  `json:"pos"`
 	Points     float32 `json:"points"`
 	Projection float32 `json:"projection"`
+	gameInfo
 }
 
 // beatenStarter names the started player a free-agent hit outscored.
@@ -114,11 +117,10 @@ type side struct {
 }
 
 type matchupResult struct {
-	Week      int    `json:"week"`
-	MatchupID int    `json:"matchup_id"`
-	Me        side   `json:"me"`
-	Opponent  side   `json:"opponent"`
-	FetchedAt string `json:"fetched_at"`
+	callContext
+	MatchupID int  `json:"matchup_id"`
+	Me        side `json:"me"`
+	Opponent  side `json:"opponent"`
 }
 
 //nolint:dupl // functiontool wrapper boilerplate: each tool differs only in name/description/handler
@@ -126,9 +128,10 @@ func (e *extension) matchupTool() tool.Tool {
 	t, _ := functiontool.New[matchupArgs, matchupResult](
 		functiontool.Config{
 			Name: "sleeper_matchup",
-			Description: "Get one week's matchup (default the current week): both lineups with points " +
-				"and projections, and the opponent's record. `user`/`roster_id` picks my side, falling " +
-				"back to default_user.",
+			Description: "Get one fantasy week's matchup (default the current NFL week): both lineups " +
+				"with points and projections, and the fantasy opponent's record. `opponent` is the fantasy " +
+				"team; each player's NFL opponent is in their game. " + playerGameDoc + " `user`/`roster_id` " +
+				"picks my side, falling back to default_user. " + tzArgDoc,
 		},
 		func(ctx adkagent.Context, a matchupArgs) (matchupResult, error) { return e.getMatchup(ctx, a) },
 	)
@@ -136,6 +139,10 @@ func (e *extension) matchupTool() tool.Tool {
 }
 
 func (e *extension) getMatchup(ctx context.Context, a matchupArgs) (matchupResult, error) {
+	c, err := newClock(a.TZ)
+	if err != nil {
+		return matchupResult{}, fmt.Errorf("sleeper_matchup: %w", err)
+	}
 	leagueID, err := e.resolveLeagueID(a.LeagueID)
 	if err != nil {
 		return matchupResult{}, err
@@ -181,18 +188,23 @@ func (e *extension) getMatchup(ctx context.Context, a matchupArgs) (matchupResul
 	if err != nil {
 		return matchupResult{}, fmt.Errorf("sleeper_matchup: %w", err)
 	}
+	sl, err := e.weekSlate(ctx, season, week, c)
+	if err != nil {
+		return matchupResult{}, fmt.Errorf("sleeper_matchup: schedule: %w", err)
+	}
 	names := teamNames(rosters, users)
 	result := matchupResult{
-		Week: week, FetchedAt: nowRFC3339(),
-		Me: buildSide(league, mine, rosters, names, dump, proj),
+		callContext: newCallContext(c, week, season, state),
+		Me:          buildSide(league, mine, rosters, names, dump, proj, sl),
 	}
+	result.ScheduleNote = sl.note
 	if mine.MatchupId != nil {
 		result.MatchupID = *mine.MatchupId
 	}
 	if hasOpp {
-		result.Opponent = buildSide(league, opp, rosters, names, dump, proj)
+		result.Opponent = buildSide(league, opp, rosters, names, dump, proj, sl)
 	}
-	if err := e.addWeekFields(ctx, &result.Me, league, state, season, week, mine, matchups, dump, proj); err != nil {
+	if err := e.addWeekFields(ctx, &result.Me, league, state, season, week, mine, matchups, dump, proj, sl); err != nil {
 		return matchupResult{}, err
 	}
 	return result, nil
@@ -201,7 +213,7 @@ func (e *extension) getMatchup(ctx context.Context, a matchupArgs) (matchupResul
 // weekIsComplete reports whether a week's scoring is final: strictly
 // before the live current week, or the season itself has finished.
 // addWeekFields: a finished week gets the retro fields, a live week the projection baseline.
-func (e *extension) addWeekFields(ctx context.Context, me *side, league *sleepergen.League, state *sleepergen.NflState, season string, week int, mine sleepergen.Matchup, matchups []sleepergen.Matchup, dump map[string]sleepergen.Player, proj map[string]sleepergen.StatMap) error {
+func (e *extension) addWeekFields(ctx context.Context, me *side, league *sleepergen.League, state *sleepergen.NflState, season string, week int, mine sleepergen.Matchup, matchups []sleepergen.Matchup, dump map[string]sleepergen.Player, proj map[string]sleepergen.StatMap, sl slate) error {
 	if !weekIsComplete(week, league, state) {
 		me.BestByProjection = bestByProjectionSlots(league.RosterPositions, mine.Players, proj, dump)
 		return nil
@@ -210,7 +222,7 @@ func (e *extension) addWeekFields(ctx context.Context, me *side, league *sleeper
 	if err != nil {
 		return fmt.Errorf("sleeper_matchup: stats: %w", err)
 	}
-	addRetroFields(me, league, mine, matchups, dump, proj, stats)
+	addRetroFields(me, league, mine, matchups, dump, proj, stats, sl)
 	return nil
 }
 
@@ -220,8 +232,8 @@ func weekIsComplete(week int, league *sleepergen.League, state *sleepergen.NflSt
 
 // addRetroFields fills in the bench/best-lineup/free-agent data a retro
 // needs, which only exists once a week's scoring is final.
-func addRetroFields(me *side, league *sleepergen.League, mine sleepergen.Matchup, matchups []sleepergen.Matchup, dump map[string]sleepergen.Player, proj map[string]sleepergen.StatMap, stats map[string]sleepergen.StatMap) {
-	me.Bench = benchPlayers(mine, dump, proj)
+func addRetroFields(me *side, league *sleepergen.League, mine sleepergen.Matchup, matchups []sleepergen.Matchup, dump map[string]sleepergen.Player, proj map[string]sleepergen.StatMap, stats map[string]sleepergen.StatMap, sl slate) {
+	me.Bench = benchPlayers(mine, dump, proj, sl)
 	assignment := bestLineup(league.RosterPositions, mine.Players, mine.PlayersPoints, dump)
 	best := round2(assignment.total)
 	me.BestPoints = best
@@ -384,7 +396,7 @@ func round2(v float32) float32 {
 
 // benchPlayers lists every rostered non-starter from a matchup: m.Players
 // minus m.Starters, skipping the "0" empty-slot placeholder id.
-func benchPlayers(m sleepergen.Matchup, dump map[string]sleepergen.Player, proj map[string]sleepergen.StatMap) []benchPlayer {
+func benchPlayers(m sleepergen.Matchup, dump map[string]sleepergen.Player, proj map[string]sleepergen.StatMap, sl slate) []benchPlayer {
 	started := make(map[string]bool, len(m.Starters))
 	for _, pid := range m.Starters {
 		started[pid] = true
@@ -396,7 +408,7 @@ func benchPlayers(m sleepergen.Matchup, dump map[string]sleepergen.Player, proj 
 		}
 		out = append(out, benchPlayer{
 			Name: playerName(dump, pid), Pos: positionOf(dump, pid),
-			Points: m.PlayersPoints[pid], Projection: proj[pid]["pts_ppr"],
+			Points: m.PlayersPoints[pid], Projection: proj[pid]["pts_ppr"], gameInfo: sl.gameFor(dump, pid),
 		})
 	}
 	return out
@@ -502,7 +514,7 @@ func opponent(matchups []sleepergen.Matchup, mine sleepergen.Matchup) (sleeperge
 	return sleepergen.Matchup{}, false
 }
 
-func buildSide(league *sleepergen.League, m sleepergen.Matchup, rosters []sleepergen.Roster, names map[int]string, dump map[string]sleepergen.Player, proj map[string]sleepergen.StatMap) side {
+func buildSide(league *sleepergen.League, m sleepergen.Matchup, rosters []sleepergen.Roster, names map[int]string, dump map[string]sleepergen.Player, proj map[string]sleepergen.StatMap, sl slate) side {
 	slots := nonBenchSlots(league.RosterPositions)
 	starters := make([]lineupSlot, 0, len(m.Starters))
 	for i, pid := range m.Starters {
@@ -512,7 +524,7 @@ func buildSide(league *sleepergen.League, m sleepergen.Matchup, rosters []sleepe
 		}
 		starters = append(starters, lineupSlot{
 			Slot: slot, PlayerID: pid, Name: playerName(dump, pid),
-			Points: m.PlayersPoints[pid], Projection: proj[pid]["pts_ppr"],
+			Points: m.PlayersPoints[pid], Projection: proj[pid]["pts_ppr"], gameInfo: sl.gameFor(dump, pid),
 		})
 	}
 	record := ""

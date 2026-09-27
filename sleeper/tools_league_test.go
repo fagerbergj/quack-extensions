@@ -3,6 +3,7 @@ package sleeper
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,12 +52,15 @@ func TestGetLeague(t *testing.T) {
 
 func TestGetSchedule(t *testing.T) {
 	e := testExtension(t)
-	got, err := e.getSchedule(context.Background(), scheduleArgs{})
+	got, err := e.getSchedule(context.Background(), scheduleArgs{TZ: "America/Chicago"})
 	if err != nil {
 		t.Fatalf("getSchedule: %v", err)
 	}
-	if got.Week != 2 {
-		t.Errorf("week = %d, want 2 (current week)", got.Week)
+	if got.Week != 2 || got.CurrentWeek != 2 || got.WeekNote != "" {
+		t.Errorf("week/current_week/week_note = %d/%d/%q, want 2/2/empty", got.Week, got.CurrentWeek, got.WeekNote)
+	}
+	if !strings.HasSuffix(got.FetchedAtLocal, " CDT") && !strings.HasSuffix(got.FetchedAtLocal, " CST") {
+		t.Errorf("fetched_at_local = %q, want a Central time", got.FetchedAtLocal)
 	}
 	if len(got.Games) == 0 {
 		t.Error("expected week-2 games")
@@ -69,7 +73,7 @@ func TestGetSchedule(t *testing.T) {
 	// The fixture's schedule status is a stale "pre_game"; locked must follow the kickoff instead.
 	g := got.Games[0]
 	want := scheduleGame{GameID: "202610201", Home: "ARI", Away: "SEA", Date: "2026-09-20", Status: "pre_game",
-		Kickoff: "2026-09-20T20:25:00Z", Venue: "State Farm Stadium", City: "Glendale", Roof: "retractable_dome"}
+		Kickoff: "2026-09-20T20:25:00Z", KickoffLocal: "Sun Sep 20 3:25 PM CDT", Venue: "State Farm Stadium", City: "Glendale", Roof: "retractable_dome"}
 	if g.Locked == nil || !*g.Locked {
 		t.Errorf("games[0].locked = %v, want true", g.Locked)
 	}
@@ -77,8 +81,8 @@ func TestGetSchedule(t *testing.T) {
 	if g != want {
 		t.Errorf("games[0] = %+v, want %+v", g, want)
 	}
-	if got.Note != "" {
-		t.Errorf("note = %q, want empty", got.Note)
+	if got.ScheduleNote != "" {
+		t.Errorf("schedule_note = %q, want empty", got.ScheduleNote)
 	}
 }
 
@@ -88,8 +92,11 @@ func TestGetScheduleWithoutScores(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getSchedule: %v", err)
 	}
-	if got.Note == "" || len(got.Games) == 0 {
-		t.Fatalf("want games plus a note, got %+v", got)
+	if got.ScheduleNote == "" || len(got.Games) == 0 {
+		t.Fatalf("want games plus a schedule_note, got %+v", got)
+	}
+	if got.WeekNote == "" || got.CurrentWeek != 2 {
+		t.Errorf("week 1 must be labeled as not current: week_note=%q current_week=%d", got.WeekNote, got.CurrentWeek)
 	}
 	for _, g := range got.Games {
 		if g.Kickoff != "" || g.Locked == nil || !*g.Locked {
@@ -126,7 +133,7 @@ func TestWithKickoff(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := withKickoff(scheduleGame{Status: tc.status}, tc.score, now)
+			got := withKickoff(scheduleGame{Status: tc.status}, tc.score, clock{now: now, loc: time.UTC})
 			if got.Kickoff != tc.wantKick || got.KickoffTBD != tc.wantTBD || !sameBoolPtr(got.Locked, tc.wantLocked) {
 				t.Errorf("got kickoff=%q tbd=%v locked=%v, want %q %v %v", got.Kickoff, got.KickoffTBD, fmtBoolPtr(got.Locked), tc.wantKick, tc.wantTBD, fmtBoolPtr(tc.wantLocked))
 			}
@@ -162,3 +169,82 @@ func TestResolveWeekRequiresExplicitWeekForPinnedSeason(t *testing.T) {
 		t.Errorf("resolveWeek(0, matching season) = %d, %v; want 2, nil", got, err)
 	}
 }
+
+func TestNewClock(t *testing.T) {
+	if _, err := newClock("America/Chicgo"); err == nil || !strings.Contains(err.Error(), "America/Chicgo") {
+		t.Errorf("bad tz: err = %v, want one naming the bad zone", err)
+	}
+	c, err := newClock("")
+	if err != nil || c.loc != time.Local {
+		t.Errorf("empty tz = %v, %v; want time.Local", c.loc, err)
+	}
+	e := testExtension(t)
+	if _, err := e.getSchedule(context.Background(), scheduleArgs{TZ: "Mars/Olympus"}); err == nil {
+		t.Error("getSchedule accepted an invalid tz")
+	}
+}
+
+func TestSlateGameFor(t *testing.T) {
+	str := func(s string) *string { return &s }
+	dump := map[string]sleepergen.Player{
+		"qb":  {Team: str("LAC")},
+		"wr":  {Team: str("LV")},
+		"LAC": {Position: str("DEF")},
+		"fa":  {Position: str("RB")},
+		"bye": {Team: str("KC")},
+		"sea": {Team: str("SEA")},
+	}
+	live := scheduleGame{GameID: "g1", Home: "LAC", Away: "LV", Kickoff: "2026-09-20T20:05:00Z"}
+	sl := slate{games: []scheduleGame{live}, byTeam: map[string]scheduleGame{"LAC": live, "LV": live}}
+	tests := []struct {
+		pid, wantOpp, wantReason string
+		wantHome, wantBye        bool
+	}{
+		{"qb", "LV", "", true, false},
+		{"wr", "LAC", "", false, false},
+		{"LAC", "LV", "", true, false},
+		{"bye", "", "KC has no game this week (bye)", false, true},
+		{"fa", "", "no NFL team (free agent or unknown player)", false, false},
+		{"missing", "", "no NFL team (free agent or unknown player)", false, false},
+		{"0", "", "empty lineup slot", false, false},
+	}
+	for _, tc := range tests {
+		got := sl.gameFor(dump, tc.pid)
+		if got.Bye != tc.wantBye || got.NoGameReason != tc.wantReason {
+			t.Errorf("%s: bye/reason = %v/%q, want %v/%q", tc.pid, got.Bye, got.NoGameReason, tc.wantBye, tc.wantReason)
+		}
+		if tc.wantOpp == "" {
+			if got.Game != nil {
+				t.Errorf("%s: game = %+v, want nil", tc.pid, got.Game)
+			}
+			continue
+		}
+		if got.Game == nil || got.Game.Opponent != tc.wantOpp || got.Game.IsHome != tc.wantHome || got.Game.Kickoff != live.Kickoff {
+			t.Errorf("%s: game = %+v, want opponent %s is_home %v", tc.pid, got.Game, tc.wantOpp, tc.wantHome)
+		}
+	}
+	if got := (slate{}).gameFor(dump, "sea"); got.NoGameReason != "no NFL games scheduled this week" || got.Bye {
+		t.Errorf("empty slate: %+v, want no-games reason, not a bye", got)
+	}
+}
+
+func TestWeekSlatePrefersPlayedGameOverVoid(t *testing.T) {
+	c := newTestClient(t)
+	e := &extension{client: c}
+	// Seed the caches: a team with a canceled game and its makeup game in the same week.
+	c.cache["schedule:2030"] = cacheEntry{value: []sleepergen.Game{
+		{GameId: "void", Week: 1, Home: "DAL", Away: "SEA", Status: str("canceled")},
+		{GameId: "real", Week: 1, Home: "SEA", Away: "DAL", Status: str("pre_game")},
+		{GameId: "void2", Week: 1, Home: "DAL", Away: "SEA", Status: str("postponed")},
+	}, expires: time.Now().Add(time.Hour)}
+	c.cache["scores:2030:1"] = cacheEntry{value: []sleepergen.GameScore{}, expires: time.Now().Add(time.Hour)}
+	sl, err := e.weekSlate(context.Background(), "2030", 1, clock{now: time.Now(), loc: time.UTC})
+	if err != nil {
+		t.Fatalf("weekSlate: %v", err)
+	}
+	if sl.byTeam["DAL"].GameID != "real" || sl.byTeam["SEA"].GameID != "real" || sl.note == "" {
+		t.Errorf("byTeam = %+v note=%q, want both teams on the real game and a note", sl.byTeam, sl.note)
+	}
+}
+
+func str(s string) *string { return &s }

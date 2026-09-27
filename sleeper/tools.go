@@ -8,9 +8,60 @@ import (
 	"sort"
 	"strings"
 	"time"
+	_ "time/tzdata" // the `tz` argument must resolve even in an image without /usr/share/zoneinfo
 
 	"github.com/fagerbergj/quack-extensions/sleeper/sleepergen"
 )
+
+// localLayout is the *_local display format, e.g. "Sun Sep 27 3:05 PM CDT".
+const localLayout = "Mon Jan 2 3:04 PM MST"
+
+// clock is one tool call's single "now" plus the zone its *_local fields render in.
+type clock struct {
+	now time.Time
+	loc *time.Location
+}
+
+// newClock resolves the optional `tz` tool argument (an IANA zone name),
+// falling back to the process's local zone.
+func newClock(tz string) (clock, error) {
+	loc := time.Local
+	if tz = strings.TrimSpace(tz); tz != "" {
+		l, err := time.LoadLocation(tz)
+		if err != nil {
+			return clock{}, fmt.Errorf("tz %q is not a valid IANA time zone name (e.g. America/Chicago): %w", tz, err)
+		}
+		loc = l
+	}
+	return clock{now: time.Now(), loc: loc}, nil
+}
+
+func (c clock) local(t time.Time) string { return t.In(c.loc).Format(localLayout) }
+
+// callContext heads every week-scoped result: which week it covers,
+// relative to the live NFL week, and when (UTC and the user's zone) it was read.
+type callContext struct {
+	Week           int    `json:"week"`
+	CurrentWeek    int    `json:"current_week,omitempty"`
+	WeekNote       string `json:"week_note,omitempty"`
+	ScheduleNote   string `json:"schedule_note,omitempty"`
+	FetchedAt      string `json:"fetched_at"`
+	FetchedAtLocal string `json:"fetched_at_local"`
+}
+
+func newCallContext(c clock, week int, season string, state *sleepergen.NflState) callContext {
+	cc := callContext{Week: week, FetchedAt: c.now.UTC().Format(time.RFC3339), FetchedAtLocal: c.local(c.now)}
+	switch {
+	case season != state.Season:
+		cc.WeekNote = fmt.Sprintf("season %s week %d, not the live NFL season (%s)", season, week, state.Season)
+	case week != state.Week:
+		cc.CurrentWeek = state.Week
+		cc.WeekNote = fmt.Sprintf("week %d is NOT the current NFL week (%d)", week, state.Week)
+	default:
+		cc.CurrentWeek = state.Week
+	}
+	return cc
+}
 
 // nowRFC3339 stamps a tool result's fetched_at - the time this tool call
 // read the (possibly cached) upstream data, so a judge can tell staleness.
