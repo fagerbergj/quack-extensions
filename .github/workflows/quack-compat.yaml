@@ -10,8 +10,6 @@ on:
       - "!**/*.md"
       - "!tools/**"
       - "!.*/**"
-      # Re-included: a plugin's prompts and skills are .md, and quack seeds them.
-      - "*/plugin/**"
       - "tools/quack-compat.sh"
       - "tools/quack-compat.config.yaml"
       - ".github/workflows/quack-compat.yaml"

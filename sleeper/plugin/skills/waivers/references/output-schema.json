@@ -9,10 +9,12 @@
       "type": "integer"
     },
     "summary": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 400
     },
     "waiver_type": {
       "type": "string",
+      "maxLength": 40,
       "description": "As sleeper_league reports it: rolling / reverse standings / FAAB."
     },
     "my_priority": {
@@ -29,6 +31,7 @@
     },
     "candidates": {
       "type": "array",
+      "description": "Ordered as the claims to submit; rank is the claim order.",
       "items": {
         "type": "object",
         "required": [
@@ -103,10 +106,12 @@
             ]
           },
           "drop": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 80
           },
           "why": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 400
           }
         }
       }
@@ -166,13 +171,15 @@
             }
           },
           "why": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 400
           }
         }
       }
     },
     "source_note": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 300
     }
   },
   "required": [

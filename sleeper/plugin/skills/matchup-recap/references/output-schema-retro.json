@@ -36,16 +36,19 @@
         ],
         "properties": {
           "slot": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 10
           },
           "started_name": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 60
           },
           "started_pts": {
             "type": "number"
           },
           "better_name": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 60
           },
           "better_pts": {
             "type": "number"
@@ -55,6 +58,7 @@
           },
           "why": {
             "type": "string",
+            "maxLength": 280,
             "description": "The pre-kickoff signal that pointed the other way: injury/practice news, matchup/defense, snap share or target trend, weather, depth chart. Markdown [text](url) links allowed."
           },
           "knowable": {
@@ -66,6 +70,7 @@
     },
     "waiver_misses": {
       "type": "array",
+      "maxItems": 3,
       "items": {
         "type": "object",
         "required": [
@@ -77,16 +82,19 @@
         ],
         "properties": {
           "name": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 60
           },
           "pos": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 4
           },
           "pts": {
             "type": "number"
           },
           "over_name": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 60
           },
           "over_pts": {
             "type": "number"
@@ -97,6 +105,7 @@
           },
           "why": {
             "type": "string",
+            "maxLength": 280,
             "description": "The pre-waiver-run signal, if any. Markdown [text](url) links allowed."
           }
         }
@@ -104,12 +113,15 @@
     },
     "lessons": {
       "type": "array",
+      "maxItems": 3,
       "items": {
-        "type": "string"
+        "type": "string",
+        "maxLength": 160
       }
     },
     "summary": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 400
     }
   },
   "required": [

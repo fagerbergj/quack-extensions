@@ -9,16 +9,21 @@
       "type": "integer"
     },
     "team": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 60,
+      "description": "Fantasy team name (not an NFL team code)."
     },
     "team_record": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 20
     },
     "opponent": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 60
     },
     "opponent_record": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 20
     },
     "my_proj": {
       "type": "number"
@@ -29,10 +34,12 @@
     "plan": {
       "type": "string",
       "maxLength": 48,
-      "description": "Short game-plan chip, e.g. \"Close game · favour floors\"."
+      "description": "Short game-plan chip, e.g. \"Close game \u00b7 favour floors\"."
     },
     "summary": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 400,
+      "description": "Card summary, at most two sentences."
     },
     "starters": {
       "type": "array",
@@ -46,7 +53,8 @@
         ],
         "properties": {
           "slot": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 10
           },
           "player": {
             "type": "object",
@@ -172,7 +180,8 @@
             "description": "The player this starter replaces in the owner's current Sleeper lineup. Its presence marks the row as a change."
           },
           "why": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 400
           }
         }
       }
@@ -247,7 +256,8 @@
             ]
           },
           "why": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 400
           }
         }
       }
@@ -306,7 +316,8 @@
             }
           },
           "why": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 400
           }
         }
       }
@@ -328,7 +339,8 @@
         ],
         "properties": {
           "slot": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 10
           },
           "player": {
             "type": "object",
@@ -449,13 +461,15 @@
             }
           },
           "text": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 400
           }
         }
       }
     },
     "source_note": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 300
     }
   },
   "required": [

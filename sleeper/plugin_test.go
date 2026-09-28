@@ -1,6 +1,7 @@
 package sleeper
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -64,25 +65,29 @@ func TestPluginAgentToolsExist(t *testing.T) {
 	}
 }
 
-// TestPluginAgentsShipRubricSkillAndSchema: each judged agent has a rubric, a
-// plugin skill on disk, and a card artifact kind this extension declares a schema for.
+// TestPluginAgentsShipRubricSkillAndSchema: each judged agent has a prompt, a rubric,
+// a sleeper: skill on disk, and a card artifact kind this extension declares a schema for.
 func TestPluginAgentsShipRubricSkillAndSchema(t *testing.T) {
 	schemas := testExtension(t).ArtifactSchemas()
 	for _, a := range loadPluginAgents(t) {
-		if _, err := os.Stat(filepath.Join(a.dir, "rubric.yaml")); err != nil {
-			t.Errorf("%s: no rubric.yaml", a.name)
+		for _, f := range []string{"prompt.md", "rubric.yaml"} {
+			if _, err := os.Stat(filepath.Join(a.dir, f)); err != nil {
+				t.Errorf("%s: no %s", a.name, f)
+			}
 		}
-		if len(a.Skills) == 0 {
-			t.Errorf("%s: agent.yaml lists no skill", a.name)
-		}
+		own := 0
 		for _, s := range a.Skills {
 			name, ok := strings.CutPrefix(s, "sleeper:")
 			if !ok {
 				continue
 			}
+			own++
 			if _, err := os.Stat(filepath.Join("plugin/skills", name, "SKILL.md")); err != nil {
 				t.Errorf("%s: skill %q has no SKILL.md in the plugin", a.name, s)
 			}
+		}
+		if own == 0 {
+			t.Errorf("%s: agent.yaml lists no sleeper: skill", a.name)
 		}
 		raw, err := os.ReadFile(filepath.Join(a.dir, "agent-card.json"))
 		if err != nil {
@@ -97,5 +102,47 @@ func TestPluginAgentsShipRubricSkillAndSchema(t *testing.T) {
 		if _, ok := schemas[card.Artifact]; !ok {
 			t.Errorf("%s: card artifact %q has no schema in ArtifactSchemas", a.name, card.Artifact)
 		}
+	}
+}
+
+// skillSchemaKinds pairs each skill's schema reference, which the agent reads,
+// with the ui/schemas kind ArtifactSchemas validates its write against.
+var skillSchemaKinds = map[string]string{
+	"plugin/skills/draft-strategy/references/output-schema.json":                "draft",
+	"plugin/skills/history-grading/references/output-schema.json":               "history",
+	"plugin/skills/injury-and-news/references/output-schema.json":               "trends",
+	"plugin/skills/injury-and-news/references/season-notes-schema.json":         "season-notes",
+	"plugin/skills/matchup-recap/references/output-schema-digest.json":          "digest",
+	"plugin/skills/matchup-recap/references/output-schema-retro.json":           "retro",
+	"plugin/skills/start-sit/references/output-schema.json":                     "lineup",
+	"plugin/skills/trade-evaluation/references/output-schema-trade.json":        "trade",
+	"plugin/skills/trade-evaluation/references/output-schema-trade-finder.json": "trade-finder",
+	"plugin/skills/waivers/references/output-schema.json":                       "waivers",
+}
+
+// TestSkillSchemasMatchArtifactSchemas: an agent told a looser schema than the
+// one quack enforces writes artifacts that fail validation.
+func TestSkillSchemasMatchArtifactSchemas(t *testing.T) {
+	schemas := testExtension(t).ArtifactSchemas()
+	refs, err := filepath.Glob("plugin/skills/*/references/*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range refs {
+		kind, ok := skillSchemaKinds[ref]
+		if !ok {
+			t.Errorf("%s: no ui/schemas kind paired in skillSchemaKinds", ref)
+			continue
+		}
+		b, err := os.ReadFile(ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(b, schemas[kind]) {
+			t.Errorf("%s differs from ui/schemas/%s.json; copy the ui schema over it", ref, kind)
+		}
+	}
+	if len(refs) != len(skillSchemaKinds) {
+		t.Errorf("found %d schema references, skillSchemaKinds pairs %d", len(refs), len(skillSchemaKinds))
 	}
 }

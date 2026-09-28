@@ -17,10 +17,12 @@
         ],
         "properties": {
           "time": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 40
           },
           "source": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 60
           },
           "kind": {
             "enum": [
@@ -76,16 +78,19 @@
             }
           },
           "text": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 400
           },
           "link": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 500
           }
         }
       }
     },
     "source_note": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 300
     }
   },
   "required": [

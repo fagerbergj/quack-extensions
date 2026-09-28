@@ -6,7 +6,8 @@
   "type": "object",
   "properties": {
     "season": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 20
     },
     "wins": {
       "type": "integer"
@@ -45,7 +46,8 @@
       "type": [
         "string",
         "null"
-      ]
+      ],
+      "maxLength": 60
     },
     "weeks": {
       "type": "array",
@@ -91,13 +93,91 @@
       "type": [
         "array",
         "null"
-      ]
+      ],
+      "items": {
+        "type": "object",
+        "properties": {
+          "round": {
+            "type": "integer"
+          },
+          "pick": {
+            "type": "integer"
+          },
+          "player": {
+            "type": "object",
+            "required": [
+              "id",
+              "name"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "pos": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "team": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "inj": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "prac": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "proj": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            }
+          },
+          "drafted_as": {
+            "type": "string",
+            "maxLength": 20
+          },
+          "finished": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 20
+          },
+          "pts": {
+            "type": "number"
+          },
+          "verdict": {
+            "enum": [
+              "steal",
+              "reach",
+              "fair"
+            ]
+          }
+        }
+      }
     },
     "summary": {
       "type": [
         "string",
         "null"
-      ]
+      ],
+      "maxLength": 400
     },
     "cross_season_summary": {
       "type": [
@@ -108,13 +188,16 @@
         "type": "object",
         "properties": {
           "n": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 20
           },
           "text": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 400
           },
           "detail": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 400
           }
         }
       }
