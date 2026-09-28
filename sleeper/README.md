@@ -38,6 +38,33 @@ examples derived from the approved prototype's data (`~/workspace/wt/sleeper-ui-
 Storybook and screenshots every story at 390/1280 width, light/dark, with Playwright, failing on
 a console error or horizontal overflow; CI runs it as the `sleeper-storybook` job.
 
+## Plugin
+
+`plugin/` is the Sleeper plugin quack loads through its plugin registry: `plugin.json`, the seven
+job agents under `agents/` (card, prompt, rubric, and `agent.yaml` with tools, skills, and model
+role), the skills under `skills/`, and the ten workflow shapes under `workflows/`. quack seeds it as
+`github:fagerbergj/quack-extensions@sleeper/vX.Y.Z#sleeper/plugin`, a registry row named `sleeper`,
+and seeds its agents and workflows only while `extensions.sleeper` is configured.
+
+`plugin_test.go` checks that every tool an `agent.yaml` names is one of this module's tools or a
+quack builtin from its allowlist, that each agent ships a rubric and its skill, and that each card's
+artifact kind has a schema in `ArtifactSchemas`. `tools/quack-compat.sh` seeds `plugin/` into quack
+and fails unless every agent and workflow in `plugin.json` seeds.
+
+One `sleeper/vX.Y.Z` tag releases both halves. quack pins the Go tools in `go.mod` and the plugin in
+its `plugins.seed` entry, and both pins name the same tag:
+
+1. Merge the change and tag `sleeper/vX.Y.Z`.
+2. In quack, bump `go.mod` and the `plugins.seed` ref to that tag in one PR, so a fresh deployment
+   gets matching halves.
+3. On a running deployment, move the plugin row to the new tag from the Plugins page or with
+   `POST /api/v1/plugins` and the new entry. The add ends in a reload, so a prompt, skill, rubric, or
+   workflow change is live without a new image. An existing `github:` row does not follow an edited
+   `plugins.seed` entry, so this step is needed even after the quack bump deploys.
+
+When the change touches Go tools, deploy the quack image carrying the new `go.mod` before moving the
+row: a plugin agent naming a tool the binary lacks is dropped.
+
 ## The spec is the source of truth
 
 Sleeper publishes no OpenAPI or Swagger document. `openapi.yaml` is owned by this module,
