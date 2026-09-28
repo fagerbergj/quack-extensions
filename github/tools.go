@@ -138,7 +138,7 @@ func (a *App) comment(ctx context.Context, args commentArgs) (commentResult, err
 }
 
 // postRefusal says why this run may not post to GitHub, or nil. Replies and
-// reactions count as "comment": computeGrant never grants review without it.
+// reactions count as "comment": on a PR, review always implies comment.
 func postRefusal(ctx context.Context, name string) error {
 	ci, ok := sdk.CallInfoFrom(ctx)
 	switch {

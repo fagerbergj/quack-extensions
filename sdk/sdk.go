@@ -412,26 +412,28 @@ type DeliveryAuthority struct {
 	AllowedKinds []DeliveryKind
 }
 
-// CallInfo is what the host knows about one extension tool call. Advisory:
-// quack's gates still enforce; a tool reads it to refuse early.
+// CallInfo is the run a tool call belongs to. Advisory for gate-backed
+// deliveries; a tool that acts directly (posts, writes) must enforce it itself.
 type CallInfo struct {
+	// ChatID is quack's chat id; "ext:<extension>:<ChatRef.LocalID>" for a chat
+	// the extension dispatched.
 	ChatID string
-	UserID string
-	NodeID string
-	TurnID string
 
-	// AllowedDeliveryKinds nil = unrestricted, non-nil empty = deny all,
-	// as DeliveryAuthority.AllowedKinds.
+	// UserID is the chat's user: what the extension put in ChatRef.User for its own chats.
+	UserID string
+
+	// AllowedDeliveryKinds is the run's grant, as DeliveryAuthority.AllowedKinds:
+	// nil = no grant governs this run (unrestricted), non-nil empty = deny all.
 	AllowedDeliveryKinds []DeliveryKind
 
-	// ReadOnly means the node may not write or deliver anything.
+	// ReadOnly marks a plan-only run: it must not write or post.
 	ReadOnly bool
 }
 
 type callInfoKey struct{}
 
-// WithCallInfo is host-side. ADK tool contexts inherit values from the runner's
-// ctx but cannot be re-parented (WithAgentContext returns nil), so attach it before the run.
+// WithCallInfo is host-side: set it on the ctx a tool's Run receives (the runner
+// ctx, or a per-call overlay), and only when the run's grant is known.
 func WithCallInfo(ctx context.Context, ci CallInfo) context.Context {
 	return context.WithValue(ctx, callInfoKey{}, ci)
 }

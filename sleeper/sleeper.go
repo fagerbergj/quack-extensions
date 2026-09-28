@@ -65,7 +65,7 @@ func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
 	if cfg.Season < 0 {
 		return nil, fmt.Errorf("sleeper: season must not be negative, got %d", cfg.Season)
 	}
-	loc := host.Location
+	loc := hostZone(host)
 	if cfg.Timezone != "" {
 		l, err := loadZone(cfg.Timezone)
 		if err != nil {
@@ -79,6 +79,21 @@ func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
 		return nil, fmt.Errorf("sleeper: new client: %w", err)
 	}
 	return &extension{host: host, cfg: cfg, client: client, loc: loc}, nil
+}
+
+// hostZone is quack's zone when region-style (quack accepts EST, a fixed
+// offset an hour off in DST); nil = time.Local.
+func hostZone(host sdk.Host) *time.Location {
+	if host.Location == nil {
+		return nil
+	}
+	if _, err := loadZone(host.Location.String()); err != nil {
+		if host.Log != nil {
+			host.Log.Warn("sleeper: ignoring quack's timezone; using the process zone", "err", err)
+		}
+		return nil
+	}
+	return host.Location
 }
 
 // sleeperBaseURL is the production API; tests build an extension directly

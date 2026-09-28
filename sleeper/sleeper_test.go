@@ -2,6 +2,7 @@ package sleeper
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -107,12 +108,27 @@ func TestFactoryTimezone(t *testing.T) {
 	if loc := ext.(*extension).loc; loc == nil || loc.String() != "America/Chicago" {
 		t.Errorf("loc = %v, want America/Chicago", loc)
 	}
-	denver, _ := time.LoadLocation("America/Denver")
-	if ext, _ := factory(sdk.Host{Location: denver}, nil); ext.(*extension).loc != denver {
-		t.Errorf("no config: loc = %v, want the host's America/Denver", ext.(*extension).loc)
+	denver, err := time.LoadLocation("America/Denver")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if ext, _ := factory(sdk.Host{Location: denver}, []byte("timezone: America/Chicago\n")); ext.(*extension).loc.String() != "America/Chicago" {
-		t.Errorf("config and host: loc = %v, want the config's America/Chicago", ext.(*extension).loc)
+	for _, tc := range []struct {
+		name string
+		host *time.Location
+		raw  string
+		want string // "" = nil, i.e. time.Local
+	}{
+		{"host only", denver, "", "America/Denver"},
+		{"config over host", denver, "timezone: America/Chicago\n", "America/Chicago"},
+		{"fixed-offset host", time.FixedZone("EST", -5*3600), "", ""},
+	} {
+		ext, err := factory(sdk.Host{Location: tc.host, Log: slog.New(slog.DiscardHandler)}, []byte(tc.raw))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if loc := ext.(*extension).loc; (loc == nil && tc.want != "") || (loc != nil && loc.String() != tc.want) {
+			t.Errorf("%s: loc = %v, want %q", tc.name, loc, tc.want)
+		}
 	}
 	for _, bad := range []string{"CDT", "EST", "America/Chicgo"} {
 		if _, err := factory(sdk.Host{}, []byte("timezone: "+bad+"\n")); err == nil || !strings.Contains(err.Error(), "timezone") {
