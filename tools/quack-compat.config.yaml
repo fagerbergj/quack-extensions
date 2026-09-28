@@ -12,6 +12,10 @@ models:
   m:
     provider: default
     role: worker
+  # Plugin agents' model_role: researcher resolves here (quack's .env.example, exported by the script).
+  ${QUACK_RESEARCHER_MODEL}:
+    provider: default
+    role: worker
 stores:
   default:
     kind: sqlite
@@ -20,6 +24,12 @@ session:
   store: default
 workspace:
   root: ${QUACK_COMPAT_TMP}/workspace
+# quack-compat.sh copies each module's plugin/ to ${QUACK_COMPAT_TMP}/plugins/<module>,
+# since a local seed row is named after its directory.
+plugins:
+  root: ${QUACK_COMPAT_TMP}/registry
+  seed:
+    - ${QUACK_COMPAT_TMP}/plugins/sleeper
 
 extensions:
   github:

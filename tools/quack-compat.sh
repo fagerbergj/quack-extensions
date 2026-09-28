@@ -53,10 +53,44 @@ run "$tmp/quack-bin" server validate config/quack.yaml
 
 export QUACK_COMPAT_TMP=$tmp QUACK_COMPAT_GITHUB_KEY=$tmp/github.pem QUACK_COMPAT_SECRET=placeholder
 run openssl genrsa -out "$QUACK_COMPAT_GITHUB_KEY" 2048
+# The fixture seeds each module's plugin/ from this checkout, the way quack seeds github:...#<module>/plugin.
+step="copy each module's plugin/ into the fixture"
+shopt -s nullglob
+plugins=("$ext"/*/plugin/plugin.json)
+[ ${#plugins[@]} -gt 0 ] || { echo "no */plugin/plugin.json in $ext; the fixture's plugins.seed would name nothing" >&2; exit 1; }
+mkdir -p "$tmp/plugins"
+for p in "${plugins[@]%/plugin.json}"; do
+	cp -R "$p" "$tmp/plugins/$(basename "$(dirname "$p")")"
+done
+# A tool without its module's prefix must be a quack builtin; this catches quack renaming or removing one.
+for p in "${plugins[@]}"; do
+	module=$(basename "$(dirname "$(dirname "$p")")")
+	for y in "$(dirname "$p")"/agents/*/agent.yaml; do
+		step="builtin tools named in $y exist in quack"
+		tools=$(sed -n 's/^tools:[[:space:]]*\[\(.*\)\][[:space:]]*$/\1/p' "$y" | tr ',' ' ')
+		[ -n "$tools" ] || { echo "$y: expected a one-line tools: [...] list" >&2; exit 1; }
+		for t in $tools; do
+			[[ $t == "${module}_"* ]] && continue
+			grep -q "\"$t\":" internal/tools/registry.go || { echo "$y: tool \"$t\" is not in quack's internal/tools/registry.go builtin map" >&2; exit 1; }
+		done
+	done
+done
+shopt -u nullglob
 step="quack server validate tools/quack-compat.config.yaml"
 echo "== $step"
-accepted=$("$tmp/quack-bin" server validate --json "$ext/tools/quack-compat.config.yaml" | jq -r '.extensions[]?')
+validated=$("$tmp/quack-bin" server validate --json "$ext/tools/quack-compat.config.yaml")
+accepted=$(jq -r '.extensions[]?' <<<"$validated")
 echo "accepted: ${accepted//$'\n'/ }"
+# A plugin seeds only what its manifest lists; anything short of the full lists means quack refused or skipped part of it.
+for p in "${plugins[@]}"; do
+	name=$(basename "$(dirname "$(dirname "$p")")")
+	step="plugin $name seeds every listed agent and workflow"
+	want=$(jq -c '.extensions["io.github.fagerbergj.quack"] | [(.agents // [] | sort), (.workflows // [] | sort)]' "$p")
+	[ "$want" = '[[],[]]' ] && continue
+	got=$(jq -c --arg n "$name" '[.plugins[]? | select(.plugin == $n) | [(.agents // [] | sort), (.shapes // [] | sort)]][0] // "not seeded"' <<<"$validated")
+	[ "$want" = "$got" ] || { echo "$name: manifest lists $want, quack seeded $got" >&2; exit 1; }
+	echo "plugin $name: seeded $got"
+done
 # Every extension module needs a fixture block, or its Factory goes unchecked.
 for m in "${mods[@]%/go.mod}"; do
 	name=${m##*/}
