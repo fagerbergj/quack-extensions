@@ -42,7 +42,15 @@ No `go.work` is committed: each module resolves its siblings as normal tagged de
 
 ## Checking a change against quack
 
-The `quack-compat` workflow builds quack `main` against a PR's module directories through a throwaway `go.work` (no tag, no pin bump): `go build ./...`, `go vet ./...`, the tests of every quack package that imports a module from this repo, and `quack server validate config/quack.yaml`. It runs when module code changes. Run it locally with `tools/quack-compat.sh [quack-checkout]`; set `QUACK_REF` (or the workflow's `quack_ref` input) when the change needs a matching quack branch. To run quack itself against a checkout, use quack's `make dev-build` / `make dev-image EXT=<this checkout>` ([docs](https://github.com/fagerbergj/quack/blob/main/docs/extensions/dev-loop.md)). Tag each changed module once, after merge.
+The `quack-compat` workflow builds quack `main` against a PR's module directories through a throwaway `go.work` (no tag, no pin bump). It runs `go build ./...` and `go vet ./...` over quack, the tests of every quack package that depends on a module from this repo, `quack server validate` on quack's shipped `config/quack.yaml` (plugin-declared modules are linked), and `quack server validate` on `tools/quack-compat.config.yaml`, which enables every extension with placeholder values so each Factory must accept its config. Every module directory except `sdk/` needs a block in that fixture. The workflow runs on PRs and `main` pushes that touch module code. Do not make it a required check: with its path filter it never reports on other PRs, which would then wait forever.
+
+Run it locally with `tools/quack-compat.sh [quack-checkout]` (no argument clones quack at `$QUACK_REF`, default `main`). When a change needs a matching quack branch, the PR run fails against `main`; rerun it against that branch:
+
+```bash
+gh workflow run quack-compat.yaml --ref <this-repo-branch> -f quack_ref=<quack-branch>
+```
+
+`--ref` must be a branch of this repository; a fork's branch cannot be dispatched, so run the script locally for those. To run quack itself against a checkout, use quack's `make dev-build` / `make dev-image EXT=<this checkout>` ([docs](https://github.com/fagerbergj/quack/blob/main/docs/extensions/dev-loop.md)). Tag each changed module once, after merge; when `sdk` changed too, tag it first, bump the dependents' `sdk` require to that tag, then tag the dependents.
 
 ## How quack consumes this
 
