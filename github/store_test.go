@@ -3,11 +3,24 @@ package github
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/fagerbergj/quack-extensions/sdk"
 )
+
+// openStore is newStore plus an eager open, for tests that want migration errors up front.
+func openStore(dataDir string) (*ghStore, error) {
+	s := newStore(dataDir)
+	if _, err := s.conn(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
 
 func newTestStore(t *testing.T) *ghStore {
 	t.Helper()
@@ -260,5 +273,75 @@ func TestKeyedMutexPreventsDoubleConsumeMergeIntent(t *testing.T) {
 		if n > 1 {
 			t.Errorf("nonce %q consumed %d times, want at most once (double-consume race not closed)", nonce, n)
 		}
+	}
+}
+
+// TestStoreLifecycle pins the SDK contract: the Factory touches nothing on disk
+// (server validate runs it against a throwaway dir), Start opens and migrates, Close closes.
+func TestStoreLifecycle(t *testing.T) {
+	ctx := context.Background()
+	keyPEM, _ := testKeyPEM(t)
+	dir := t.TempDir()
+	raw := fmt.Sprintf("client_id: Iv1.test\nwebhook_secret: s\nprivate_key: %q\n", keyPEM)
+	ext, err := factory(sdk.Host{DataDir: dir}, []byte(raw))
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if ents, _ := os.ReadDir(dir); len(ents) != 0 {
+		t.Fatalf("factory wrote %d entries to DataDir, want none", len(ents))
+	}
+
+	e := ext.(*Extension)
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "github.sqlite")); err != nil {
+		t.Fatalf("Start did not create the store: %v", err)
+	}
+	if err := e.store.SetMergeIntentDispatchedHead(ctx, "c1", "abc"); err != nil {
+		t.Fatalf("migrated schema missing dispatched_head: %v", err)
+	}
+
+	e.Wait()
+	if err := e.store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := e.store.GetMergeIntent(ctx, "c1"); !errors.Is(err, errStoreClosed) {
+		t.Fatalf("query after Close: err=%v, want errStoreClosed", err)
+	}
+	if err := e.store.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
+// A query before Start (RunEnded from a node resumed at boot) opens the store itself.
+func TestStoreOpensOnFirstUse(t *testing.T) {
+	s := newStore(t.TempDir())
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.SetSnapshot(context.Background(), "c1", "{}"); err != nil {
+		t.Fatalf("SetSnapshot before Start: %v", err)
+	}
+}
+
+// A failed open is not cached: once the directory exists, the next query opens the store.
+func TestStoreRetriesAfterFailedOpen(t *testing.T) {
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "missing")
+	s := newStore(dir)
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.SetSnapshot(ctx, "c1", "{}"); err == nil {
+		t.Fatal("SetSnapshot with a missing DataDir succeeded, want an open error")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.conn(); err != nil {
+		t.Fatalf("conn after MkdirAll: %v", err)
+	}
+	if err := s.SetSnapshot(ctx, "c1", "{}"); err != nil {
+		t.Fatalf("SetSnapshot after retry: %v", err)
+	}
+	if _, ok, err := s.GetSnapshot(ctx, "c1"); err != nil || !ok {
+		t.Fatalf("GetSnapshot after retry: ok=%v err=%v", ok, err)
 	}
 }
