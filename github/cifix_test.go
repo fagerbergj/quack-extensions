@@ -144,7 +144,7 @@ func TestWorkflowRunAutoHealEligibility(t *testing.T) {
 // this extension's store is a hard, always-opened dependency, not an
 // optional capability the way quack's shared store used to be, so there is
 // no representable "nil store" state to construct a test around; see
-// github/store.go's openStore, always called from factory/newTestExtension.)
+// github/store.go's newStore, always called from factory.)
 func TestWorkflowRunIgnored(t *testing.T) {
 	tests := []struct {
 		name string

@@ -197,11 +197,6 @@ func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
 	app.SetAPIBase(cfg.APIBase)
 	app.SetFooter(host.Version, host.PublicURL)
 
-	st, err := openStore(host.DataDir)
-	if err != nil {
-		return nil, err
-	}
-
 	triggers := make(map[string]bool, len(cfg.Triggers))
 	for _, t := range cfg.Triggers {
 		triggers[t] = true
@@ -215,7 +210,7 @@ func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
 	e := &Extension{
 		app:                app,
 		host:               host,
-		store:              st,
+		store:              newStore(host.DataDir),
 		secret:             []byte(cfg.WebhookSecret),
 		mention:            cfg.Mention,
 		triggers:           triggers,
@@ -268,6 +263,7 @@ type Extension struct {
 
 var (
 	_ sdk.Extension           = (*Extension)(nil)
+	_ sdk.Starter             = (*Extension)(nil)
 	_ sdk.RunObserver         = (*Extension)(nil)
 	_ sdk.Deliverer           = (*Extension)(nil)
 	_ sdk.GitCredentialSource = (*Extension)(nil)
@@ -294,6 +290,20 @@ func (e *Extension) spawn(f func()) {
 // anything spawned work still uses (store, HTTP client), or a completion races that close.
 func (e *Extension) Wait() {
 	e.bg.Wait()
+}
+
+// Start opens and migrates the store so a bad database fails boot; queries that
+// race ahead of it (RunEnded from a resumed node) open it themselves.
+func (e *Extension) Start(context.Context) error {
+	_, err := e.store.conn()
+	return err
+}
+
+// Stop drains spawned work, then closes the store. The SDK has no stop hook yet,
+// so serving relies on process exit; Stop is for embedders and tests.
+func (e *Extension) Stop() error {
+	e.Wait()
+	return e.store.Close()
 }
 
 // Deliver/GitCredential satisfy sdk.Deliverer/sdk.GitCredentialSource by
