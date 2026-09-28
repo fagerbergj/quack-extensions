@@ -3,7 +3,7 @@ module github.com/fagerbergj/quack-extensions/sleeper
 go 1.26.6
 
 require (
-	github.com/fagerbergj/quack-extensions/sdk v0.15.0
+	github.com/fagerbergj/quack-extensions/sdk v0.16.0
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/oapi-codegen/runtime v1.7.0
 	google.golang.org/adk/v2 v2.4.0
@@ -44,6 +44,3 @@ require (
 	rsc.io/omap v1.2.0 // indirect
 	rsc.io/ordered v1.1.1 // indirect
 )
-
-// Dev-only: strip before tagging a release.
-replace github.com/fagerbergj/quack-extensions/sdk => ../sdk
