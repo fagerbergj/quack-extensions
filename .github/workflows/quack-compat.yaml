@@ -1,0 +1,35 @@
+name: quack-compat
+
+# Builds quack main against this PR's module dirs (go.work, no tag, no pin bump)
+# so a change that breaks quack fails here instead of after the tag.
+on:
+  pull_request:
+    paths: &module-paths
+      - "*/**"
+      - "!**/*.md"
+      - "!tools/**"
+      - "!.*/**"
+      - "tools/quack-compat.sh"
+      - ".github/workflows/quack-compat.yaml"
+  push:
+    branches: [main]
+    paths: *module-paths
+  workflow_dispatch:
+    inputs:
+      quack_ref:
+        description: quack branch to build against (for a change that needs a matching quack PR)
+        default: main
+
+jobs:
+  quack-compat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      QUACK_REF: ${{ inputs.quack_ref || 'main' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: sdk/go.mod
+          cache-dependency-path: "*/go.sum"
+      - run: tools/quack-compat.sh

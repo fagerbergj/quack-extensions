@@ -40,6 +40,10 @@ Each module is tagged independently: `sdk/vX.Y.Z`, `noop/vX.Y.Z`, and so on - th
 
 No `go.work` is committed: each module resolves its siblings as normal tagged dependencies, the same way an external consumer would, so nothing about local development leaks into how quack (or anyone else) builds against this repo.
 
+## Checking a change against quack
+
+The `quack-compat` workflow builds quack `main` against a PR's module directories through a throwaway `go.work` (no tag, no pin bump): `go build ./...`, `go vet ./...`, the tests of every quack package that imports a module from this repo, and `quack server validate config/quack.yaml`. It runs when module code changes. Run it locally with `tools/quack-compat.sh [quack-checkout]`; set `QUACK_REF` (or the workflow's `quack_ref` input) when the change needs a matching quack branch. To run quack itself against a checkout, use quack's `make dev-build` / `make dev-image EXT=<this checkout>` ([docs](https://github.com/fagerbergj/quack/blob/main/docs/extensions/dev-loop.md)). Tag each changed module once, after merge.
+
 ## How quack consumes this
 
 quack's own `go.mod` pins the blessed extensions and a registry file blank-imports them (each extension package registers itself via `sdk.Register` from `init()`). Compiled but unconfigured is dormant; configured but not compiled is a loud startup error. Deployments enable and configure extensions through `extensions:` blocks in `quack.yaml`, which quack hands each extension's `Factory` as opaque config bytes.
