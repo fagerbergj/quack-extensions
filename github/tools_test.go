@@ -553,3 +553,53 @@ func TestSubmitReviewMovesAllFindingsToSummaryOn422(t *testing.T) {
 		t.Errorf("result reports %d inline comments; want 0", res.Comments)
 	}
 }
+
+// TestPostingToolsHonorCallInfo: an /explain run (deny-all grant) or a
+// read-only node must post nothing; an older host (no CallInfo) posts as before.
+func TestPostingToolsHonorCallInfo(t *testing.T) {
+	posts := 0
+	app := seededApp(t, func(w http.ResponseWriter, _ *http.Request) {
+		posts++
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"id":1,"html_url":"https://github.com/acme/widgets/pull/7#x"}`)
+	})
+	tools := map[string]func(context.Context) error{
+		"github_comment": func(ctx context.Context) error {
+			_, err := app.comment(ctx, commentArgs{Owner: "acme", Repo: "widgets", IssueNumber: 7, Body: "hi"})
+			return err
+		},
+		"github_reply_to_review_comment": func(ctx context.Context) error {
+			_, err := app.reply(ctx, replyArgs{Owner: "acme", Repo: "widgets", PullNumber: 7, CommentID: 11, Body: "hi"})
+			return err
+		},
+		"github_react_to_comment": func(ctx context.Context) error {
+			_, err := app.react(ctx, reactArgs{Owner: "acme", Repo: "widgets", CommentID: 11, CommentType: "issue_comment", Content: "eyes"})
+			return err
+		},
+	}
+	bg := context.Background()
+	cases := []struct {
+		name    string
+		ctx     context.Context
+		refusal string // "" = must post
+	}{
+		{"older host", bg, ""},
+		{"unrestricted", sdk.WithCallInfo(bg, sdk.CallInfo{}), ""},
+		{"comment granted", sdk.WithCallInfo(bg, sdk.CallInfo{AllowedDeliveryKinds: []sdk.DeliveryKind{sdk.KindReview, sdk.KindComment}}), ""},
+		{"deny-all", sdk.WithCallInfo(bg, sdk.CallInfo{AllowedDeliveryKinds: []sdk.DeliveryKind{}}), "delivery grant"},
+		{"review only", sdk.WithCallInfo(bg, sdk.CallInfo{AllowedDeliveryKinds: []sdk.DeliveryKind{sdk.KindReview}}), "delivery grant"},
+		{"read-only", sdk.WithCallInfo(bg, sdk.CallInfo{ReadOnly: true}), "read-only"},
+	}
+	for name, call := range tools {
+		for _, tc := range cases {
+			before := posts
+			err := call(tc.ctx)
+			switch {
+			case tc.refusal == "" && (err != nil || posts == before):
+				t.Errorf("%s/%s: err %v, posts %d; want a post", name, tc.name, err, posts-before)
+			case tc.refusal != "" && (err == nil || !strings.Contains(err.Error(), tc.refusal) || !strings.HasPrefix(err.Error(), name) || posts != before):
+				t.Errorf("%s/%s: err %v, posts %d; want a %q refusal and no post", name, tc.name, err, posts-before, tc.refusal)
+			}
+		}
+	}
+}

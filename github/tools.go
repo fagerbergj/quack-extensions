@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -118,17 +119,37 @@ func (a *App) commentTool() tool.Tool {
 				"issue comments). `owner`/`repo` identify the repository, `issue_number` the issue/PR number, " +
 				"`body` the markdown comment text. Authenticated as the app installation.",
 		},
-		func(ctx adkagent.Context, args commentArgs) (commentResult, error) {
-			if args.Owner == "" || args.Repo == "" || args.IssueNumber == 0 || strings.TrimSpace(args.Body) == "" {
-				return commentResult{}, fmt.Errorf("github_comment: owner, repo, issue_number and body are all required")
-			}
-			if err := a.postIssueComment(ctx, args.Owner, args.Repo, args.IssueNumber, args.Body); err != nil {
-				return commentResult{}, err
-			}
-			return commentResult{Posted: true}, nil
-		},
+		func(ctx adkagent.Context, args commentArgs) (commentResult, error) { return a.comment(ctx, args) },
 	)
 	return t
+}
+
+func (a *App) comment(ctx context.Context, args commentArgs) (commentResult, error) {
+	if err := postRefusal(ctx, "github_comment"); err != nil {
+		return commentResult{}, err
+	}
+	if args.Owner == "" || args.Repo == "" || args.IssueNumber == 0 || strings.TrimSpace(args.Body) == "" {
+		return commentResult{}, fmt.Errorf("github_comment: owner, repo, issue_number and body are all required")
+	}
+	if err := a.postIssueComment(ctx, args.Owner, args.Repo, args.IssueNumber, args.Body); err != nil {
+		return commentResult{}, err
+	}
+	return commentResult{Posted: true}, nil
+}
+
+// postRefusal says why this run may not post to GitHub, or nil. Replies and
+// reactions count as "comment": on a PR, review always implies comment.
+func postRefusal(ctx context.Context, name string) error {
+	ci, ok := sdk.CallInfoFrom(ctx)
+	switch {
+	case !ok:
+		return nil
+	case ci.ReadOnly:
+		return fmt.Errorf("%s: refused, this run is read-only and may not post to GitHub; put the text in your answer instead", name)
+	case ci.AllowedDeliveryKinds != nil && !slices.Contains(ci.AllowedDeliveryKinds, sdk.KindComment):
+		return fmt.Errorf("%s: refused, this run's delivery grant does not include %q, so it may not post to GitHub; put the text in your answer instead", name, sdk.KindComment)
+	}
+	return nil
 }
 
 // reviewComment is one inline PR review comment. Matches GitHub's reviews-API shape.
@@ -537,6 +558,9 @@ func (a *App) replyToReviewCommentTool() tool.Tool {
 }
 
 func (a *App) reply(ctx context.Context, args replyArgs) (replyResult, error) {
+	if err := postRefusal(ctx, "github_reply_to_review_comment"); err != nil {
+		return replyResult{}, err
+	}
 	if args.Owner == "" || args.Repo == "" || args.PullNumber == 0 || args.CommentID == 0 || strings.TrimSpace(args.Body) == "" {
 		return replyResult{}, fmt.Errorf("github_reply_to_review_comment: owner, repo, pull_number, comment_id and body are all required")
 	}
@@ -578,6 +602,9 @@ func (a *App) reactToCommentTool() tool.Tool {
 }
 
 func (a *App) react(ctx context.Context, args reactArgs) (reactResult, error) {
+	if err := postRefusal(ctx, "github_react_to_comment"); err != nil {
+		return reactResult{}, err
+	}
 	if args.Owner == "" || args.Repo == "" || args.CommentID == 0 {
 		return reactResult{}, fmt.Errorf("github_react_to_comment: owner, repo and comment_id are all required")
 	}

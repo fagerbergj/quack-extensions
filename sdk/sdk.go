@@ -169,6 +169,10 @@ type Host struct {
 	// callers must degrade to omitting the link.
 	PublicURL string
 
+	// Location is the user's configured zone (quack's timezone: never sets time.Local).
+	// nil when unconfigured or the host predates it - callers fall back to time.Local.
+	Location *time.Location
+
 	// Deprecated: EnsureContextDir is superseded by ReadArtifact/
 	// WriteArtifact (quack issue #1010) - a workspace-dir sibling to a
 	// dispatched run's clone, for evidence files too large or too raw for
@@ -406,6 +410,39 @@ type DeliveryAuthority struct {
 	// logic (labels, authorship, scope) down to this flat list before
 	// dispatch.
 	AllowedKinds []DeliveryKind
+}
+
+// CallInfo is the run a tool call belongs to. Advisory for gate-backed
+// deliveries; a tool that acts directly (posts, writes) must enforce it itself.
+type CallInfo struct {
+	// ChatID is quack's chat id; "ext:<extension>:<ChatRef.LocalID>" for a chat
+	// the extension dispatched.
+	ChatID string
+
+	// UserID is the chat's user: what the extension put in ChatRef.User for its own chats.
+	UserID string
+
+	// AllowedDeliveryKinds is the run's grant, as DeliveryAuthority.AllowedKinds:
+	// nil = no grant governs this run (unrestricted), non-nil empty = deny all.
+	AllowedDeliveryKinds []DeliveryKind
+
+	// ReadOnly marks a plan-only run: it must not write or post.
+	ReadOnly bool
+}
+
+type callInfoKey struct{}
+
+// WithCallInfo is host-side: set it on the ctx a tool's Run receives (the runner
+// ctx, or a per-call overlay), and only when the run's grant is known.
+func WithCallInfo(ctx context.Context, ci CallInfo) context.Context {
+	return context.WithValue(ctx, callInfoKey{}, ci)
+}
+
+// CallInfoFrom reads the host's CallInfo from a tool's agent.Context (or any
+// ctx derived from it); ok is false when the host predates CallInfo.
+func CallInfoFrom(ctx context.Context) (CallInfo, bool) {
+	ci, ok := ctx.Value(callInfoKey{}).(CallInfo)
+	return ci, ok
 }
 
 // --- Inverse capabilities: quack calls into the extension. ---
