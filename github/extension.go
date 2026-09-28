@@ -299,13 +299,6 @@ func (e *Extension) Start(context.Context) error {
 	return err
 }
 
-// Stop drains spawned work, then closes the store. The SDK has no stop hook yet,
-// so serving relies on process exit; Stop is for embedders and tests.
-func (e *Extension) Stop() error {
-	e.Wait()
-	return e.store.Close()
-}
-
 // Deliver/GitCredential satisfy sdk.Deliverer/sdk.GitCredentialSource by
 // delegating to App, which does the actual GitHub API work.
 func (e *Extension) Deliver(ctx context.Context, dc sdk.DeliveryContext) ([]sdk.DeliveryItemOutcome, error) {
