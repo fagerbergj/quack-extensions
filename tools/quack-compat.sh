@@ -55,13 +55,13 @@ export QUACK_COMPAT_TMP=$tmp QUACK_COMPAT_GITHUB_KEY=$tmp/github.pem QUACK_COMPA
 run openssl genrsa -out "$QUACK_COMPAT_GITHUB_KEY" 2048
 step="quack server validate tools/quack-compat.config.yaml"
 echo "== $step"
-out=$("$tmp/quack-bin" server validate "$ext/tools/quack-compat.config.yaml")
-echo "$out"
+accepted=$("$tmp/quack-bin" server validate --json "$ext/tools/quack-compat.config.yaml" | jq -r '.extensions[]?')
+echo "accepted: ${accepted//$'\n'/ }"
 # Every extension module needs a fixture block, or its Factory goes unchecked.
 for m in "${mods[@]%/go.mod}"; do
 	name=${m##*/}
 	[ "$name" = sdk ] && continue
 	step="fixture covers $name"
-	grep -q "extension $name: config accepted" <<<"$out" || { echo "$name: no accepted extensions.$name block in tools/quack-compat.config.yaml" >&2; exit 1; }
+	grep -qx "$name" <<<"$accepted" || { echo "$name: no accepted extensions.$name block in tools/quack-compat.config.yaml" >&2; exit 1; }
 done
 echo "quack-compat: OK against quack $quack_desc"
