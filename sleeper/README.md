@@ -55,15 +55,14 @@ One `sleeper/vX.Y.Z` tag releases both halves. quack pins the Go tools in `go.mo
 its `plugins.seed` entry, and both pins name the same tag:
 
 1. Merge the change and tag `sleeper/vX.Y.Z`.
-2. In quack, bump `go.mod` and the `plugins.seed` ref to that tag in one PR, so a fresh deployment
-   gets matching halves.
-3. On a running deployment, move the plugin row to the new tag from the Plugins page or with
-   `POST /api/v1/plugins` and the new entry. The add ends in a reload, so a prompt, skill, rubric, or
-   workflow change is live without a new image. An existing `github:` row does not follow an edited
-   `plugins.seed` entry, so this step is needed even after the quack bump deploys.
+2. In quack, bump `go.mod` and the `plugins.seed` ref to that tag in one PR. A deployment with its
+   own `plugins.seed` bumps its entry to the same tag along with the image.
+3. Restart. Boot moves the seeded `sleeper` row to the new ref and fetches it. A row last set over
+   REST (`POST /api/v1/plugins`) is the operator's and does not follow the seed.
 
-When the change touches Go tools, deploy the quack image carrying the new `go.mod` before moving the
-row: a plugin agent naming a tool the binary lacks is dropped.
+A plugin-only change (prompt, skill, rubric, workflow) can go live before the next image: bump the
+deployment's seed ref and restart. When the change touches Go tools, the image carrying the new
+`go.mod` must ship with it, since a plugin agent naming a tool the binary lacks is dropped.
 
 ## The spec is the source of truth
 
