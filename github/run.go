@@ -187,7 +187,12 @@ func (e *Extension) finalize(chatID string, pr *pendingRun, outcome sdk.RunOutco
 
 	// HITL pause: post the question as a comment; the reply resumes the paused node.
 	if outcome.Status == sdk.RunNeedsInput {
-		comment := fmt.Sprintf("Question before continuing (%s):\n\n%s", outcome.NodeID, outcome.Question)
+		// Orchestrator-level questions (e.g. plan-loop) have no node id.
+		prefix := "Question before continuing"
+		if outcome.NodeID != "" {
+			prefix += " (" + outcome.NodeID + ")"
+		}
+		comment := prefix + ":\n\n" + outcome.Question
 		hitlCtx, hitlCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer hitlCancel()
 		if err := e.app.postIssueComment(hitlCtx, owner, repo, number, comment); err != nil {
