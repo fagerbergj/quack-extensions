@@ -196,6 +196,7 @@ func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
 	app.SetPartialFixLabel(cfg.Labels.PartialFix)
 	app.SetAPIBase(cfg.APIBase)
 	app.SetFooter(host.Version, host.PublicURL)
+	app.decide = host.Decide
 
 	triggers := make(map[string]bool, len(cfg.Triggers))
 	for _, t := range cfg.Triggers {
