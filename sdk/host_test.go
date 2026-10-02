@@ -206,3 +206,31 @@ func TestHostInvalidateSetupDegradesGracefullyWhenNil(t *testing.T) {
 		t.Errorf("invalidated = %v, want [ext:github:github-acme-widgets-9]", invalidated)
 	}
 }
+
+// TestHostDecideNilIsNoDecision pins that a nil Decide is a valid state and
+// that a wired one carries the request through and returns the host's verdict.
+func TestHostDecideNilIsNoDecision(t *testing.T) {
+	var h sdk.Host
+	if h.Decide != nil {
+		t.Fatalf("zero-value Host.Decide = non-nil, want nil")
+	}
+
+	h.Decide = func(ctx context.Context, req sdk.DecideRequest) (sdk.Decision, error) {
+		if req.Point == "" {
+			return sdk.Decision{}, errors.New("empty point")
+		}
+		return sdk.Decision{Top: "true", TopP: 0.95, Outcome: "act", Act: req.Baseline == "false"}, nil
+	}
+	d, err := h.Decide(context.Background(), sdk.DecideRequest{
+		Point:     "triage",
+		Questions: map[string]sdk.DecisionQuestion{"q": {Type: "noul", Instructions: "ok?"}},
+		Primary:   "q",
+		Baseline:  "false",
+	})
+	if err != nil || !d.Act || d.Top != "true" {
+		t.Errorf("Decide = (%+v, %v), want Act with Top true", d, err)
+	}
+	if _, err := h.Decide(context.Background(), sdk.DecideRequest{}); err == nil {
+		t.Errorf("Decide with empty point: err = nil, want error")
+	}
+}
