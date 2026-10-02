@@ -270,6 +270,10 @@ type DecideRequest struct {
 	State    any    // the evidence the handler reads
 	Baseline string // the extension's own answer to Primary, in its option space
 
+	// ChatID is the chat the decision belongs to, for ledger attribution; the
+	// host accepts only the plugin's own ext:<plugin>: chats. Empty = ctx's chat.
+	ChatID string
+
 	// Optional: when set, each must equal the declared point's.
 	Questions   map[string]DecisionQuestion
 	Primary     string
