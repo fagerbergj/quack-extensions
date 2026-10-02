@@ -233,17 +233,10 @@ type Host struct {
 	// configured; callers must degrade gracefully.
 	Classify func(ctx context.Context, prompt string) (string, error)
 
-	// Decide asks quack's decision handler (a calibrated forward pass over
-	// typed questions) about a point. nil = no decision handler configured;
-	// a non-nil error is likewise "no decision". Either way proceed as before.
-	//
-	// Whether a point observes, guards, or decides is host config
-	// (decisions.points.<id>.mode), never the extension's. The extension
-	// supplies Baseline, what it would decide itself, and acts only when the
-	// Decision reports Act (replace the step) or Restrict (narrow it).
-	//
-	// Req.Point is a bare name; the host namespaces it as ext:<plugin>/<name>
-	// and the point is evaluated only if the operator enabled that id.
+	// Decide asks quack's decision handler about a point; nil or an error
+	// means "no decision", proceed as before. Mode (observe/guard/decide) is
+	// host config; the extension supplies Baseline and acts on Act/Restrict.
+	// Point is a bare name the host namespaces as ext:<plugin>/<name>.
 	Decide func(ctx context.Context, req DecideRequest) (Decision, error)
 }
 
