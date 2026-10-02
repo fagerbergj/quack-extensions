@@ -74,6 +74,51 @@ A plugin-only change (prompt, skill, rubric, workflow) can go live before the ne
 deployment's seed ref and restart. When the change touches Go tools, the image carrying the new
 `go.mod` must ship with it, since a plugin agent naming a tool the binary lacks is dropped.
 
+## Decision points
+
+`decisions.go` declares four observe-only points (`sdk.DecisionPoints`) for a paired shadow A/B of
+the weekly calls, scored later against real points. They are asked from `RunEnded` once a
+`lineup`, `waivers` or `trade` run ends `done`: a goroutine reads the job's artifact through
+`Host.ReadArtifact` (the same chat id and artifact name the UI reads) and calls `Host.Decide` one
+point at a time, each call capped at 10s. Nothing waits on it, and no answer, error or timeout
+changes an artifact or a dispatch. quack namespaces each as `ext:sleeper/<name>`.
+
+| Point | Question (primary) | Asked per | Baseline |
+| --- | --- | --- | --- |
+| `lineup_change` | `swap` (noul): should the proposed player start in this slot instead of the current one? | lineup starter row with `replaces` | `true` |
+| `waiver_pickup` | `pickup` (noul): is this add worth its drop and the priority or FAAB? | `candidates` row; `also_checked` row | `true`; `false` |
+| `waiver_priority` | `priority` (score, levels `0`-`4`: fifth or later ... first claim) | ranked `candidates` row, when 2+ are ranked | `5 - min(rank, 5)`: rank 1 is `4` |
+| `trade_accept` | `accept` (noul): should this trade happen exactly as written, from my side? | `offers` row | `true` for `send`; `false` for `decline` and `counter` |
+
+No point is restrictive. Option sets are static, as the declaration requires, so start/sit is
+asked per recommended swap rather than as a choice over player ids, and lineup has no negatives.
+
+The state carries the evidence without the answer: no `verdict`, `replaces`, `confidence` or
+`rank`, and the lineup state names the two players `current` and `proposed` instead of starter and
+bench. Each player row is `{id, name, pos, team, opp, status, practice, proj, floor, ceiling,
+recent, reasoning}`: `reasoning` is the analyst's `why` for that row, `opp` is joined from the
+schedule only for the live regular-season week, and `recent` is up to three prior weeks of
+`pts_ppr` from the week stats, weeks with no stat line left out. A `why` that names the pick in
+prose (for example "only runs if claim 2 fails") still reaches the state. The trade state carries
+the offer's `give`/`get` rows, `delta`, `why` and who offered it, not the full rosters.
+
+Join keys, all in the state: `chat_id`, `league_id`, `season`, `week` (the stop's week; a trade
+uses the live NFL week) and
+
+- `lineup_change`: `slot`, `current.id`, `proposed.id`. Score with the league's own
+  `Matchups(league, week)` `players_points`: the swap was right when `proposed` outscored
+  `current`.
+- `waiver_pickup` / `waiver_priority`: `add.id`, plus `drop_id` when the drop text resolves to
+  exactly one player through the name index, else the raw `drop` text. Score the add's weekly
+  points (`WeekStats` `pts_ppr`, or `players_points` once rostered) for weeks after `week` against
+  the drop's.
+- `trade_accept`: `partner_id`, `offer_index`, `give[].id`, `get[].id`; score rest-of-season
+  points from `week` on.
+
+A re-run of a job re-asks every row of its latest artifact, so the scorer keeps one decision per
+key (the latest). Enable them in quack's `decisions.points` as
+`"ext:sleeper/<name>": {enabled: true, handler: <handler>, mode: observe}`.
+
 ## The spec is the source of truth
 
 Sleeper publishes no OpenAPI or Swagger document. `openapi.yaml` is owned by this module,
