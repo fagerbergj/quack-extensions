@@ -864,7 +864,7 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 	e.pending.Store(chatID, &pendingRun{
 		sessionID: sessionID, claimedAt: claimedAt, owner: owner, repo: repo, number: number,
 		isPR: isPR, login: login, gh: gh, isPlan: isPlan, isLabelTrigger: p.isLabelTrigger, explain: p.explain,
-		dispatched: req, defaultBranch: p.Repository.DefaultBranch, installationID: p.Installation.ID,
+		isReview: task == autoReviewTask, dispatched: req, defaultBranch: p.Repository.DefaultBranch, installationID: p.Installation.ID,
 	})
 	// Durable twin of the above (#65): e.pending is in-memory only, so a run
 	// resumed at boot after a restart has nothing for RunEnded to find it by.
