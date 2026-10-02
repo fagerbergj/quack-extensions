@@ -554,6 +554,9 @@ type ReviewComment struct {
 	Path string
 	Line int
 	Body string
+	// Severity is the host's label for the finding (blocking, suggestion,
+	// nit, question); empty when the host did not classify it.
+	Severity string
 }
 
 // DeliveryItemOutcome reports what happened when one staged item was
