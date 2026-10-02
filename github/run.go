@@ -36,6 +36,9 @@ type pendingRun struct {
 	isPlan         bool
 	isLabelTrigger bool
 	explain        bool // the walkthrough lives in quack's chat; finalize posts nothing
+	// isReview: dispatched as autoReviewTask, so a finished run with no delivered review has no verdict.
+	// ponytail: not in PendingRunRow, so a run rebuilt after a restart posts its answer as before.
+	isReview bool
 
 	// dispatched is the original DispatchRequest, kept so the no-plan nudge
 	// can re-send its Run/Ask.ContextItems/Ask.NodeContext - a fresh Run/Ask
@@ -203,6 +206,11 @@ func (e *Extension) finalize(chatID string, pr *pendingRun, outcome sdk.RunOutco
 		return
 	}
 
+	if pr.isReview && outcome.Status == sdk.RunDone && !outcome.TimedOut {
+		e.postNoVerdict(chatID, pr)
+		return
+	}
+
 	answer := e.shapeAnswer(pr, outcome, owner, repo, number)
 
 	tailCtx, tailCancel := context.WithTimeout(context.Background(), time.Minute)
@@ -287,6 +295,21 @@ func (e *Extension) shapeAnswer(pr *pendingRun, outcome sdk.RunOutcome, owner, r
 		answer += "\n\n" + deliveryMarker("plan")
 	}
 	return answer
+}
+
+// postNoVerdict replaces a review run's analysis prose with a short note: prose is not a
+// review, and posting it as a comment reads like one while the PR gets no verdict.
+func (e *Extension) postNoVerdict(chatID string, pr *pendingRun) {
+	owner, repo, number := pr.owner, pr.repo, pr.number
+	e.host.Log.Error("github: review run ended without staging a verdict; not posting its analysis", "repo", owner+"/"+repo, "pr", number)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	msg := "Review finished without a verdict, so nothing was posted. Comment `/review` to run it again."
+	if err := e.app.postIssueComment(ctx, owner, repo, number, e.app.withFooter(msg, chatID)); err != nil {
+		e.host.Log.Error("github: no-verdict note post failed", "repo", owner+"/"+repo, "pr", number, "err", err)
+		return
+	}
+	e.persistGithubSnapshot(chatID, pr.gh)
 }
 
 // postDeliveryFailure reports a failed delivery on GitHub, so a pushed-but-unopened branch is recoverable by hand instead of sitting silently invisible (#714).

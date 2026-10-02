@@ -416,8 +416,17 @@ func TestDispatchBuildsRequestAndStoresPending(t *testing.T) {
 	}
 
 	chatID := globalChatID("github-acme-widgets-7")
-	if _, ok := e.pending.Load(chatID); !ok {
-		t.Errorf("pending[%q] not stored before Dispatch returned", chatID)
+	v, ok := e.pending.Load(chatID)
+	if !ok {
+		t.Fatalf("pending[%q] not stored before Dispatch returned", chatID)
+	}
+	if v.(*pendingRun).isReview {
+		t.Error("a free-form mention must not be marked as a review run")
+	}
+
+	e.dispatch(issueCommentPayloadFor("acme", "widgets", 8, "alice", "/review", srv.URL), autoReviewTask)
+	if v, ok := e.pending.Load(globalChatID("github-acme-widgets-8")); !ok || !v.(*pendingRun).isReview {
+		t.Error("an autoReviewTask dispatch must be marked as a review run")
 	}
 }
 
@@ -656,6 +665,34 @@ func TestFinalizeSkipsSummaryWhenDeliveryVerified(t *testing.T) {
 	}
 	if _, ok := e.pending.Load(chatID); ok {
 		t.Errorf("pending entry still present after finalize")
+	}
+}
+
+// A review run that ends done with nothing delivered (prod quack#1607, 2026-10-02) must not
+// post its analysis prose as a comment: the PR gets a short no-verdict note instead.
+func TestFinalizeReviewWithoutVerdictPostsNote(t *testing.T) {
+	posted := make(chan string, 1)
+	srv := stubGitHub(t, posted)
+	defer srv.Close()
+	e, _ := newTestExtension(t, srv.URL, nil)
+
+	sessionID := "github-acme-widgets-7"
+	chatID := globalChatID(sessionID)
+	e.pending.Store(chatID, &pendingRun{sessionID: sessionID, owner: "acme", repo: "widgets", number: 7, login: "alice", isPR: true, isReview: true})
+	claimInflightFor(t, e, chatID, sessionID)
+
+	e.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "Analysis complete. My findings: ..."})
+
+	select {
+	case body := <-posted:
+		if strings.Contains(body, "Analysis complete") {
+			t.Fatalf("review run posted its analysis prose: %q", body)
+		}
+		if !strings.Contains(body, "without a verdict") || !strings.Contains(body, "/review") {
+			t.Errorf("posted comment = %q, want the no-verdict note naming /review", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no comment posted for a review run that delivered nothing")
 	}
 }
 
