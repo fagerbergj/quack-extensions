@@ -232,6 +232,46 @@ type Host struct {
 	// Bound to quack's judge/advisor model. nil = no judge model
 	// configured; callers must degrade gracefully.
 	Classify func(ctx context.Context, prompt string) (string, error)
+
+	// Decide asks quack's decision handler (a calibrated forward pass over
+	// typed questions) about a point. nil = no decision handler configured;
+	// a non-nil error is likewise "no decision". Either way proceed as before.
+	//
+	// Whether a point observes, guards, or decides is host config
+	// (decisions.points.<id>.mode), never the extension's. The extension
+	// supplies Baseline, what it would decide itself, and acts only when the
+	// Decision reports Act (replace the step) or Restrict (narrow it).
+	//
+	// Req.Point is a bare name; the host namespaces it as ext:<plugin>/<name>
+	// and the point is evaluated only if the operator enabled that id.
+	Decide func(ctx context.Context, req DecideRequest) (Decision, error)
+}
+
+// DecisionQuestion is one typed question put to the decision handler.
+type DecisionQuestion struct {
+	Type         string // "noul" (true/false), "choice", or "score"
+	Instructions string
+	Criteria     any // the options for a choice, the levels for a score
+}
+
+// DecideRequest is the input to Host.Decide.
+type DecideRequest struct {
+	Point       string // bare name; the host namespaces it ext:<plugin>/<name>
+	State       any    // the evidence the handler reads
+	Questions   map[string]DecisionQuestion
+	Primary     string   // the question whose top answer drives Act and Restrict
+	Restrictive []string // Primary answers that only narrow what the extension does
+	Baseline    string   // the extension's own answer to Primary, in its option space
+}
+
+// Decision is the handler's answer. Probabilities is keyed question then option.
+type Decision struct {
+	Top           string // most probable option of Primary
+	TopP          float64
+	Probabilities map[string]map[string]float64
+	Outcome       string // "observe", "act", "fallback", or "restrict"
+	Act           bool   // mode and confidence say to use Top in place of Baseline
+	Restrict      bool   // a guard says to narrow, never widen
 }
 
 // DispatchFunc starts or continues a run. See ChatRef.LocalID for the
