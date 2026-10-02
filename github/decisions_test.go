@@ -114,29 +114,23 @@ func TestReviewDecisionPoints(t *testing.T) {
 	}
 	reqs := rec.wait(t)
 
-	type want struct{ point, baseline, primary, restrictive string }
+	type want struct{ point, baseline string }
 	wants := []want{
-		{"finding.severity", "blocking", "severity", "blocking"},
-		{"finding.blocking", "true", "blocking", "true"},
-		{"finding.severity", "nit", "severity", "blocking"},
-		{"finding.blocking", "false", "blocking", "true"},
-		{"finding.blocking", "false", "blocking", "true"}, // unlabeled: no severity baseline to compare
-		{"review.verdict", "request_changes", "verdict", "comment,request_changes"},
+		{"finding.severity", "blocking"},
+		{"finding.blocking", "true"},
+		{"finding.severity", "nit"},
+		{"finding.blocking", "false"},
+		{"finding.blocking", "false"}, // unlabeled: no severity baseline to compare
+		{"review.verdict", "request_changes"},
 	}
 	if len(reqs) != len(wants) {
 		t.Fatalf("got %d Decide calls, want %d: %+v", len(reqs), len(wants), reqs)
 	}
 	for i, w := range wants {
 		r := reqs[i]
-		if r.Point != w.point || r.Baseline != w.baseline || r.Primary != w.primary || strings.Join(r.Restrictive, ",") != w.restrictive {
-			t.Errorf("call %d = %s baseline=%q primary=%q restrictive=%v; want %+v", i, r.Point, r.Baseline, r.Primary, r.Restrictive, w)
+		if r.Point != w.point || r.Baseline != w.baseline || r.Questions != nil || r.Primary != "" || r.Restrictive != nil {
+			t.Errorf("call %d = %+v; want a slim %+v", i, r, w)
 		}
-		if _, ok := r.Questions[r.Primary]; !ok {
-			t.Errorf("call %d: primary %q is not among its questions", i, r.Primary)
-		}
-	}
-	if opts := reqs[0].Questions["severity"].Criteria.(map[string]string); len(opts) != 4 || opts["question"] == "" {
-		t.Errorf("severity options = %v; want blocking/suggestion/nit/question", opts)
 	}
 
 	first := reqs[0].State.(findingState)
@@ -249,5 +243,30 @@ func TestHostSeverityBeatsBodyLabel(t *testing.T) {
 	if len(reqs) != 3 || reqs[0].Point != "finding.severity" || reqs[0].Baseline != "blocking" ||
 		reqs[1].Point != "finding.blocking" || reqs[1].Baseline != "true" {
 		t.Errorf("calls = %+v; want severity=blocking then blocking=true from the host's Severity", reqs)
+	}
+}
+
+func TestDecisionPointsDeclareTheAskedPoints(t *testing.T) {
+	type want struct{ primary, restrictive string }
+	wants := map[string]want{
+		"finding.severity": {"severity", "blocking"},
+		"finding.blocking": {"blocking", "true"},
+		"review.verdict":   {"verdict", "comment,request_changes"},
+	}
+	points := (&Extension{}).DecisionPoints()
+	if len(points) != len(wants) {
+		t.Fatalf("declared %d points, want %d", len(points), len(wants))
+	}
+	for _, p := range points {
+		w, ok := wants[p.Name]
+		if !ok || p.Primary != w.primary || strings.Join(p.Restrictive, ",") != w.restrictive || strings.Join(p.Modes, ",") != "observe" {
+			t.Errorf("%s = primary %q restrictive %v modes %v; want %+v, observe only", p.Name, p.Primary, p.Restrictive, p.Modes, w)
+		}
+		if _, ok := p.Questions[p.Primary]; !ok {
+			t.Errorf("%s: primary %q is not among its questions", p.Name, p.Primary)
+		}
+	}
+	if opts := points[0].Questions["severity"].Criteria.(map[string]string); len(opts) != 4 || opts["question"] == "" {
+		t.Errorf("severity options = %v; want blocking/suggestion/nit/question", opts)
 	}
 }

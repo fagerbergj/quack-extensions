@@ -11,9 +11,6 @@ import (
 	"github.com/fagerbergj/quack-extensions/sdk"
 )
 
-// Decision points run in observe mode only: answers are recorded by the host
-// and never change what this extension posts.
-
 // decideTimeout bounds each Decide call and each GitHub read the state needs.
 var decideTimeout = 10 * time.Second
 
@@ -60,6 +57,19 @@ var (
 		},
 	}}
 )
+
+var decisionPoints = []sdk.DecisionPoint{
+	{Name: "finding.severity", Description: "the Conventional Comments label of one review finding",
+		Questions: severityQuestions, Primary: "severity", Restrictive: []string{"blocking"}, Modes: []string{"observe"}},
+	{Name: "finding.blocking", Description: "whether one review finding should block the merge",
+		Questions: blockingQuestions, Primary: "blocking", Restrictive: []string{"true"}, Modes: []string{"observe"}},
+	{Name: "review.verdict", Description: "the verdict of a whole review",
+		Questions: verdictQuestions, Primary: "verdict", Restrictive: []string{"comment", "request_changes"}, Modes: []string{"observe"}},
+}
+
+// DecisionPoints declares the review points, observe only: the host records the
+// answers and they never change what this extension posts.
+func (e *Extension) DecisionPoints() []sdk.DecisionPoint { return decisionPoints }
 
 type findingState struct {
 	Path    string `json:"path"`
@@ -138,11 +148,9 @@ func (a *App) decideReview(ctx context.Context, owner, repo string, number int, 
 			st.Hunk = truncate(hunkAt(positions[p].patch, c.Line), hunkCap)
 		}
 		if label != "" {
-			a.ask(ctx, sdk.DecideRequest{Point: "finding.severity", State: st, Questions: severityQuestions,
-				Primary: "severity", Restrictive: []string{"blocking"}, Baseline: label})
+			a.ask(ctx, sdk.DecideRequest{Point: "finding.severity", State: st, Baseline: label})
 		}
-		a.ask(ctx, sdk.DecideRequest{Point: "finding.blocking", State: st, Questions: blockingQuestions,
-			Primary: "blocking", Restrictive: []string{"true"}, Baseline: strconv.FormatBool(label == "blocking")})
+		a.ask(ctx, sdk.DecideRequest{Point: "finding.blocking", State: st, Baseline: strconv.FormatBool(label == "blocking")})
 		findings = append(findings, verdictFinding{Severity: label, Path: c.Path, Line: c.Line, Finding: text})
 	}
 	verdict = strings.ToLower(strings.TrimSpace(verdict))
@@ -159,8 +167,7 @@ func (a *App) decideReview(ctx context.Context, owner, repo string, number int, 
 	if m, err := a.pullMeta(mctx, owner, repo, number); err == nil {
 		st.Title, st.Body = m.Title, truncate(m.Body, prBodyCap)
 	}
-	a.ask(ctx, sdk.DecideRequest{Point: "review.verdict", State: st, Questions: verdictQuestions,
-		Primary: "verdict", Restrictive: []string{"comment", "request_changes"}, Baseline: verdict})
+	a.ask(ctx, sdk.DecideRequest{Point: "review.verdict", State: st, Baseline: verdict})
 }
 
 func (a *App) ask(ctx context.Context, req sdk.DecideRequest) {
