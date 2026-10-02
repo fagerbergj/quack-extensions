@@ -118,6 +118,7 @@ var (
 	_ sdk.UI              = (*extension)(nil)
 	_ sdk.RunObserver     = (*extension)(nil)
 	_ sdk.ArtifactSchemas = (*extension)(nil)
+	_ sdk.DecisionPoints  = (*extension)(nil)
 )
 
 // Tools returns the read-only agent tools over the Sleeper client (issue #93).

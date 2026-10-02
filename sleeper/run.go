@@ -29,10 +29,11 @@ func (e *extension) isRunning(chatID string) bool {
 	return ok
 }
 
-// RunEnded clears the running badge for any final outcome; an unknown
+// RunEnded clears the running badge for any final outcome and observes a done job; an unknown
 // chatID (already cleared, or never dispatched here) is a no-op.
-func (e *extension) RunEnded(chatID string, _ sdk.RunOutcome) {
+func (e *extension) RunEnded(chatID string, outcome sdk.RunOutcome) {
 	e.clearRunning(chatID)
+	e.observeRun(chatID, outcome)
 }
 
 // jobTitles names the sidebar chip's job word for week-stop jobs only -
