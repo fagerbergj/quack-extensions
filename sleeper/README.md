@@ -81,7 +81,9 @@ the weekly calls, scored later against real points. They are asked from `RunEnde
 `lineup`, `waivers` or `trade` run ends `done`: a goroutine reads the job's artifact through
 `Host.ReadArtifact` (the same chat id and artifact name the UI reads) and calls `Host.Decide` one
 point at a time, each call capped at 10s. Nothing waits on it, and no answer, error or timeout
-changes an artifact or a dispatch. quack namespaces each as `ext:sleeper/<name>`.
+changes an artifact or a dispatch. quack namespaces each as `ext:sleeper/<name>`. Each request
+names its job chat (`DecideRequest.ChatID`), so quack records the decision in that chat's ledger
+though `RunEnded` has no run context.
 
 | Point | Question (primary) | Asked per | Baseline |
 | --- | --- | --- | --- |

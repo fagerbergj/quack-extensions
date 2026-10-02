@@ -187,6 +187,7 @@ func (e *extension) decideRun(ctx context.Context, chatID string) {
 		return
 	}
 	for _, req := range e.decisionRequests(ctx, keys, job, raw) {
+		req.ChatID = chatID
 		e.ask(ctx, req)
 	}
 }
