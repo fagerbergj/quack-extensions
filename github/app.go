@@ -18,6 +18,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/fagerbergj/quack-extensions/github/internal/httpx"
+	"github.com/fagerbergj/quack-extensions/sdk"
 )
 
 const defaultAPIBase = "https://api.github.com"
@@ -44,6 +45,8 @@ type App struct {
 
 	reviewMu sync.Mutex
 	diffs    map[string]cachedDiff
+
+	decide func(context.Context, sdk.DecideRequest) (sdk.Decision, error) // nil = no decision handler
 }
 
 type cachedToken struct {
@@ -61,6 +64,7 @@ type cachedDiff struct {
 type diffPositions struct {
 	right map[int]bool
 	left  map[int]bool
+	patch string
 }
 
 func NewApp(issuer, pemKey string) (*App, error) {
@@ -745,7 +749,7 @@ func (a *App) commentablePositions(ctx context.Context, owner, repo string, numb
 }
 
 func parsePatch(patch string) diffPositions {
-	pos := diffPositions{right: map[int]bool{}, left: map[int]bool{}}
+	pos := diffPositions{right: map[int]bool{}, left: map[int]bool{}, patch: patch}
 	var oldLine, newLine int
 	for _, ln := range strings.Split(patch, "\n") {
 		if strings.HasPrefix(ln, "@@") {
