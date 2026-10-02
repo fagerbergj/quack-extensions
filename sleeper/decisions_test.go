@@ -183,6 +183,13 @@ func TestRunEndedObservesOnlyDoneRuns(t *testing.T) {
 	}
 	e.RunEnded(chat, sdk.RunOutcome{Status: sdk.RunDone})
 	waitFor(t, func() bool { return rec.count() == 3 })
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	for _, req := range rec.reqs {
+		if req.ChatID != chat {
+			t.Errorf("%s ChatID = %q, want the run's chat %q", req.Point, req.ChatID, chat)
+		}
+	}
 }
 
 // TestDecideFailureChangesNothing: an erroring or absent handler leaves the
