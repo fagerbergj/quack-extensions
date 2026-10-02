@@ -233,8 +233,8 @@ type Host struct {
 	// configured; callers must degrade gracefully.
 	Classify func(ctx context.Context, prompt string) (string, error)
 
-	// Decide asks the host's decision handler about a bare point name; nil or
-	// an error means "no decision", proceed as before. See DecideRequest.
+	// Decide asks the host's decision handler about a declared point (see
+	// DecisionPoints); nil or an error means "no decision", proceed as before.
 	Decide func(ctx context.Context, req DecideRequest) (Decision, error)
 }
 
@@ -245,16 +245,35 @@ type DecisionQuestion struct {
 	Criteria     any // the options for a choice, the levels for a score
 }
 
+// DecisionPoint declares one of an extension's points; the host namespaces
+// Name as ext:<plugin>/<name> and rejects config or calls that don't match it.
+type DecisionPoint struct {
+	Name        string
+	Description string
+	Questions   map[string]DecisionQuestion
+	Primary     string   // the question whose top answer drives Act and Restrict
+	Restrictive []string // Primary answers that only narrow what the extension does
+	Modes       []string // observe, guard, decide: what the extension acts on; empty = observe only
+}
+
+// DecisionPoints is optional: the points an extension may pass to Host.Decide.
+// The host refuses an undeclared point.
+type DecisionPoints interface {
+	DecisionPoints() []DecisionPoint
+}
+
 // DecideRequest is the input to Host.Decide. The mode (observe, guard or
 // decide) is host config; the extension supplies Baseline and acts only on
 // Decision.Act or Decision.Restrict. Point is namespaced ext:<plugin>/<name>.
 type DecideRequest struct {
-	Point       string // bare name; the host namespaces it ext:<plugin>/<name>
-	State       any    // the evidence the handler reads
+	Point    string // a declared DecisionPoint's Name
+	State    any    // the evidence the handler reads
+	Baseline string // the extension's own answer to Primary, in its option space
+
+	// Optional: when set, each must equal the declared point's.
 	Questions   map[string]DecisionQuestion
-	Primary     string   // the question whose top answer drives Act and Restrict
-	Restrictive []string // Primary answers that only narrow what the extension does
-	Baseline    string   // the extension's own answer to Primary, in its option space
+	Primary     string
+	Restrictive []string
 }
 
 // Decision is the handler's answer. Probabilities is keyed question then option.

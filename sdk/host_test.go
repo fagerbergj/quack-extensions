@@ -221,16 +221,26 @@ func TestHostDecideNilIsNoDecision(t *testing.T) {
 		}
 		return sdk.Decision{Top: "true", TopP: 0.95, Outcome: "act", Act: req.Baseline == "false"}, nil
 	}
-	d, err := h.Decide(context.Background(), sdk.DecideRequest{
-		Point:     "triage",
-		Questions: map[string]sdk.DecisionQuestion{"q": {Type: "noul", Instructions: "ok?"}},
-		Primary:   "q",
-		Baseline:  "false",
-	})
+	d, err := h.Decide(context.Background(), sdk.DecideRequest{Point: "triage", State: "s", Baseline: "false"})
 	if err != nil || !d.Act || d.Top != "true" {
 		t.Errorf("Decide = (%+v, %v), want Act with Top true", d, err)
 	}
 	if _, err := h.Decide(context.Background(), sdk.DecideRequest{}); err == nil {
 		t.Errorf("Decide with empty point: err = nil, want error")
+	}
+}
+
+type declaringExt struct{ sdk.Extension }
+
+func (declaringExt) DecisionPoints() []sdk.DecisionPoint {
+	return []sdk.DecisionPoint{{Name: "triage", Primary: "q", Questions: map[string]sdk.DecisionQuestion{"q": {Type: "noul"}}}}
+}
+
+// TestDecisionPointsIsOptional pins that a host finds the declarations by type assertion.
+func TestDecisionPointsIsOptional(t *testing.T) {
+	var ext sdk.Extension = declaringExt{}
+	dp, ok := ext.(sdk.DecisionPoints)
+	if !ok || dp.DecisionPoints()[0].Name != "triage" {
+		t.Fatalf("DecisionPoints not found on a declaring extension")
 	}
 }
