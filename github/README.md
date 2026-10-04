@@ -6,13 +6,13 @@ quack's GitHub App integration: webhook triggers, dispatch envelopes, staged del
 
 The extension declares five observe-only points (`DecisionPoints()` in `decisions.go`). quack namespaces each as `ext:github/<name>` and records the handler's answer beside the extension's own; no answer, error or timeout changes what the extension posts or dispatches. Every call runs in a goroutine off the posting or dispatch path, one at a time, each capped at 10s.
 
-| Point | Primary question | Asked per | Baseline |
-| --- | --- | --- | --- |
-| `finding.severity` | `severity` (blocking, suggestion, nit, question) | labelled review finding | the finding's label |
-| `finding.blocking` | `blocking` (noul) | review finding | `true` when labelled blocking |
-| `review.verdict` | `verdict` (approve, comment, request_changes) | posted review | the staged verdict |
-| `intent` | `write` (noul), plus `deliverable` (reply, review, commit, pull_request, plan) | free-text mention on an issue or PR | `true` when the classifiers picked a commit or a new PR |
-| `ci.flaky` | `flaky` (noul) | failing check, up to 5, on the auto-heal and `quack:fix` paths | none |
+| Point | Primary question | Asked per | State | Baseline |
+| --- | --- | --- | --- | --- |
+| `finding.severity` | `severity` (blocking, suggestion, nit, question) | labelled review finding | path, line, the finding's text with every label and severity marker stripped, and the diff hunk it is anchored to | the finding's label |
+| `finding.blocking` | `blocking` (noul) | review finding | as `finding.severity` | `true` when labelled blocking |
+| `review.verdict` | `verdict` (approve, comment, request_changes) | posted review | PR title and body, every finding (path, line, label-stripped text), the changed files, and the hunks the findings are anchored to; no severities and no reviewer summary. Bounded to 9,500 runes: findings first, hunks get what is left, cuts marked `…[truncated]` | the staged verdict |
+| `intent` | `write` (noul), plus `deliverable` (reply, review, commit, pull_request, plan) | free-text mention on an issue or PR | see below | `true` when the classifiers picked a commit or a new PR |
+| `ci.flaky` | `flaky` (noul) | failing check, up to 5, on the auto-heal and `quack:fix` paths | see below | none |
 
 `intent` is asked only for mentions; label triggers, slash commands and synthetic runs (CI fix, review follow-up) classify nothing. Its state is the comment body, the issue or PR title, the sender and their author association, and the grant (the delivery kinds labels and authorship allow). The baseline covers `write` only: the extension's deliverable pick is in that chat's envelope `<deliverable>` block, not in the decision record.
 

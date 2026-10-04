@@ -2,11 +2,15 @@ package github
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"maps"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/fagerbergj/quack-extensions/sdk"
 )
@@ -15,18 +19,23 @@ import (
 // Above the host's 20 s handler timeout so the host decides; Clef serves one request at a time, so asks queue.
 var decideTimeout = 25 * time.Second
 
-// Caps keep a state well under the handler's 8192-token input cap.
+// Caps keep every state under ~3.5k tokens for a 4096-token handler; caps count runes.
 const (
-	hunkCap        = 4000
-	findingCap     = 4000
-	prBodyCap      = 2000
-	rationaleCap   = 6000
-	findingsBudget = 12000
-	// The intent and ci.flaky states stay under ~3.5k tokens for a 4096-token handler.
+	hunkCap    = 4000
+	findingCap = 4000
+	prBodyCap  = 2000
 	commentCap = 6000
 	titleCap   = 300
 	filesCap   = 50
+	// verdictBudget bounds the whole review.verdict state: findings fill it before files and hunks.
+	verdictBudget  = 9500
+	findingsBudget = 6000
+	filesBudget    = 1200
+	minFindingCap  = 120
 )
+
+// cutMarker ends a field the verdict budget cut.
+const cutMarker = "…[truncated]"
 
 // reviewLabelRe mirrors quack-core's commentLabelRe, the label set quack counts toward a verdict.
 var reviewLabelRe = regexp.MustCompile(`(?i)^\s*[^\pL\pN*]{0,4}\*{0,2}(blocking|suggestion|nit|question)\b[^:]*:\*{0,2}`)
@@ -34,8 +43,12 @@ var reviewLabelRe = regexp.MustCompile(`(?i)^\s*[^\pL\pN*]{0,4}\*{0,2}(blocking|
 // carriedOverRe matches the prefix quack puts on a finding carried over from a prior review.
 var carriedOverRe = regexp.MustCompile(`^\(carried over[^)]*\)\s*`)
 
-// verdictLineRe matches the review overview's "**Verdict: ...**" line, the baseline in prose.
-var verdictLineRe = regexp.MustCompile(`(?m)^\*\*Verdict:[^\n]*\n*`)
+// severityLabels names the labels and severity markers a finding body can carry, which are baselines, not content.
+const severityLabels = `(?:blocking|non-blocking|suggestion|nit|question|must[- ]fix|should[- ]fix|critical|major|minor)`
+
+// inlineLabelRe matches a label anywhere in a finding: at a line's start before a colon, or set off in bold or brackets.
+var inlineLabelRe = regexp.MustCompile(`(?im)^[ \t]*[^\pL\pN*\n]{0,4}\*{0,2}` + severityLabels + `(?:\s*\([^)\n]*\))?\s*:\*{0,2}[ \t]*` +
+	`|\*\*` + severityLabels + `(?:\s*\([^)\n]*\))?:?\*\*:?[ \t]*` + `|\[` + severityLabels + `\][ \t]*`)
 
 var (
 	severityQuestions = map[string]sdk.DecisionQuestion{"severity": {
@@ -54,7 +67,7 @@ var (
 	}}
 	verdictQuestions = map[string]sdk.DecisionQuestion{"verdict": {
 		Type:         "choice",
-		Instructions: "Which review verdict should this pull request get, given the review's findings and the reviewer's notes?",
+		Instructions: "Which review verdict should this pull request get, given its changes and the review's findings?",
 		Criteria: map[string]string{
 			"approve":         "ready to merge as it is",
 			"comment":         "feedback that neither approves nor blocks",
@@ -123,29 +136,79 @@ type findingState struct {
 }
 
 type verdictFinding struct {
-	Severity string `json:"severity,omitempty"`
-	Path     string `json:"path"`
-	Line     int    `json:"line"`
-	Finding  string `json:"finding"`
+	Path    string `json:"path"`
+	Line    int    `json:"line"`
+	Finding string `json:"finding"`
 }
 
+// verdictState holds facts only: the reviewer's severities and summary prose stay out.
 type verdictState struct {
-	Title     string           `json:"pr_title"`
-	Body      string           `json:"pr_body,omitempty"`
-	Findings  []verdictFinding `json:"findings"`
-	Rationale string           `json:"rationale,omitempty"`
+	Title    string           `json:"pr_title"`
+	Body     string           `json:"pr_body,omitempty"`
+	Findings []verdictFinding `json:"findings"`
+	Files    []string         `json:"changed_files,omitempty"`
+	Hunks    []string         `json:"hunks,omitempty"`
 }
 
-// splitLabel returns a finding's Conventional-Comments label ("" if none) and
-// its text without it, so the label (the baseline) never reaches the state.
+// splitLabel returns a finding's Conventional-Comments label ("" if none) and its text
+// without any label or severity marker, so the baseline never reaches a state.
 func splitLabel(body string) (label, text string) {
 	text = carriedOverRe.ReplaceAllString(strings.TrimSpace(body), "")
 	first, _, _ := strings.Cut(text, "\n")
-	m := reviewLabelRe.FindStringSubmatchIndex(first)
-	if m == nil {
-		return "", text
+	if m := reviewLabelRe.FindStringSubmatchIndex(first); m != nil {
+		label, text = strings.ToLower(text[m[2]:m[3]]), text[m[1]:]
 	}
-	return strings.ToLower(text[m[2]:m[3]]), strings.TrimSpace(text[m[1]:])
+	return label, strings.TrimSpace(inlineLabelRe.ReplaceAllString(text, ""))
+}
+
+// clip cuts s to n runes, marking the cut.
+func clip(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:max(n-utf8.RuneCountInString(cutMarker), 0)]) + cutMarker
+}
+
+// fitVerdict bounds st to verdictBudget runes: title and body, then findings, then files, then hunks with what is left.
+func fitVerdict(st verdictState, hunks []string) verdictState {
+	st.Title, st.Body = clip(st.Title, titleCap), clip(st.Body, prBodyCap)
+	room := verdictBudget - utf8.RuneCountInString(st.Title+st.Body)
+	if n := len(st.Findings); n > 0 {
+		per := max(minFindingCap, min(room, findingsBudget)/n)
+		if keep := max(1, min(room, findingsBudget)/per); keep < n {
+			st.Findings = append(st.Findings[:keep:keep], verdictFinding{Finding: fmt.Sprintf("%s %d more findings", cutMarker, n-keep)})
+		}
+		for i := range st.Findings {
+			st.Findings[i].Finding = clip(st.Findings[i].Finding, per)
+			room -= utf8.RuneCountInString(st.Findings[i].Path+st.Findings[i].Finding) + 35 // JSON keys and line
+		}
+	}
+	st.Files = fitList(st.Files, min(room, filesBudget))
+	for _, f := range st.Files {
+		room -= utf8.RuneCountInString(f)
+	}
+	st.Hunks = fitList(hunks, room)
+	return st
+}
+
+// fitList keeps items within n runes, cutting the one that crosses it and counting any dropped.
+func fitList(items []string, n int) []string {
+	var out []string
+	for i, it := range items {
+		if l := utf8.RuneCountInString(it); l <= n {
+			out, n = append(out, it), n-l
+			continue
+		}
+		rest := len(items) - i
+		if n > 2*len(cutMarker) {
+			out, rest = append(out, clip(it, n)), rest-1
+		}
+		if rest > 0 {
+			out = append(out, fmt.Sprintf("%s %d more", cutMarker, rest))
+		}
+		return out
+	}
+	return out
 }
 
 // hunkAt returns the @@ hunk of patch whose new side covers line, or "".
@@ -163,20 +226,21 @@ func hunkAt(patch string, line int) string {
 
 // observeReview asks the review's shadow questions off the posting path, so a
 // slow or failing handler can never delay or fail the review.
-func (a *App) observeReview(ctx context.Context, owner, repo string, number int, verdict, body string, comments []sdk.ReviewComment) {
+func (a *App) observeReview(ctx context.Context, owner, repo string, number int, verdict string, comments []sdk.ReviewComment) {
 	if a.decide == nil {
 		return
 	}
-	go a.decideReview(context.WithoutCancel(ctx), owner, repo, number, verdict, body, comments)
+	go a.decideReview(context.WithoutCancel(ctx), owner, repo, number, verdict, comments)
 }
 
 // decideReview runs the calls one at a time: a burst per finding can exhaust the handler's GPU batch.
-func (a *App) decideReview(ctx context.Context, owner, repo string, number int, verdict, body string, comments []sdk.ReviewComment) {
+func (a *App) decideReview(ctx context.Context, owner, repo string, number int, verdict string, comments []sdk.ReviewComment) {
 	pctx, cancel := context.WithTimeout(ctx, decideTimeout)
 	positions, _ := a.commentablePositions(pctx, owner, repo, number)
 	cancel()
-	seen := map[sdk.ReviewComment]bool{}
+	seen, seenHunk := map[sdk.ReviewComment]bool{}, map[string]bool{}
 	var findings []verdictFinding
+	var hunks []string
 	for _, c := range comments {
 		if seen[c] {
 			continue
@@ -189,29 +253,30 @@ func (a *App) decideReview(ctx context.Context, owner, repo string, number int, 
 		}
 		st := findingState{Path: c.Path, Line: c.Line, Finding: truncate(text, findingCap)}
 		if p, err := resolvePath(positions, c.Path); err == nil {
-			st.Hunk = truncate(hunkAt(positions[p].patch, c.Line), hunkCap)
+			h := hunkAt(positions[p].patch, c.Line)
+			st.Hunk = truncate(h, hunkCap)
+			if h != "" && !seenHunk[p+h] {
+				seenHunk[p+h] = true
+				hunks = append(hunks, p+"\n"+h)
+			}
 		}
 		if label != "" {
 			a.ask(ctx, sdk.DecideRequest{Point: "finding.severity", State: st, Baseline: label})
 		}
 		a.ask(ctx, sdk.DecideRequest{Point: "finding.blocking", State: st, Baseline: strconv.FormatBool(label == "blocking")})
-		findings = append(findings, verdictFinding{Severity: label, Path: c.Path, Line: c.Line, Finding: text})
+		findings = append(findings, verdictFinding{Path: c.Path, Line: c.Line, Finding: text})
 	}
 	verdict = strings.ToLower(strings.TrimSpace(verdict))
 	if !reviewEvents[strings.ToUpper(verdict)] {
 		return
 	}
-	per := max(200, findingsBudget/max(1, len(findings)))
-	for i := range findings {
-		findings[i].Finding = truncate(findings[i].Finding, per)
-	}
-	st := verdictState{Findings: findings, Rationale: truncate(verdictLineRe.ReplaceAllString(StripVerdictTail(body), ""), rationaleCap)}
+	st := verdictState{Findings: findings, Files: slices.Sorted(maps.Keys(positions))}
 	mctx, cancel := context.WithTimeout(ctx, decideTimeout)
 	defer cancel()
 	if m, err := a.pullMeta(mctx, owner, repo, number); err == nil {
-		st.Title, st.Body = m.Title, truncate(m.Body, prBodyCap)
+		st.Title, st.Body = strings.TrimSpace(m.Title), strings.TrimSpace(m.Body)
 	}
-	a.ask(ctx, sdk.DecideRequest{Point: "review.verdict", State: st, Baseline: verdict})
+	a.ask(ctx, sdk.DecideRequest{Point: "review.verdict", State: fitVerdict(st, hunks), Baseline: verdict})
 }
 
 // observeIntent asks the intent point for a free-text comment trigger, off the
