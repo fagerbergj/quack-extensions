@@ -136,6 +136,21 @@ func TestWaiverPickupAndPriority(t *testing.T) {
 		t.Errorf("pickup drop/week = %v/%v, want the Rico Dowdle (7021, RB) row and week 3", drop, first["week"])
 	}
 	prio := stateMap(t, rec.reqs[len(rec.reqs)-1])
+	var nullProj map[string]any
+	if err := json.Unmarshal(fixtureBytes["waivers"], &nullProj); err != nil {
+		t.Fatal(err)
+	}
+	c0 := nullProj["candidates"].([]any)[0].(map[string]any)
+	c0["player"].(map[string]any)["proj"] = nil
+	var a waiversArtifact
+	b, _ := json.Marshal(nullProj)
+	if err := json.Unmarshal(b, &a); err != nil {
+		t.Fatal(err)
+	}
+	base := func(p artPlayer) playerRow { return playerRow{ID: p.ID, Proj: p.Proj} }
+	if r := candidateRow(base, a.Candidates[0]); r.Proj == nil || *r.Proj != c0["proj"].(float64) {
+		t.Errorf("a null player.proj row = %v, want the candidate's proj %v", r.Proj, c0["proj"])
+	}
 	if others := prio["other_candidates"].([]any); len(others) != 2 {
 		t.Errorf("priority state lists %d other candidates, want 2", len(others))
 	}

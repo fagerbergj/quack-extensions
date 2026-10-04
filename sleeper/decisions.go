@@ -100,6 +100,7 @@ type lineupArtifact struct {
 type waiverCandidate struct {
 	Rank     int       `json:"rank"`
 	Player   artPlayer `json:"player"`
+	Proj     *float64  `json:"proj"`
 	OwnedPct *float64  `json:"owned_pct"`
 	Adds24h  *int      `json:"adds_24h"`
 	Drop     string    `json:"drop"`
@@ -282,7 +283,7 @@ func waiverRequests(join rowJoiner, keys decisionKeys, a waiversArtifact, dropRo
 		st := waiverStateFor(join, keys, a, c, dropRow)
 		for j, o := range ranked {
 			if j != i {
-				st.Others = append(st.Others, join(o.Player))
+				st.Others = append(st.Others, candidateRow(join, o))
 			}
 		}
 		level := len(priorityLevels) - min(c.Rank, len(priorityLevels))
@@ -292,11 +293,20 @@ func waiverRequests(join rowJoiner, keys decisionKeys, a waiversArtifact, dropRo
 }
 
 func waiverStateFor(join rowJoiner, keys decisionKeys, a waiversArtifact, c waiverCandidate, dropRow func(string) *playerRow) waiverState {
-	st := waiverState{decisionKeys: keys, WaiverType: a.WaiverType, Add: join(c.Player), OwnedPct: c.OwnedPct, Adds24h: c.Adds24h}
+	st := waiverState{decisionKeys: keys, WaiverType: a.WaiverType, Add: candidateRow(join, c), OwnedPct: c.OwnedPct, Adds24h: c.Adds24h}
 	if c.Drop != "" {
 		st.Drop = dropRow(c.Drop)
 	}
 	return st
+}
+
+// candidateRow falls back to the candidate's own proj: the scout often leaves player.proj null.
+func candidateRow(join rowJoiner, c waiverCandidate) playerRow {
+	r := join(c.Player)
+	if r.Proj == nil {
+		r.Proj = c.Proj
+	}
+	return r
 }
 
 // tradeRequests asks trade_accept per offer; only "send" means the trade
