@@ -2,9 +2,12 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -58,17 +61,24 @@ func decisionsDelivery(event string) sdk.DeliveryContext {
 	}
 }
 
-// recorder is a fake Host.Decide; done closes once review.verdict, the last call, returns.
+// recorder is a fake Host.Decide; done closes once the want-th call to last returns.
 type recorder struct {
-	mu        sync.Mutex
-	reqs      []sdk.DecideRequest
-	deadlines []bool
-	done      chan struct{}
-	answer    func(ctx context.Context) error
+	mu         sync.Mutex
+	reqs       []sdk.DecideRequest
+	deadlines  []bool
+	done       chan struct{}
+	answer     func(ctx context.Context) error
+	last       string
+	want, seen int
 }
 
 func newRecorder(answer func(ctx context.Context) error) *recorder {
-	return &recorder{done: make(chan struct{}), answer: answer}
+	return &recorder{done: make(chan struct{}), answer: answer, last: "review.verdict", want: 1}
+}
+
+func (r *recorder) until(point string, n int) *recorder {
+	r.last, r.want = point, n
+	return r
 }
 
 func (r *recorder) decide(ctx context.Context, req sdk.DecideRequest) (sdk.Decision, error) {
@@ -81,9 +91,13 @@ func (r *recorder) decide(ctx context.Context, req sdk.DecideRequest) (sdk.Decis
 	if r.answer != nil {
 		err = r.answer(ctx)
 	}
-	if req.Point == "review.verdict" {
-		close(r.done)
+	r.mu.Lock()
+	if req.Point == r.last {
+		if r.seen++; r.seen == r.want {
+			close(r.done)
+		}
 	}
+	r.mu.Unlock()
 	return sdk.Decision{Top: "approve", TopP: 1, Outcome: "observe"}, err
 }
 
@@ -92,7 +106,7 @@ func (r *recorder) wait(t *testing.T) []sdk.DecideRequest {
 	select {
 	case <-r.done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("review.verdict was never asked")
+		t.Fatalf("%s was never asked %d times", r.last, r.want)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -252,6 +266,8 @@ func TestDecisionPointsDeclareTheAskedPoints(t *testing.T) {
 		"finding.severity": {"severity", "blocking"},
 		"finding.blocking": {"blocking", "true"},
 		"review.verdict":   {"verdict", "comment,request_changes"},
+		"intent":           {"write", "false"},
+		"ci.flaky":         {"flaky", ""},
 	}
 	points := (&Extension{}).DecisionPoints()
 	if len(points) != len(wants) {
@@ -269,4 +285,255 @@ func TestDecisionPointsDeclareTheAskedPoints(t *testing.T) {
 	if opts := points[0].Questions["severity"].Criteria.(map[string]string); len(opts) != 4 || opts["question"] == "" {
 		t.Errorf("severity options = %v; want blocking/suggestion/nit/question", opts)
 	}
+}
+
+func mentionBody(comment string) []byte {
+	return []byte(fmt.Sprintf(`{
+		"action":"created",
+		"comment":{"id":999,"body":%q,"user":{"login":"alice"},"author_association":"OWNER"},
+		"issue":{"number":7,"title":"Widget crashes on start"},
+		"repository":{"name":"widgets","owner":{"login":"acme"},"clone_url":"https://github.com/acme/widgets.git","default_branch":"main"},
+		"installation":{"id":5}
+	}`, comment))
+}
+
+// mentionDispatch sends one issue mention through the webhook and returns its dispatch.
+func mentionDispatch(t *testing.T, decide func(context.Context, sdk.DecideRequest) (sdk.Decision, error)) (*Extension, sdk.DispatchRequest) {
+	t.Helper()
+	srv := stubGitHub(t, make(chan string, 1))
+	t.Cleanup(srv.Close)
+	ext, fh := newTestExtension(t, srv.URL, nil)
+	ext.app.decide = decide
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest("issue_comment", mentionBody("@quack add a feature")))
+	return ext, fh.waitForDispatch(t, 2*time.Second)
+}
+
+func TestIntentPointObservesAMention(t *testing.T) {
+	rec := newRecorder(nil).until("intent", 1)
+	_, dispatched := mentionDispatch(t, rec.decide)
+	reqs := rec.wait(t)
+	if len(reqs) != 1 {
+		t.Fatalf("got %d Decide calls, want 1: %+v", len(reqs), reqs)
+	}
+	r := reqs[0]
+	if r.Point != "intent" || r.Baseline != "false" || r.ChatID != globalChatID(dispatched.Chat.LocalID) {
+		t.Errorf("request = %+v; want intent, baseline false (a reply), the dispatch's chat", r)
+	}
+	want := intentState{Subject: "issue", Title: "Widget crashes on start", Sender: "alice", Association: "OWNER", Comment: "@quack add a feature"}
+	if st := r.State.(intentState); st != want {
+		t.Errorf("state = %+v; want %+v", st, want)
+	}
+}
+
+func TestIntentDecisionsChangeNothing(t *testing.T) {
+	_, plain := mentionDispatch(t, nil)
+	rec := newRecorder(func(context.Context) error { return errors.New("handler down") }).until("intent", 1)
+	_, failing := mentionDispatch(t, rec.decide)
+	rec.wait(t)
+	if plain.Ask.Message != failing.Ask.Message || plain.Ask.NodeContext != failing.Ask.NodeContext {
+		t.Errorf("dispatch differs with a failing Decide:\nnil:     %s\nfailing: %s", plain.Ask.Message, failing.Ask.Message)
+	}
+
+	assertOutlivesTrigger(t, "intent", func(decide func(context.Context, sdk.DecideRequest) (sdk.Decision, error)) *Extension {
+		ext, _ := mentionDispatch(t, decide)
+		return ext
+	})
+}
+
+// assertOutlivesTrigger blocks Decide until the trigger has dispatched and returned,
+// then checks the call still had a live context.
+func assertOutlivesTrigger(t *testing.T, point string, trigger func(func(context.Context, sdk.DecideRequest) (sdk.Decision, error)) *Extension) {
+	t.Helper()
+	release := make(chan struct{})
+	var ctxErr error
+	slow := newRecorder(func(ctx context.Context) error { <-release; ctxErr = ctx.Err(); return nil }).until(point, 1)
+	trigger(slow.decide).Wait() // the dispatch went out while Decide was blocked, and its ctx is cancelled
+	close(release)
+	slow.wait(t)
+	if ctxErr != nil {
+		t.Errorf("%s Decide ran on the trigger's cancelled context: %v", point, ctxErr)
+	}
+}
+
+func TestHungIntentDecideIsBounded(t *testing.T) {
+	old := decideTimeout
+	decideTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { decideTimeout = old })
+	rec := newRecorder(func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }).until("intent", 1)
+	mentionDispatch(t, rec.decide)
+	rec.wait(t)
+}
+
+func TestObserveIntentBaseline(t *testing.T) {
+	for _, tc := range []struct {
+		kind, want   string
+		labelTrigger bool
+	}{
+		{kind: "commit", want: "true"},
+		{kind: "pull_request", want: "true"},
+		{kind: "review", want: "false"},
+		{kind: "reply", want: "false"},
+		{kind: "", want: ""},                                 // synthetic or command trigger: not asked
+		{kind: "pull_request", want: "", labelTrigger: true}, // label trigger: nothing classified
+	} {
+		ext, _ := newTestExtension(t, "http://unused", nil)
+		rec := newRecorder(nil).until("intent", 1)
+		ext.app.decide = rec.decide
+		var p issueCommentPayload
+		p.isLabelTrigger = tc.labelTrigger
+		ext.observeIntent(context.Background(), p, "ext:github:c", []string{"pull_request", "comment"}, tc.kind)
+		if tc.want == "" {
+			time.Sleep(20 * time.Millisecond)
+			rec.mu.Lock()
+			n := len(rec.reqs)
+			rec.mu.Unlock()
+			if n != 0 {
+				t.Errorf("kind %q label %v: asked %d times; want no call", tc.kind, tc.labelTrigger, n)
+			}
+			continue
+		}
+		r := rec.wait(t)[0]
+		if r.Baseline != tc.want || r.State.(intentState).Grant != "pull_request, comment" {
+			t.Errorf("kind %q: baseline %q grant %q; want %q", tc.kind, r.Baseline, r.State.(intentState).Grant, tc.want)
+		}
+	}
+}
+
+func TestEnvelopeRecordsTheDeliverableKind(t *testing.T) {
+	var pr, issue issueCommentPayload
+	if err := json.Unmarshal(pullCommentBody("@quack x"), &pr); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(issueCommentBody("@quack x"), &issue); err != nil {
+		t.Fatal(err)
+	}
+	planned, labelled, hinted := issue, issue, pr
+	planned.planOnly, planned.isLabelTrigger = true, true
+	labelled.isLabelTrigger = true
+	hinted.deliverableHint = "commits that make CI pass"
+	pushable := []string{"review", "pull_request"}
+	for _, tc := range []struct {
+		name  string
+		p     issueCommentPayload
+		task  string
+		kinds []string
+		cls   fakeIntentClassifier
+		want  string
+	}{
+		{"granted commit", pr, "fix it", pushable, fakeIntentClassifier{grantedDeliverable: "COMMIT"}, "commit"},
+		{"granted review", pr, "look again", pushable, fakeIntentClassifier{grantedDeliverable: "REVIEW"}, "review"},
+		{"granted reply", pr, "why?", pushable, fakeIntentClassifier{grantedDeliverable: "REPLY"}, "reply"},
+		{"conversational PR", pr, "thanks", nil, fakeIntentClassifier{verdict: "CONVERSATIONAL"}, "reply"},
+		{"review-only grant", pr, "address these", []string{"review"}, fakeIntentClassifier{verdict: "WORK"}, "review"},
+		{"ungranted read", pr, "look at the auth path", nil, fakeIntentClassifier{verdict: "WORK"}, "review"},
+		{"ungranted change", pr, "fix the bug and push a commit", nil, fakeIntentClassifier{verdict: "WORK"}, "commit"},
+		{"issue implement", issue, "build it", []string{"pull_request"}, fakeIntentClassifier{issueDeliverable: "IMPLEMENT"}, "pull_request"},
+		{"issue comment", issue, "thoughts?", []string{"pull_request"}, fakeIntentClassifier{issueDeliverable: "COMMENT"}, "reply"},
+		{"issue fallback implement", issue, "implement this and open a PR", []string{"pull_request"}, fakeIntentClassifier{issueDeliverableErr: errors.New("down")}, "pull_request"},
+		{"issue fallback reply", issue, "hello", nil, fakeIntentClassifier{issueDeliverableErr: errors.New("down")}, "reply"},
+		{"plan label", planned, "plan", nil, fakeIntentClassifier{}, "plan"},
+		{"implement label", labelled, "build", []string{"pull_request"}, fakeIntentClassifier{}, "pull_request"},
+		{"synthetic hint", hinted, "fix CI", pushable, fakeIntentClassifier{}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ext, _ := newTestExtension(t, "http://unused", nil)
+			ext.intentClassifier = &tc.cls
+			p := tc.p
+			p.deliverableKind = new(string)
+			ext.buildEnvelope(context.Background(), p, tc.task, seedGC(Snapshot{IsPR: p.Issue.PullRequest != nil}, 0), tc.kinds, nil)
+			if *p.deliverableKind != tc.want {
+				t.Errorf("kind = %q; want %q", *p.deliverableKind, tc.want)
+			}
+		})
+	}
+
+	ext, _ := newTestExtension(t, "http://unused", nil)
+	ext.intentClassifier = &fakeIntentClassifier{grantedDeliverable: "COMMIT"}
+	pr.deliverableKind = new(string)
+	ext.buildEnvelope(context.Background(), pr, "fix it", seedGC(Snapshot{IsPR: true}, 0), pushable, nil)
+	ext.intentClassifier = &fakeIntentClassifier{grantedDeliverable: "REPLY"}
+	ext.buildWorkerAsk(context.Background(), pr, "fix it", seedGC(Snapshot{IsPR: true}, 0), pushable, nil)
+	if *pr.deliverableKind != "commit" {
+		t.Errorf("kind = %q after a disagreeing second call; want the envelope's commit", *pr.deliverableKind)
+	}
+}
+
+// ciFlakyGitHub is stubFixGitHubFull with the PR's changed files served.
+func ciFlakyGitHub(t *testing.T) *httptest.Server {
+	inner := stubFixGitHubFull(t, make(chan string, 4), []string{"quack:fix"}, true, "", "someone-else")
+	t.Cleanup(inner.Close)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/pulls/7/files") {
+			io.WriteString(w, `[{"filename":"internal/foo.go"},{"filename":"README.md"}]`)
+			return
+		}
+		inner.Config.Handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func fixLabelEvent() []byte {
+	return []byte(`{"action":"labeled","number":7,"pull_request":{"title":"Test PR","head":{"sha":"headsha1"}},"label":{"name":"quack:fix"},
+		"repository":{"name":"widgets","owner":{"login":"acme"},"clone_url":"https://github.com/acme/widgets.git","default_branch":"main"},
+		"installation":{"id":5},"sender":{"login":"alice"}}`)
+}
+
+// ciDispatch sends a CI failure (workflow_run or the fix label) through the webhook and returns its fix dispatch.
+func ciDispatch(t *testing.T, event string, decide func(context.Context, sdk.DecideRequest) (sdk.Decision, error)) (*Extension, sdk.DispatchRequest) {
+	t.Helper()
+	ext, fh := newTestExtension(t, ciFlakyGitHub(t).URL, []string{"ci_fix"})
+	ext.app.decide = decide
+	body := workflowRunBody("completed", "failure", "sha1", 7)
+	if event == "pull_request" {
+		body = fixLabelEvent()
+	}
+	ext.handleWebhook(httptest.NewRecorder(), signedRequest(event, body))
+	return ext, fh.waitForDispatch(t, 2*time.Second)
+}
+
+func TestCIFlakyPointObservesEachFailingCheck(t *testing.T) {
+	for event, sha := range map[string]string{"workflow_run": "sha1", "pull_request": "headsha1"} {
+		t.Run(event, func(t *testing.T) {
+			rec := newRecorder(nil).until("ci.flaky", 1)
+			ciDispatch(t, event, rec.decide)
+			reqs := rec.wait(t)
+			if len(reqs) != 1 {
+				t.Fatalf("got %d Decide calls, want one per failing check (go-test): %+v", len(reqs), reqs)
+			}
+			r := reqs[0]
+			if r.Point != "ci.flaky" || r.Baseline != "" || r.ChatID != "ext:github:github-acme-widgets-7" {
+				t.Errorf("request = %+v; want ci.flaky, no baseline, the PR's chat", r)
+			}
+			st := r.State.(ciFailureState)
+			if st.Repo != "acme/widgets" || st.PR != 7 || st.HeadSHA != sha || st.Check != "go-test" ||
+				!strings.Contains(st.Failure, "TestFoo failed") || strings.Join(st.ChangedFiles, ",") != "internal/foo.go,README.md" {
+				t.Errorf("state = %+v; want go-test's failure on %s with the PR's files", st, sha)
+			}
+		})
+	}
+}
+
+func TestCIFlakyDecisionsChangeNothing(t *testing.T) {
+	_, plain := ciDispatch(t, "workflow_run", nil)
+	rec := newRecorder(func(context.Context) error { return errors.New("handler down") }).until("ci.flaky", 1)
+	_, failing := ciDispatch(t, "workflow_run", rec.decide)
+	rec.wait(t)
+	if plain.Ask.Message != failing.Ask.Message {
+		t.Errorf("fix dispatch differs with a failing Decide:\nnil:     %s\nfailing: %s", plain.Ask.Message, failing.Ask.Message)
+	}
+
+	assertOutlivesTrigger(t, "ci.flaky", func(decide func(context.Context, sdk.DecideRequest) (sdk.Decision, error)) *Extension {
+		ext, _ := ciDispatch(t, "workflow_run", decide)
+		return ext
+	})
+}
+
+func TestHungCIFlakyDecideIsBounded(t *testing.T) {
+	old := decideTimeout
+	decideTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { decideTimeout = old })
+	rec := newRecorder(func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }).until("ci.flaky", 1)
+	ciDispatch(t, "workflow_run", rec.decide)
+	rec.wait(t)
 }

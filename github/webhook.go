@@ -69,6 +69,7 @@ type issueCommentPayload struct {
 	// call happens at most once regardless of how many of them need the
 	// answer. nil when a caller (e.g. a test) invokes one of those directly.
 	issueDeliverableCache *issueDeliverableResult
+	deliverableKind       *string // the envelope's deliverable kind, for the intent point; nil outside a dispatch
 }
 
 // issuesPayload is the issues webhook subset for the label-driven issue workflow.
@@ -815,6 +816,7 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 	allowedKinds := e.dispatchGrant(ctx, p, owner, repo, number, isPR, gh)
 
 	p.issueDeliverableCache = &issueDeliverableResult{}
+	p.deliverableKind = new(string)
 	isPlan := e.deliverableIsPlan(ctx, p, task, allowedKinds, isPR)
 
 	// Input artifacts (#1010): the heavy evidence a worker only sometimes
@@ -823,6 +825,7 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 	manifest := e.writeDispatchArtifacts(ctx, chatID, login, p, owner, repo, number, isPR)
 
 	message := e.buildEnvelope(ctx, p, task, gh, allowedKinds, manifest)
+	e.observeIntent(ctx, p, chatID, allowedKinds, *p.deliverableKind)
 	workerAsk := e.buildWorkerAsk(ctx, p, task, gh, allowedKinds, manifest)
 	contextItems := e.nodeContextItems(ctx, owner, repo, number, p.checkSHA)
 

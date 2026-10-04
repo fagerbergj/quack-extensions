@@ -376,76 +376,85 @@ func reviewDeliverableText(gh githubContext) string {
 // replyDeliverable: the <deliverable> text for a run whose only legal output is a reply.
 const replyDeliverable = "a reply to their message, posted as a comment - no new work unless they explicitly ask for it"
 
-// deliverableText classifies the run and states what it produces. Applies classifier or falls back to ImplementationIntent.
+// deliverableText is deliverable's text; it keeps the first kind a dispatch resolves for the intent point.
 func (e *Extension) deliverableText(ctx context.Context, p issueCommentPayload, task string, gh githubContext, allowedKinds []string, isPR bool) string {
+	kind, text := e.deliverable(ctx, p, task, gh, allowedKinds, isPR)
+	if p.deliverableKind != nil && *p.deliverableKind == "" {
+		*p.deliverableKind = kind
+	}
+	return text
+}
+
+// deliverable classifies the run and states what it produces. Applies classifier or falls back to ImplementationIntent.
+func (e *Extension) deliverable(ctx context.Context, p issueCommentPayload, task string, gh githubContext, allowedKinds []string, isPR bool) (kind, text string) {
 	mentionIsWork := isPR && !p.isLabelTrigger && p.deliverableHint == ""
-	if s := e.mentionWorkText(ctx, mentionIsWork, p, task, gh, allowedKinds); s != "" {
-		return s
+	if kind, s := e.mentionWorkText(ctx, mentionIsWork, p, task, gh, allowedKinds); s != "" {
+		return kind, s
 	}
 
 	issueCommentDeliverable := "an answer to their message, posted to the issue as a comment - a revised plan if one is already under discussion"
 
 	switch {
 	case p.planOnly:
-		return "a PLANNING-ONLY implementation plan: your ANSWER TEXT is the plan, posted to the issue verbatim."
+		return "plan", "a PLANNING-ONLY implementation plan: your ANSWER TEXT is the plan, posted to the issue verbatim."
 	case !isPR && p.isLabelTrigger:
-		return issueImplementDeliverable(e.labels.PartialFix, gh.snap.Labels, p.Issue.Number)
+		return "pull_request", issueImplementDeliverable(e.labels.PartialFix, gh.snap.Labels, p.Issue.Number)
 	case !isPR && !p.isLabelTrigger:
 		return e.issueDeliverableText(ctx, p, task, allowedKinds, gh, issueCommentDeliverable)
 	case p.deliverableHint != "":
-		return p.deliverableHint
+		return "", p.deliverableHint
 	}
 
 	if mentionIsWork {
 		if _, ok := e.classifyPRDeliverable(ctx, task, allowedKinds); ok {
-			return reviewDeliverableText(gh)
+			return "review", reviewDeliverableText(gh)
 		}
 	}
 	if isPR && !ImplementationIntent(task) {
-		return reviewDeliverableText(gh)
+		return "review", reviewDeliverableText(gh)
 	}
-	return "a commit addressing the requested change"
+	return "commit", "a commit addressing the requested change"
 }
 
 // mentionWorkText: the #760 pre-pass - on a PR quack can already push to,
 // computeGrant answers the permission question deterministically instead of
 // the generic gate re-deriving it (it once misread one, home-server#3).
-func (e *Extension) mentionWorkText(ctx context.Context, mentionIsWork bool, p issueCommentPayload, task string, gh githubContext, allowedKinds []string) string {
+func (e *Extension) mentionWorkText(ctx context.Context, mentionIsWork bool, p issueCommentPayload, task string, gh githubContext, allowedKinds []string) (kind, text string) {
 	if !mentionIsWork {
-		return ""
+		return "", ""
 	}
 	// mentionIsWork ⇒ PR-scoped, so "pull_request" here means push-to-this-PR.
 	if slices.Contains(allowedKinds, "pull_request") {
 		if kind, ok := e.classifyGrantedPRDeliverable(ctx, task, allowedKinds); ok {
 			switch kind {
 			case "commit":
-				return "a commit addressing the requested change"
+				return "commit", "a commit addressing the requested change"
 			case "review":
-				return reviewDeliverableText(gh)
+				return "review", reviewDeliverableText(gh)
 			}
 		}
-		return replyDeliverable
+		return "reply", replyDeliverable
 	}
 	if !e.isWorkRequest(ctx, p, task) {
-		return replyDeliverable
+		return "reply", replyDeliverable
 	}
-	return ""
+	return "", ""
 }
 
 // issueDeliverableText: a non-PR issue comment's deliverable - the classifier
 // (with its "implement" quadrant) first, then the wording heuristic as
 // fallback, never straight to conversational.
-func (e *Extension) issueDeliverableText(ctx context.Context, p issueCommentPayload, task string, allowedKinds []string, gh githubContext, issueCommentDeliverable string) string {
+func (e *Extension) issueDeliverableText(ctx context.Context, p issueCommentPayload, task string, allowedKinds []string, gh githubContext, issueCommentDeliverable string) (kind, text string) {
 	// #713: a comment can ask for implementation too - the label only bounds whether it's a legal answer.
 	if kind, ok := e.classifyIssueDeliverableCached(ctx, p, task, allowedKinds); ok {
 		if kind == "implement" {
-			return issueImplementDeliverable(e.labels.PartialFix, gh.snap.Labels, p.Issue.Number)
+			return "pull_request", issueImplementDeliverable(e.labels.PartialFix, gh.snap.Labels, p.Issue.Number)
 		}
-		return issueCommentDeliverable
+		return "reply", issueCommentDeliverable
 	}
 	// !isPR ⇒ issue-scoped, so "pull_request" here means open-a-new-PR.
 	if slices.Contains(allowedKinds, "pull_request") && ImplementationIntent(task) {
-		return issueImplementDeliverable(e.labels.PartialFix, gh.snap.Labels, p.Issue.Number)
+		return "pull_request", issueImplementDeliverable(e.labels.PartialFix, gh.snap.Labels, p.Issue.Number)
 	}
-	return issueCommentDeliverable
+	return "reply", issueCommentDeliverable
 }
