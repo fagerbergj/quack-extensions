@@ -162,7 +162,8 @@ func (e *Extension) autoHeal(p workflowRunPayload, number int, rawBody []byte) {
 		}
 	}
 
-	checksText := e.failingChecksText(ctx, ri.Owner, ri.Name, sha, p.WorkflowRun.Name, p.WorkflowRun.HTMLURL)
+	checksText, checks := e.failingChecksText(ctx, ri.Owner, ri.Name, sha, p.WorkflowRun.Name, p.WorkflowRun.HTMLURL)
+	e.observeCIFailure(ctx, chatID, ri, number, sha, checks)
 
 	if ownCommit {
 		if err := e.store.SetFixState(ctx, FixState{ChatID: chatID, LastSHA: sha, Stopped: true}); err != nil {
@@ -208,6 +209,7 @@ func (e *Extension) fixLabelApplied(p pullRequestPayload, rawBody []byte) {
 	if len(checks) == 0 {
 		return // nothing failing right now - armed and waiting for the next CI failure
 	}
+	e.observeCIFailure(ctx, chatID, ri, number, sha, checks)
 	e.beginFix(ctx, ri, number, sha,
 		fmt.Sprintf("The `%s` label asks for this pull request's currently-failing checks to be fixed.", e.labels.Fix),
 		renderFailingChecks(checks), rawBody, "pull_request.labeled")
@@ -400,13 +402,13 @@ func ciChecksForNodes(checks []failingCheck) []sdk.NamedContext {
 // failingChecksText is failingChecks+render with a graceful fallback: if the
 // checks API is unreadable or reports nothing failed yet (checks can lag the
 // workflow_run event), the workflow's own name and URL still ground the task.
-func (e *Extension) failingChecksText(ctx context.Context, owner, repo, sha, workflowName, workflowURL string) string {
+func (e *Extension) failingChecksText(ctx context.Context, owner, repo, sha, workflowName, workflowURL string) (string, []failingCheck) {
 	checks, err := e.failingChecks(ctx, owner, repo, sha)
 	if err != nil {
 		e.host.Log.Warn("github: failing-check fetch failed; using the workflow reference only", "repo", owner+"/"+repo, "sha", sha, "err", err)
 	}
 	if len(checks) == 0 {
-		return fmt.Sprintf("- workflow %q failed on commit %s: %s (no further check detail was readable - inspect the repo's CI config and run its checks locally to reproduce)\n", workflowName, shortSHA(sha), workflowURL)
+		return fmt.Sprintf("- workflow %q failed on commit %s: %s (no further check detail was readable - inspect the repo's CI config and run its checks locally to reproduce)\n", workflowName, shortSHA(sha), workflowURL), nil
 	}
-	return renderFailingChecks(checks)
+	return renderFailingChecks(checks), checks
 }

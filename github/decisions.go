@@ -21,6 +21,10 @@ const (
 	prBodyCap      = 2000
 	rationaleCap   = 6000
 	findingsBudget = 12000
+	// The intent and ci.flaky states stay under ~3.5k tokens for a 4096-token handler.
+	commentCap = 6000
+	titleCap   = 300
+	filesCap   = 50
 )
 
 // reviewLabelRe mirrors quack-core's commentLabelRe, the label set quack counts toward a verdict.
@@ -56,6 +60,23 @@ var (
 			"request_changes": "must change before it can merge",
 		},
 	}}
+	intentQuestions = map[string]sdk.DecisionQuestion{
+		"write": {Type: "noul",
+			Instructions: "Does this message ask quack to change code, push, merge, label, or otherwise write to the repository?"},
+		"deliverable": {Type: "choice",
+			Instructions: "What should quack produce in answer to this message?",
+			Criteria: map[string]string{
+				"reply":        "a comment answering the message, with no new work",
+				"review":       "a code review of the pull request",
+				"commit":       "a commit pushed to this pull request",
+				"pull_request": "code written and a new pull request opened",
+				"plan":         "an implementation plan posted as a comment",
+			}},
+	}
+	flakyQuestions = map[string]sdk.DecisionQuestion{"flaky": {
+		Type:         "noul",
+		Instructions: "Is this CI failure unrelated to the PR's changes (a flaky or infrastructure failure)?",
+	}}
 )
 
 var decisionPoints = []sdk.DecisionPoint{
@@ -65,11 +86,33 @@ var decisionPoints = []sdk.DecisionPoint{
 		Questions: blockingQuestions, Primary: "blocking", Restrictive: []string{"true"}, Modes: []string{"observe"}},
 	{Name: "review.verdict", Description: "the verdict of a whole review",
 		Questions: verdictQuestions, Primary: "verdict", Restrictive: []string{"comment", "request_changes"}, Modes: []string{"observe"}},
+	{Name: "intent", Description: "whether a comment asks quack to write to the repository, and which deliverable it asks for",
+		Questions: intentQuestions, Primary: "write", Restrictive: []string{"false"}, Modes: []string{"observe"}},
+	{Name: "ci.flaky", Description: "whether one failed check on a PR quack is fixing is unrelated to the PR's changes",
+		Questions: flakyQuestions, Primary: "flaky", Modes: []string{"observe"}},
 }
 
-// DecisionPoints declares the review points, observe only: the host records the
+// DecisionPoints declares the review, intent and CI points, observe only: the host records the
 // answers and they never change what this extension posts.
 func (e *Extension) DecisionPoints() []sdk.DecisionPoint { return decisionPoints }
+
+type intentState struct {
+	Subject     string `json:"subject"` // "issue" or "pull request"
+	Title       string `json:"title"`
+	Sender      string `json:"sender"`
+	Association string `json:"author_association,omitempty"`
+	Grant       string `json:"grant"` // the delivery kinds the labels and authorship allow
+	Comment     string `json:"comment"`
+}
+
+type ciFailureState struct {
+	Repo         string   `json:"repo"`
+	PR           int      `json:"pr"`
+	HeadSHA      string   `json:"head_sha"`
+	Check        string   `json:"check"`
+	Failure      string   `json:"failure"`
+	ChangedFiles []string `json:"changed_files"`
+}
 
 type findingState struct {
 	Path    string `json:"path"`
@@ -168,6 +211,46 @@ func (a *App) decideReview(ctx context.Context, owner, repo string, number int, 
 		st.Title, st.Body = m.Title, truncate(m.Body, prBodyCap)
 	}
 	a.ask(ctx, sdk.DecideRequest{Point: "review.verdict", State: st, Baseline: verdict})
+}
+
+// observeIntent asks the intent point for a free-text comment trigger, off the
+// dispatch path; kind is "" for synthetic and command triggers, which nothing classifies.
+func (e *Extension) observeIntent(ctx context.Context, p issueCommentPayload, chatID string, allowedKinds []string, kind string) {
+	if e.app.decide == nil || kind == "" || p.isLabelTrigger {
+		return
+	}
+	subject := "issue"
+	if p.Issue.PullRequest != nil {
+		subject = "pull request"
+	}
+	st := intentState{Subject: subject, Title: truncate(p.Issue.Title, titleCap), Sender: p.Comment.User.Login,
+		Association: p.Comment.AuthorAssociation, Grant: permissionsText(allowedKinds), Comment: truncate(p.Comment.Body, commentCap)}
+	write := kind == "commit" || kind == "pull_request"
+	go e.app.ask(context.WithoutCancel(ctx), sdk.DecideRequest{Point: "intent", State: st, Baseline: strconv.FormatBool(write), ChatID: chatID})
+}
+
+// observeCIFailure asks ci.flaky once per failing check, off the fix path. The
+// baseline is empty: a scorer joins (head_sha, check) to the check's later conclusion.
+func (e *Extension) observeCIFailure(ctx context.Context, chatID string, ri repoInfo, number int, sha string, checks []failingCheck) {
+	if e.app.decide == nil || len(checks) == 0 {
+		return
+	}
+	go e.app.decideCIFailure(context.WithoutCancel(ctx), chatID, ri.Owner, ri.Name, number, sha, checks)
+}
+
+func (a *App) decideCIFailure(ctx context.Context, chatID, owner, repo string, number int, sha string, checks []failingCheck) {
+	fctx, cancel := context.WithTimeout(ctx, decideTimeout)
+	files, _ := a.pullFiles(fctx, owner, repo, number)
+	cancel()
+	names := []string{}
+	for _, f := range files[:min(len(files), filesCap)] {
+		names = append(names, f.Filename)
+	}
+	for _, c := range checks[:min(len(checks), maxFailingChecks)] {
+		st := ciFailureState{Repo: owner + "/" + repo, PR: number, HeadSHA: sha, Check: c.Name,
+			Failure: truncate(renderOneCheck(c), maxChecksContextRunes), ChangedFiles: names}
+		a.ask(ctx, sdk.DecideRequest{Point: "ci.flaky", State: st, ChatID: chatID})
+	}
 }
 
 func (a *App) ask(ctx context.Context, req sdk.DecideRequest) {
