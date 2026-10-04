@@ -12,7 +12,8 @@ import (
 )
 
 // decideTimeout bounds each Decide call and each GitHub read the state needs.
-var decideTimeout = 10 * time.Second
+// Above the host's 20 s handler timeout so the host decides; Clef serves one request at a time, so asks queue.
+var decideTimeout = 25 * time.Second
 
 // Caps keep a state well under the handler's 8192-token input cap.
 const (
