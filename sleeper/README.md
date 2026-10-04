@@ -104,8 +104,8 @@ schedule only for the live regular-season week, and `recent` is up to three prio
 prose (for example "only runs if claim 2 fails") still reaches the state. The trade state carries
 the offer's `give`/`get` rows, `delta`, `why` and who offered it, not the full rosters.
 
-Join keys, all in the state: `chat_id`, `league_id`, `season`, `week` (the stop's week; a trade
-uses the live NFL week) and
+Join keys, all in the state: `chat_id`, `league_id`, `season`, `week` (the stop's week, even when
+the artifact names another; a trade uses the live NFL week) and
 
 - `lineup_change`: `slot`, `current.id`, `proposed.id`. Score with the league's own
   `Matchups(league, week)` `players_points`: the swap was right when `proposed` outscored

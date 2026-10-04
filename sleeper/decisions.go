@@ -333,8 +333,9 @@ func (e *extension) resolveDrop(drop string) string {
 
 type rowJoiner func(artPlayer) playerRow
 
-// joiner fills keys.Season (and keys.Week when 0) from Sleeper's state and
-// returns a row builder joining opponent and recent points best-effort.
+// joiner fills keys.Season (and keys.Week when 0: the artifact's week, else the live week) and returns
+// a row builder joining opponent and recent points best-effort. A chat's stop wins over the artifact's
+// week, which an agent run before Sleeper's week flips writes as the live week.
 func (e *extension) joiner(ctx context.Context, keys *decisionKeys, week int) rowJoiner {
 	ctx, cancel := context.WithTimeout(ctx, decideTimeout)
 	defer cancel()
@@ -346,7 +347,7 @@ func (e *extension) joiner(ctx context.Context, keys *decisionKeys, week int) ro
 		return base
 	}
 	keys.Season = season
-	keys.Week = firstNonZero(week, keys.Week, state.Week)
+	keys.Week = firstNonZero(keys.Week, week, state.Week)
 	var sl slate
 	if state.SeasonType == "regular" && season == state.Season && keys.Week == state.Week {
 		sl, _ = e.weekSlate(ctx, season, keys.Week, e.newClock(""))
