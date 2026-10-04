@@ -282,4 +282,11 @@ func TestRowsJoinOpponentAndRecentPoints(t *testing.T) {
 	if keys.Week != 2 || row.Opp == "" || row.Opp == "CAR" {
 		t.Errorf("live-week row: week %d opp %q, want week 2 and CAR's opponent", keys.Week, row.Opp)
 	}
+
+	// A stop-3 chat whose artifact names the live week 2 stays week 3, with no week-2 opponent.
+	keys = decisionKeys{LeagueID: testLeague, Week: 3}
+	row = e.joiner(ctx, &keys, 2)(artPlayer{ID: "7594", Name: "Chuba Hubbard", Pos: "RB", Team: "CAR"})
+	if keys.Week != 3 || row.Opp != "" {
+		t.Errorf("stop-3 row: week %d opp %q, want week 3 and no opponent", keys.Week, row.Opp)
+	}
 }
