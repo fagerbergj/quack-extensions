@@ -41,7 +41,8 @@
         "properties": {
           "by": {
             "type": "string",
-            "maxLength": 40
+            "maxLength": 40,
+            "description": "Who made the offer: \"You\", the partner's team name, or \"trade-analyst\" for a counter you would send. It never changes which side give/get describe."
           },
           "when": {
             "type": "string",
@@ -49,6 +50,7 @@
           },
           "give": {
             "type": "array",
+            "description": "The players YOUR team sends, whoever made the offer: on a partner's offer, the players they ask from you.",
             "items": {
               "type": "object",
               "required": [
@@ -97,6 +99,7 @@
           },
           "get": {
             "type": "array",
+            "description": "The players YOUR team receives, whoever made the offer: on a partner's offer, the players they put up.",
             "items": {
               "type": "object",
               "required": [

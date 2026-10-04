@@ -63,7 +63,11 @@ Write the trade card as an artifact with `write_artifact` (`kind: "trade"`,
 `references/output-schema-trade.json` before writing it: the artifact
 carries exactly the schema's properties and nothing else - each offer's
 `give`/`get` are keyed exactly `give` and `get`, never any other spelling,
-and no top-level section exists beyond what the schema defines. Pull every
+and no top-level section exists beyond what the schema defines. `give` and
+`get` are always from YOUR team's side, whoever made the offer: `give` is
+what your team sends and `get` is what it receives. On an offer the partner
+made, their ask goes in `give` and what they put up goes in `get`; `by`
+only records who offered it. Pull every
 player's `id`/`name` from the `sleeper_roster`/`sleeper_player` calls in
 this session, never invented; `proj` is a plain number, `0` only when
 Sleeper genuinely has none. Keep each offer's `why` to one or two short

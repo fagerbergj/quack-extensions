@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -103,8 +104,8 @@ func TestLineupChangePerSwap(t *testing.T) {
 		noAnswerKeys(t, req, "verdict", "replaces", "confidence", "starters")
 	}
 	cur := stateMap(t, rec.reqs[0])["current"].(map[string]any)
-	if cur["reasoning"] != "Behind Hubbard while questionable." || cur["floor"] != float64(5) || cur["status"] != "Questionable" {
-		t.Errorf("current row lacks its bench reasoning/range/status: %v", cur)
+	if cur["floor"] != float64(5) || cur["status"] != "Questionable" {
+		t.Errorf("current row lacks its bench range/status: %v", cur)
 	}
 }
 
@@ -130,8 +131,9 @@ func TestWaiverPickupAndPriority(t *testing.T) {
 		t.Errorf("waiver_priority = %s, want 13301=4 13302=3 5001=2", s)
 	}
 	first := stateMap(t, rec.reqs[0])
-	if first["drop"] != "Rico Dowdle (Q)" || first["drop_id"] != "7021" || first["week"] != float64(3) {
-		t.Errorf("pickup drop/drop_id/week = %v/%v/%v, want Rico Dowdle (Q)/7021/3", first["drop"], first["drop_id"], first["week"])
+	drop, _ := first["drop"].(map[string]any)
+	if drop["id"] != "7021" || drop["name"] != "Rico Dowdle" || drop["pos"] != "RB" || first["week"] != float64(3) {
+		t.Errorf("pickup drop/week = %v/%v, want the Rico Dowdle (7021, RB) row and week 3", drop, first["week"])
 	}
 	prio := stateMap(t, rec.reqs[len(rec.reqs)-1])
 	if others := prio["other_candidates"].([]any); len(others) != 2 {
@@ -144,6 +146,7 @@ func TestTradeAcceptPerOffer(t *testing.T) {
 	e, _ := decideExt(t, rec)
 	e.decideRun(context.Background(), "ext:sleeper:"+testLeague+":trade:860317606")
 	want := []string{"true", "false", "false"} // send, decline, counter
+	wantBy := []string{"me", "partner", "me"}  // You, the partner, the analyst's counter
 	if len(rec.reqs) != len(want) {
 		t.Fatalf("trade asked %d decisions, want %d", len(rec.reqs), len(want))
 	}
@@ -152,10 +155,101 @@ func TestTradeAcceptPerOffer(t *testing.T) {
 		if req.Point != "trade_accept" || req.Baseline != want[i] || st["offer_index"] != float64(i) || st["partner_id"] != "860317606291283968" {
 			t.Errorf("offer %d = %s %q index %v partner %v", i, req.Point, req.Baseline, st["offer_index"], st["partner_id"])
 		}
+		if st["offered_by"] != wantBy[i] {
+			t.Errorf("offer %d offered_by = %v, want %s", i, st["offered_by"], wantBy[i])
+		}
 		if len(st["give"].([]any)) == 0 || len(st["get"].([]any)) == 0 {
 			t.Errorf("offer %d state lacks give/get rows", i)
 		}
 		noAnswerKeys(t, req, "verdict", "my_roster", "partner_roster")
+	}
+}
+
+// TestTradeGiveIsAlwaysMine: an offer written from the offering partner's side (give on their
+// roster) reaches the state flipped; one already from my side is left alone.
+func TestTradeGiveIsAlwaysMine(t *testing.T) {
+	var a tradeArtifact
+	if err := json.Unmarshal(fixtureBytes["trade"], &a); err != nil {
+		t.Fatal(err)
+	}
+	mine := a.Offers[1]
+	legacy := mine
+	legacy.Give, legacy.Get = mine.Get, mine.Give
+	a.Offers = []tradeOffer{mine, legacy}
+	base := func(p artPlayer) playerRow { return playerRow{ID: p.ID, Name: p.Name} }
+	ids := func(rows []playerRow) string {
+		var out []string
+		for _, r := range rows {
+			out = append(out, r.ID)
+		}
+		return strings.Join(out, ",")
+	}
+	for i, req := range tradeRequests(base, decisionKeys{}, a) {
+		st := req.State.(tradeState)
+		if ids(st.Give) != "7021,11586" || ids(st.Get) != "9481" || st.By != "partner" {
+			t.Errorf("offer %d give/get/by = %s/%s/%s, want 7021,11586/9481/partner", i, ids(st.Give), ids(st.Get), st.By)
+		}
+	}
+}
+
+// TestStatesCarryNoProse: no analyst text (why, delta, notes, summaries, the drop's free text)
+// reaches any state, as a key or as a substring; only player facts and the proposal do.
+func TestStatesCarryNoProse(t *testing.T) {
+	rec := &decideRecorder{}
+	e, fh := decideExt(t, rec)
+	var w map[string]any
+	if err := json.Unmarshal(fixtureBytes["waivers"], &w); err != nil {
+		t.Fatal(err)
+	}
+	w["candidates"].([]any)[0].(map[string]any)["drop"] = "Rico Dowdle (Q) - buried behind Hubbard, drop on depth rationale"
+	waivers, _ := json.Marshal(w)
+	fh.artifacts["ext:sleeper:"+testLeague+":3:waivers"]["waivers"] = waivers
+
+	proseKeys := strings.Fields("why delta drop note summary plan text source_note")
+	var prose []string
+	var collect func(v any)
+	collect = func(v any) {
+		switch v := v.(type) {
+		case map[string]any:
+			for k, x := range v {
+				switch s, ok := x.(string); {
+				case ok && slices.Contains(proseKeys, k) && len(s) > 12:
+					prose = append(prose, s)
+				default:
+					collect(x)
+				}
+			}
+		case []any:
+			for _, x := range v {
+				collect(x)
+			}
+		}
+	}
+	for _, raw := range [][]byte{fixtureBytes["lineup"], waivers, fixtureBytes["trade"]} {
+		var v any
+		if err := json.Unmarshal(raw, &v); err != nil {
+			t.Fatal(err)
+		}
+		collect(v)
+	}
+	if len(prose) < 10 {
+		t.Fatalf("collected %d prose strings from the fixtures, want the whys, deltas and drops", len(prose))
+	}
+
+	for _, chat := range []string{":3:lineup", ":3:waivers", ":trade:860317606"} {
+		e.decideRun(context.Background(), "ext:sleeper:"+testLeague+chat)
+	}
+	if len(rec.reqs) < 10 {
+		t.Fatalf("asked %d decisions across lineup, waivers and trade", len(rec.reqs))
+	}
+	for _, req := range rec.reqs {
+		noAnswerKeys(t, req, "reasoning", "why", "delta", "note", "summary", "verdict", "rank", "confidence", "drop_id")
+		b, _ := json.Marshal(req.State)
+		for _, p := range prose {
+			if strings.Contains(string(b), p) {
+				t.Errorf("%s state carries analyst text %q", req.Point, p)
+			}
+		}
 	}
 }
 
