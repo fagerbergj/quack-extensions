@@ -14,7 +14,8 @@ import (
 )
 
 // decideTimeout bounds each Decide call and the Sleeper reads the state needs.
-var decideTimeout = 10 * time.Second
+// Above the host's 20 s handler timeout so the host decides; Clef serves one request at a time, so asks queue.
+var decideTimeout = 25 * time.Second
 
 // recentWeeks is how many completed weeks of points each player row carries.
 const recentWeeks = 3
