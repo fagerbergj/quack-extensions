@@ -95,14 +95,21 @@ though `RunEnded` has no run context.
 No point is restrictive. Option sets are static, as the declaration requires, so start/sit is
 asked per recommended swap rather than as a choice over player ids, and lineup has no negatives.
 
-The state carries the evidence without the answer: no `verdict`, `replaces`, `confidence` or
-`rank`, and the lineup state names the two players `current` and `proposed` instead of starter and
-bench. Each player row is `{id, name, pos, team, opp, status, practice, proj, floor, ceiling,
-recent, reasoning}`: `reasoning` is the analyst's `why` for that row, `opp` is joined from the
-schedule only for the live regular-season week, and `recent` is up to three prior weeks of
-`pts_ppr` from the week stats, weeks with no stat line left out. A `why` that names the pick in
-prose (for example "only runs if claim 2 fails") still reaches the state. The trade state carries
-the offer's `give`/`get` rows, `delta`, `why` and who offered it, not the full rosters.
+States are built from facts, never from the analyst's argued conclusion, so Clef judges the
+inputs instead of copying the agent it shadows. Left out: every `verdict`, `replaces`,
+`confidence` and `rank`, and every piece of prose that argues for them (`why`, `delta`, the
+scout's drop text, summaries, notes). In: the proposal being judged and the raw inputs. The lineup
+state names the two players `current` and `proposed` instead of starter and bench. Each player row
+is `{id, name, pos, team, opp, bye, status, practice, proj, floor, ceiling, recent}`: `opp` and
+`bye` are joined from the schedule only for the live regular-season week, and `recent` is up to
+three prior weeks of `pts_ppr` from the week stats, weeks with no stat line left out. `floor` and
+`ceiling` are the analyst's own range estimate, the one opinion a row still carries. A waiver
+state's `drop` is a player row: the players dump's facts when the scout's drop text resolves to
+exactly one player through the name index, else only the name cut from that text. The trade state
+carries the offer's `give`/`get` rows and `offered_by` (`me` or `partner`; the analyst's own
+counter is `me`, since I would send it), not the full rosters. `give` is always what my team
+sends: the trade schema defines both lists from my side, and an offer written from the offering
+partner's side (its `give` on the partner's roster and none on mine) is flipped before it is asked.
 
 Join keys, all in the state: `chat_id`, `league_id`, `season`, `week` (the stop's week, even when
 the artifact names another; a trade uses the live NFL week) and
@@ -110,10 +117,9 @@ the artifact names another; a trade uses the live NFL week) and
 - `lineup_change`: `slot`, `current.id`, `proposed.id`. Score with the league's own
   `Matchups(league, week)` `players_points`: the swap was right when `proposed` outscored
   `current`.
-- `waiver_pickup` / `waiver_priority`: `add.id`, plus `drop_id` when the drop text resolves to
-  exactly one player through the name index, else the raw `drop` text. Score the add's weekly
-  points (`WeekStats` `pts_ppr`, or `players_points` once rostered) for weeks after `week` against
-  the drop's.
+- `waiver_pickup` / `waiver_priority`: `add.id`, plus `drop.id` when the drop resolved, else
+  `drop.name`. Score the add's weekly points (`WeekStats` `pts_ppr`, or `players_points` once
+  rostered) for weeks after `week` against the drop's.
 - `trade_accept`: `partner_id`, `offer_index`, `give[].id`, `get[].id`; score rest-of-season
   points from `week` on.
 

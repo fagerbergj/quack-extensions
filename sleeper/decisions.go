@@ -71,7 +71,7 @@ type playerRow struct {
 	Floor    *float64  `json:"floor,omitempty"`
 	Ceiling  *float64  `json:"ceiling,omitempty"`
 	Recent   []weekPts `json:"recent,omitempty"` // newest week first; a week with no stat line is left out
-	Why      string    `json:"reasoning,omitempty"`
+	Bye      bool      `json:"bye,omitempty"`
 }
 
 type weekPts struct {
@@ -100,6 +100,7 @@ type lineupArtifact struct {
 type waiverCandidate struct {
 	Rank     int       `json:"rank"`
 	Player   artPlayer `json:"player"`
+	Proj     *float64  `json:"proj"`
 	OwnedPct *float64  `json:"owned_pct"`
 	Adds24h  *int      `json:"adds_24h"`
 	Drop     string    `json:"drop"`
@@ -113,17 +114,19 @@ type waiversArtifact struct {
 	AlsoChecked []waiverCandidate `json:"also_checked"`
 }
 
+type tradeOffer struct {
+	By      string      `json:"by"`
+	Give    []artPlayer `json:"give"`
+	Get     []artPlayer `json:"get"`
+	Verdict string      `json:"verdict"`
+}
+
 type tradeArtifact struct {
-	Partner   string `json:"partner"`
-	PartnerID string `json:"partner_id"`
-	Offers    []struct {
-		By      string      `json:"by"`
-		Give    []artPlayer `json:"give"`
-		Get     []artPlayer `json:"get"`
-		Verdict string      `json:"verdict"`
-		Delta   string      `json:"delta"`
-		Why     string      `json:"why"`
-	} `json:"offers"`
+	Partner       string       `json:"partner"`
+	PartnerID     string       `json:"partner_id"`
+	Offers        []tradeOffer `json:"offers"`
+	MyRoster      []artPlayer  `json:"my_roster"`
+	PartnerRoster []artPlayer  `json:"partner_roster"`
 }
 
 // decisionKeys are the ids a later scorer joins against actual points.
@@ -147,8 +150,7 @@ type waiverState struct {
 	Add        playerRow   `json:"add"`
 	OwnedPct   *float64    `json:"owned_pct,omitempty"`
 	Adds24h    *int        `json:"adds_24h,omitempty"`
-	Drop       string      `json:"drop,omitempty"`
-	DropID     string      `json:"drop_id,omitempty"`
+	Drop       *playerRow  `json:"drop,omitempty"`
 	Others     []playerRow `json:"other_candidates,omitempty"`
 }
 
@@ -157,11 +159,9 @@ type tradeState struct {
 	Partner    string      `json:"partner,omitempty"`
 	PartnerID  string      `json:"partner_id"`
 	OfferIndex int         `json:"offer_index"`
-	By         string      `json:"offered_by,omitempty"`
-	Give       []playerRow `json:"give"`
+	By         string      `json:"offered_by"` // "me" or "partner"; an analyst counter is one I would send
+	Give       []playerRow `json:"give"`       // what my team sends
 	Get        []playerRow `json:"get"`
-	Delta      string      `json:"delta,omitempty"`
-	Why        string      `json:"reasoning,omitempty"`
 }
 
 // observeRun asks a finished lineup, waivers or trade run's shadow questions
@@ -225,7 +225,8 @@ func (e *extension) decisionRequests(ctx context.Context, keys decisionKeys, job
 		if json.Unmarshal(raw, &a) != nil {
 			return nil
 		}
-		return waiverRequests(e.joiner(ctx, &keys, a.Week), keys, a, e.resolveDrop)
+		join := e.joiner(ctx, &keys, a.Week)
+		return waiverRequests(join, keys, a, e.dropRow(ctx, join))
 	default:
 		var a tradeArtifact
 		if json.Unmarshal(raw, &a) != nil {
@@ -236,7 +237,7 @@ func (e *extension) decisionRequests(ctx context.Context, keys decisionKeys, job
 }
 
 // lineupRequests asks one lineup_change per starter row that replaces the
-// current starter; the row's verdict and which side is the starter stay out.
+// current starter; the row's verdict, why and which side is the starter stay out.
 func lineupRequests(join rowJoiner, keys decisionKeys, a lineupArtifact) []sdk.DecideRequest {
 	bench := map[string]int{}
 	for i, b := range a.Bench {
@@ -249,10 +250,10 @@ func lineupRequests(join rowJoiner, keys decisionKeys, a lineupArtifact) []sdk.D
 		}
 		cur := join(*s.Replaces)
 		if i, ok := bench[s.Replaces.ID]; ok {
-			cur.Floor, cur.Ceiling, cur.Why = a.Bench[i].Floor, a.Bench[i].Ceiling, a.Bench[i].Why
+			cur.Floor, cur.Ceiling = a.Bench[i].Floor, a.Bench[i].Ceiling
 		}
 		prop := join(s.Player)
-		prop.Floor, prop.Ceiling, prop.Why = s.Floor, s.Ceiling, s.Why
+		prop.Floor, prop.Ceiling = s.Floor, s.Ceiling
 		out = append(out, sdk.DecideRequest{Point: "lineup_change", Baseline: "true",
 			State: lineupState{decisionKeys: keys, Slot: s.Slot, Current: cur, Proposed: prop}})
 	}
@@ -262,27 +263,27 @@ func lineupRequests(join rowJoiner, keys decisionKeys, a lineupArtifact) []sdk.D
 // waiverRequests asks waiver_pickup for every recommended add (true) and
 // every add the scout checked and passed on (false), and waiver_priority per
 // ranked add once two or more are ranked; ranks never reach the state.
-func waiverRequests(join rowJoiner, keys decisionKeys, a waiversArtifact, resolveDrop func(string) string) []sdk.DecideRequest {
+func waiverRequests(join rowJoiner, keys decisionKeys, a waiversArtifact, dropRow func(string) *playerRow) []sdk.DecideRequest {
 	var out []sdk.DecideRequest
 	var ranked []waiverCandidate
 	for _, c := range a.Candidates {
-		out = append(out, sdk.DecideRequest{Point: "waiver_pickup", Baseline: "true", State: waiverStateFor(join, keys, a, c, resolveDrop)})
+		out = append(out, sdk.DecideRequest{Point: "waiver_pickup", Baseline: "true", State: waiverStateFor(join, keys, a, c, dropRow)})
 		if c.Rank > 0 {
 			ranked = append(ranked, c)
 		}
 	}
 	for _, c := range a.AlsoChecked {
-		out = append(out, sdk.DecideRequest{Point: "waiver_pickup", Baseline: "false", State: waiverStateFor(join, keys, a, c, resolveDrop)})
+		out = append(out, sdk.DecideRequest{Point: "waiver_pickup", Baseline: "false", State: waiverStateFor(join, keys, a, c, dropRow)})
 	}
 	if len(ranked) < 2 {
 		return out
 	}
 	sort.Slice(ranked, func(i, j int) bool { return ranked[i].Player.ID < ranked[j].Player.ID })
 	for i, c := range ranked {
-		st := waiverStateFor(join, keys, a, c, resolveDrop)
+		st := waiverStateFor(join, keys, a, c, dropRow)
 		for j, o := range ranked {
 			if j != i {
-				st.Others = append(st.Others, join(o.Player))
+				st.Others = append(st.Others, candidateRow(join, o))
 			}
 		}
 		level := len(priorityLevels) - min(c.Rank, len(priorityLevels))
@@ -291,14 +292,21 @@ func waiverRequests(join rowJoiner, keys decisionKeys, a waiversArtifact, resolv
 	return out
 }
 
-func waiverStateFor(join rowJoiner, keys decisionKeys, a waiversArtifact, c waiverCandidate, resolveDrop func(string) string) waiverState {
-	add := join(c.Player)
-	add.Why = c.Why
-	st := waiverState{decisionKeys: keys, WaiverType: a.WaiverType, Add: add, OwnedPct: c.OwnedPct, Adds24h: c.Adds24h, Drop: c.Drop}
+func waiverStateFor(join rowJoiner, keys decisionKeys, a waiversArtifact, c waiverCandidate, dropRow func(string) *playerRow) waiverState {
+	st := waiverState{decisionKeys: keys, WaiverType: a.WaiverType, Add: candidateRow(join, c), OwnedPct: c.OwnedPct, Adds24h: c.Adds24h}
 	if c.Drop != "" {
-		st.DropID = resolveDrop(c.Drop)
+		st.Drop = dropRow(c.Drop)
 	}
 	return st
+}
+
+// candidateRow falls back to the candidate's own proj: the scout often leaves player.proj null.
+func candidateRow(join rowJoiner, c waiverCandidate) playerRow {
+	r := join(c.Player)
+	if r.Proj == nil {
+		r.Proj = c.Proj
+	}
+	return r
 }
 
 // tradeRequests asks trade_accept per offer; only "send" means the trade
@@ -309,7 +317,11 @@ func tradeRequests(join rowJoiner, keys decisionKeys, a tradeArtifact) []sdk.Dec
 		if o.Verdict != "send" && o.Verdict != "decline" && o.Verdict != "counter" {
 			continue
 		}
-		st := tradeState{decisionKeys: keys, Partner: a.Partner, PartnerID: a.PartnerID, OfferIndex: i, By: o.By, Delta: o.Delta, Why: o.Why}
+		o = userSide(o, a)
+		st := tradeState{decisionKeys: keys, Partner: a.Partner, PartnerID: a.PartnerID, OfferIndex: i, By: "partner"}
+		if by := strings.ToLower(o.By); by == "you" || by == "me" || by == "trade-analyst" {
+			st.By = "me"
+		}
 		for _, p := range o.Give {
 			st.Give = append(st.Give, join(p))
 		}
@@ -321,14 +333,48 @@ func tradeRequests(join rowJoiner, keys decisionKeys, a tradeArtifact) []sdk.Dec
 	return out
 }
 
-// resolveDrop maps the scout's drop text ("Rico Dowdle (Q)") to a player id
-// only when the name index has exactly one match; else the scorer joins on the name.
-func (e *extension) resolveDrop(drop string) string {
-	name, _, _ := strings.Cut(drop, " (")
-	if ids := e.client.ResolvePlayer(strings.TrimSpace(name)); len(ids) == 1 {
-		return ids[0]
+// userSide flips an offer written from the offerer's side (give on the partner's roster, none on
+// mine) so give is always what my team sends; the rosters are the evidence, not the by label.
+func userSide(o tradeOffer, a tradeArtifact) tradeOffer {
+	on := func(roster []artPlayer, ps []artPlayer) bool {
+		for _, p := range ps {
+			for _, r := range roster {
+				if r.ID == p.ID {
+					return true
+				}
+			}
+		}
+		return false
 	}
-	return ""
+	if on(a.PartnerRoster, o.Give) && !on(a.MyRoster, o.Give) {
+		o.Give, o.Get = o.Get, o.Give
+	}
+	return o
+}
+
+// dropRow turns the scout's drop text ("Rico Dowdle (Q) - buried behind X") into a player row:
+// the dump's facts when the name resolves to exactly one player, else the bare name; never the text.
+func (e *extension) dropRow(ctx context.Context, join rowJoiner) func(string) *playerRow {
+	dump, _ := e.client.PlayersDump(ctx)
+	return func(drop string) *playerRow {
+		name := drop
+		if i := strings.IndexAny(name, "(,;—–"); i >= 0 {
+			name = name[:i]
+		}
+		name, _, _ = strings.Cut(name, " - ")
+		name = strings.TrimSpace(name)
+		ids := e.client.ResolvePlayer(name)
+		if len(ids) != 1 {
+			return &playerRow{Name: name}
+		}
+		p, ok := dump[ids[0]]
+		if !ok {
+			return &playerRow{ID: ids[0], Name: name}
+		}
+		row := join(artPlayer{ID: ids[0], Name: playerNameOf(p), Pos: strVal(p.Position), Team: strVal(p.Team),
+			Inj: strVal(p.InjuryStatus), Prac: strVal(p.PracticeParticipation)})
+		return &row
+	}
 }
 
 type rowJoiner func(artPlayer) playerRow
@@ -362,9 +408,11 @@ func (e *extension) joiner(ctx context.Context, keys *decisionKeys, week int) ro
 		r := base(p)
 		pos := p.Pos
 		dump := map[string]sleepergen.Player{p.ID: {Team: &p.Team, Position: &pos}}
-		if g := sl.gameFor(dump, p.ID).Game; g != nil {
-			r.Opp = g.NFLOpponent
+		g := sl.gameFor(dump, p.ID)
+		if g.Game != nil {
+			r.Opp = g.Game.NFLOpponent
 		}
+		r.Bye = g.Bye
 		for w := keys.Week - 1; w >= keys.Week-recentWeeks; w-- {
 			if s, ok := recent[w][p.ID]; ok {
 				r.Recent = append(r.Recent, weekPts{Week: w, PtsPPR: s["pts_ppr"]})

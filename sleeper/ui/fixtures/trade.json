@@ -39,17 +39,6 @@
       "when": "Today 09:41",
       "give": [
         {
-          "id": "9481",
-          "name": "Dalton Kincaid",
-          "pos": "TE",
-          "team": "BUF",
-          "inj": null,
-          "prac": null,
-          "proj": 12.8
-        }
-      ],
-      "get": [
-        {
           "id": "7021",
           "name": "Rico Dowdle",
           "pos": "RB",
@@ -66,6 +55,17 @@
           "inj": null,
           "prac": null,
           "proj": 7.8
+        }
+      ],
+      "get": [
+        {
+          "id": "9481",
+          "name": "Dalton Kincaid",
+          "pos": "TE",
+          "team": "BUF",
+          "inj": null,
+          "prac": null,
+          "proj": 12.8
         }
       ],
       "verdict": "decline",
