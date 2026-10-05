@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -165,11 +166,68 @@ func TestReviewDecisionPoints(t *testing.T) {
 	if v.Title != "Add widget" || v.Body != "Adds the widget route." || len(v.Findings) != 3 {
 		t.Fatalf("verdict state = %+v", v)
 	}
-	if v.Findings[0].Severity != "blocking" || v.Findings[1].Severity != "nit" || v.Findings[2].Severity != "" {
-		t.Errorf("verdict findings = %+v; want their severities", v.Findings)
+	if v.Findings[0].Finding != "route shadowed: /health is unreachable" || v.Findings[1].Finding != "rename newer" {
+		t.Errorf("verdict findings = %+v; want their text without labels", v.Findings)
 	}
-	if v.Rationale != "The route table shadows health checks." {
-		t.Errorf("rationale = %q; want the reviewer's prose without the verdict line or tail", v.Rationale)
+	if !slices.Equal(v.Files, []string{"main.go"}) || !slices.Equal(v.Hunks, []string{"main.go\n@@ -42,2 +42,2 @@\n-old\n+new\n+newer"}) {
+		t.Errorf("files = %q, hunks = %q; want the changed file and the one hunk the findings anchor to, once", v.Files, v.Hunks)
+	}
+	raw, _ := json.Marshal(v)
+	for _, banned := range []string{"severity", "rationale", "blocking", "nit:", "shadows health checks", "Verdict"} {
+		if strings.Contains(string(raw), banned) {
+			t.Errorf("verdict state carries %q: %s", banned, raw)
+		}
+	}
+}
+
+// TestSplitLabelStripsEveryLabel: labels and severity markers anywhere in a finding are baselines, not
+// content; the first line's label is still returned, and prose that merely uses the words survives.
+func TestSplitLabelStripsEveryLabel(t *testing.T) {
+	for _, c := range []struct{ body, label, text string }{
+		{"**blocking:** route shadowed", "blocking", "route shadowed"},
+		{"suggestion (non-blocking): rename it", "suggestion", "rename it"},
+		{"blocking (security) - route: foo", "blocking", "foo"},
+		{"Route shadowed.\n\n**blocking:** fix before merge", "", "Route shadowed.\n\nfix before merge"},
+		{"Route shadowed, **must fix** before merge. [nit] Also a typo.", "", "Route shadowed, before merge. Also a typo."},
+		{"nit: typo\n- **Minor**: spacing\nQuestion: why?", "nit", "typo\n- spacing\nwhy?"},
+		{"The question is whether a blocking call here is a nit or must fix.", "", "The question is whether a blocking call here is a nit or must fix."},
+	} {
+		label, text := splitLabel(c.body)
+		if label != c.label || text != c.text {
+			t.Errorf("splitLabel(%q) = %q, %q; want %q, %q", c.body, label, text, c.label, c.text)
+		}
+	}
+}
+
+// TestVerdictStateIsBounded: an oversized review fits the verdict budget; findings keep their room and
+// hunks take what is left, cut with a marker.
+func TestVerdictStateIsBounded(t *testing.T) {
+	var findings []verdictFinding
+	var hunks []string
+	for i := range 8 {
+		findings = append(findings, verdictFinding{Path: "main.go", Line: i, Finding: fmt.Sprintf("finding %d ", i) + strings.Repeat("f", 500)})
+		hunks = append(hunks, strings.Repeat("h", 3000))
+	}
+	st := fitVerdict(verdictState{Title: strings.Repeat("t", 1000), Body: strings.Repeat("b", 5000), Findings: findings,
+		Files: []string{"main.go", "util.go"}}, hunks)
+	raw, _ := json.Marshal(st)
+	if len(raw) > verdictBudget+1000 {
+		t.Errorf("verdict state is %d bytes; want it near the %d-rune budget", len(raw), verdictBudget)
+	}
+	for i, f := range st.Findings {
+		if !strings.HasPrefix(f.Finding, fmt.Sprintf("finding %d ", i)) || strings.Contains(f.Finding, cutMarker) {
+			t.Errorf("finding %d = %.40q; want it whole: findings outrank hunks", i, f.Finding)
+		}
+	}
+	if len(st.Hunks) == 0 || !strings.Contains(strings.Join(st.Hunks, ""), cutMarker) || len(st.Files) != 2 {
+		t.Errorf("hunks = %d, files = %q; want the hunks cut with a marker and both files kept", len(st.Hunks), st.Files)
+	}
+	many := make([]verdictFinding, 200)
+	for i := range many {
+		many[i] = verdictFinding{Path: "a.go", Finding: strings.Repeat("x", 300)}
+	}
+	if raw, _ := json.Marshal(fitVerdict(verdictState{Findings: many}, hunks)); len(raw) > verdictBudget+1500 {
+		t.Errorf("200 findings make a %d-byte state; want it bounded", len(raw))
 	}
 }
 

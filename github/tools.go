@@ -941,7 +941,7 @@ func (a *App) deliverReview(ctx context.Context, owner, repo string, dc sdk.Deli
 	a.collapsePriorReviews(ctx, owner, repo, dc.IssueNumber) // superseded prior attempts
 	// Validate inline findings before submit — one bad anchor 422s the whole review.
 	inline, unanchored := a.validComments(ctx, owner, repo, dc.IssueNumber, item.Comments)
-	a.observeReview(ctx, owner, repo, dc.IssueNumber, event, item.Body, item.Comments)
+	a.observeReview(ctx, owner, repo, dc.IssueNumber, event, item.Comments)
 	body := item.Body + renderUnanchoredFindings(unanchored) + deliveryKeyMarker(dc.IdempotencyKey)
 	res, err := a.submitReview(ctx, submitReviewArgs{Owner: owner, Repo: repo, PullNumber: dc.IssueNumber, Body: gateCaveat(dc, body), Event: event, Comments: inline, ChatID: dc.ChatID})
 	if err != nil {
@@ -970,7 +970,7 @@ func (a *App) deliverSelfReview(ctx context.Context, owner, repo string, dc sdk.
 	a.collapsePriorReviews(ctx, owner, repo, dc.IssueNumber) // superseded prior attempts
 	inline, unanchored := a.validComments(ctx, owner, repo, dc.IssueNumber, item.Comments)
 	body += renderUnanchoredFindings(unanchored)
-	a.observeReview(ctx, owner, repo, dc.IssueNumber, verdict, item.Body, item.Comments)
+	a.observeReview(ctx, owner, repo, dc.IssueNumber, verdict, item.Comments)
 	res, err := a.submitReview(ctx, submitReviewArgs{Owner: owner, Repo: repo, PullNumber: dc.IssueNumber, Body: gateCaveat(dc, body), Event: "COMMENT", Comments: inline, ChatID: dc.ChatID})
 	if err != nil {
 		return deliveryItemResult{}, fmt.Errorf("github: delivery: self-review: %w", err)
