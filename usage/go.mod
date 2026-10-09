@@ -3,9 +3,9 @@ module github.com/fagerbergj/quack-extensions/usage
 go 1.26.6
 
 require (
-	github.com/fagerbergj/quack-extensions/sdk v0.14.0
+	github.com/fagerbergj/quack-extensions/sdk v0.20.0
 	github.com/go-chi/chi/v5 v5.3.2
-	google.golang.org/adk/v2 v2.4.0
+	google.golang.org/adk/v2 v2.5.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -34,10 +34,10 @@ require (
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
-	google.golang.org/api v0.295.0 // indirect
-	google.golang.org/genai v1.70.0 // indirect
+	google.golang.org/api v0.298.0 // indirect
+	google.golang.org/genai v1.71.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260819154853-08b0e4226688 // indirect
-	google.golang.org/grpc v1.83.2 // indirect
+	google.golang.org/grpc v1.84.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	rsc.io/omap v1.2.0 // indirect
 	rsc.io/ordered v1.1.1 // indirect
