@@ -11,5 +11,6 @@ go.work.sum
 .DS_Store
 .idea/
 .vscode/
-sloplint
+tools/sloplint/sloplint
+tools/coverdiff/coverdiff
 .cccheck/

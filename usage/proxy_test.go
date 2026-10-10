@@ -68,18 +68,15 @@ func TestProxyQueryRangeForwardsAllowedParamsOnly(t *testing.T) {
 	}
 }
 
-// TestProxyQueryRangeForwardsCustomRangeParamShapes pins the timeframe
-// picker's custom-range request shape: real epoch seconds a browser derives
-// from two datetime-local inputs, and a step from stepForSpan rather than
-// one of the preset durations - still just query/start/end/step, verbatim,
-// nothing extra smuggled through (e.g. a stray "timeout" or "match[]").
+// A custom range (arbitrary epoch seconds and step) still forwards only
+// query/start/end/step verbatim; extras like "timeout" are dropped.
 func TestProxyQueryRangeForwardsCustomRangeParamShapes(t *testing.T) {
 	fp := newFakePrometheus(t, fixtureMatrixJSON)
 	r := newTestProxyRouter(fp.URL)
 
 	start := int64(1732000000)
 	end := int64(1732000000 + 11*24*60*60 + 3*60*60 + 17*60) // an arbitrary ~11.1 day custom span
-	step := stepForSpan(end - start)
+	step := int64(7200)                                      // app.js stepForSpan for this span
 	query := "sum by (model) (increase(gen_ai_client_token_usage_total[" + fmtInt(step) + "s]))"
 
 	target := fmt.Sprintf("/api/query_range?query=%s&start=%d&end=%d&step=%d&timeout=30s",
@@ -204,10 +201,8 @@ func TestProxyReportsUpstreamUnreachable(t *testing.T) {
 	}
 }
 
-// TestProxyNeverExposesArbitraryUpstreamPaths pins the "narrow proxy"
-// invariant at the router level: the extension's chi routes cover exactly
-// query_range and query - anything else, including a naive attempt to smuggle
-// a path via a query param, never reaches Prometheus.
+// The routes cover exactly query_range and query; nothing else, including a path smuggled
+// via a query param, reaches Prometheus.
 func TestProxyNeverExposesArbitraryUpstreamPaths(t *testing.T) {
 	fp := newFakePrometheus(t, fixtureVectorJSON)
 	e := &extension{proxy: newPrometheusProxy(fp.URL, nil)}

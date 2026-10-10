@@ -2,6 +2,7 @@ package usage
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,10 +14,7 @@ func newTestHost() sdk.Host {
 	return sdk.Host{}
 }
 
-// newChiRouterForTest mounts an extension's authed routes on a bare chi
-// router, mirroring how quack itself would mount them - used by tests that
-// need to exercise routing (404 on unregistered paths, method dispatch)
-// rather than calling handlers directly.
+// newChiRouterForTest mounts the authed routes on a bare chi router, as quack would.
 func newChiRouterForTest(e *extension) http.Handler {
 	r := chi.NewRouter()
 	e.RegisterRoutes(r, chi.NewRouter())
@@ -149,5 +147,13 @@ func TestRegisteredInInit(t *testing.T) {
 	factories := sdk.Registered()
 	if _, ok := factories["usage"]; !ok {
 		t.Fatal(`sdk.Registered() missing "usage" - init() should have registered it`)
+	}
+}
+
+// An empty extensions.usage block must reach validation, not fail as a YAML parse error.
+func TestFactoryEmptyConfig(t *testing.T) {
+	_, err := factory(newTestHost(), nil)
+	if err == nil || !strings.Contains(err.Error(), "prometheus_url is required") {
+		t.Fatalf("factory(nil raw) = %v, want prometheus_url is required", err)
 	}
 }

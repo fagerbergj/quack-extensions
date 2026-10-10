@@ -1,7 +1,5 @@
-// Package usage is an inbound-only extension: an in-app usage dashboard
-// backed by Prometheus. It has no Tools and never calls Host.Dispatch - it
-// only serves a dashboard page and a narrow query proxy behind quack's
-// session auth.
+// Package usage is an inbound-only Prometheus usage dashboard: a page and a narrow query
+// proxy behind quack's session auth. No tools, no dispatch.
 package usage
 
 import (
@@ -25,30 +23,22 @@ func init() {
 	sdk.Register(extensionName, factory)
 }
 
-// config is this extension's own YAML shape, under extensions.usage in
-// quack.yaml. It must not redefine BaseConfig's "enabled"/"data_dir" keys -
-// quack reads those itself before Factory ever sees the bytes.
+// config is extensions.usage in quack.yaml; it must not redefine sdk.BaseConfig's keys.
 type config struct {
-	// PrometheusURL is the Prometheus HTTP API base, e.g.
-	// "http://prometheus:9090". Required.
+	// PrometheusURL is the Prometheus HTTP API base, e.g. "http://prometheus:9090". Required.
 	PrometheusURL string `yaml:"prometheus_url"`
 
-	// TempoURL, if set, is stored and surfaced to the page for a future
-	// trace-drilldown link - this extension never queries it.
+	// TempoURL, if set, is handed to the page for a trace link; this extension never queries it.
 	TempoURL string `yaml:"tempo_url"`
 
 	// DefaultRange is a Go duration string, e.g. "24h". Defaults to 24h.
 	DefaultRange string `yaml:"default_range"`
 }
 
-// factory validates config and constructs the extension. It is side-effect
-// free (see sdk.Factory's doc comment): no network calls, no goroutines.
 func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
-	cfg := config{}
-	if len(raw) > 0 {
-		if err := yaml.Unmarshal(raw, &cfg); err != nil {
-			return nil, fmt.Errorf("usage: parse config: %w", err)
-		}
+	var cfg config
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		return nil, fmt.Errorf("usage: parse config: %w", err)
 	}
 
 	if cfg.PrometheusURL == "" {
@@ -87,9 +77,8 @@ func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
 	}, nil
 }
 
-// absoluteURL rejects anything without a scheme+host - a relative or
-// malformed prometheus_url would otherwise fail confusingly deep inside the
-// proxy on the first request instead of at config validation time.
+// absoluteURL rejects anything without scheme+host, so a bad URL fails at config validation
+// rather than deep inside the proxy on the first request.
 func absoluteURL(raw string) (*url.URL, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
@@ -112,13 +101,10 @@ var (
 	_ sdk.UI        = (*extension)(nil)
 )
 
-// Tools returns nil: usage is inbound-only, it never joins an agent's tool set.
 func (e *extension) Tools() []tool.Tool { return nil }
 
-// RegisterRoutes mounts everything behind quack's session auth (public is
-// unused - see the package doc). Never register anything on public: the
-// proxy exists specifically so the browser never talks to Prometheus
-// directly, and that only holds if these routes stay authed.
+// RegisterRoutes never uses public: the proxy only keeps Prometheus private while these
+// routes stay behind session auth.
 func (e *extension) RegisterRoutes(authed chi.Router, public chi.Router) {
 	authed.Get("/", e.handleDashboard)
 	authed.Get("/app.js", e.handleAppJS)

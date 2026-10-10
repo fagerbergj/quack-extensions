@@ -8,15 +8,9 @@ The extension SDK for [quack](https://github.com/fagerbergj/quack), plus quack's
 
 A consequence: extensions shape a run only at dispatch time (`DispatchRequest`'s `Chat`/`Ask`/`Run`/`Delivery` groups). There are no agent-loop hooks - enforcement stays gate-owned inside quack.
 
-## SDK v0.2.x
+## SDK versioning
 
-v0.2.0: `DispatchRequest` regroups into `Chat`/`Ask`/`Run`/`Delivery`. `ChatRef.LocalID` replaces `ChatID` - extension-scoped; quack namespaces it as `ext:<extension>:<localID>`. `ChatOrigin.Labels` adds multi-valued provenance dimensions, each `LabelValue{Value, Display, Href}`. `RunObserver.RunEnded` now carries a full `RunOutcome`. New inverse-capability interfaces `Deliverer` and `GitCredentialSource` let quack call back into an extension for delivery and git credentials. Rationale: quack's `.quack/design/sdk-v2-github.md`.
-
-v0.2.1: additive `BaseConfig{Enabled, DataDir}` - the `enabled`/`data_dir` keys quack itself reads from every `extensions.<name>` block before handing the same raw bytes to `Factory`.
-
-v0.2.2: `ChatOrigin.Facets`/`FacetValue` renamed to `Labels`/`LabelValue` (labels is the domain word - GitHub labels, reMarkable tablet tags); `FacetValue.Label` renamed to `Display` (avoids a `labels[].label` stutter); `ChatOrigin.URL` and `LabelValue.URL` renamed to `Href` (names the role - a navigable reference - not the datatype).
-
-v0.3.0: additive `Host.EnsureContextDir`/`ChatUser`/`ArchiveChat` - the three small synchronous Host calls the GitHub migration's physical move needs (`.quack/design/sdk-v2-github.md`'s Host-capabilities section), alongside the existing `Dispatch`/`Log`/`DataDir`. `Setup.ExistingHeadRef` - checkout an already-existing branch as-is instead of creating `WorkBranch` fresh from `BaseRef` (a PR's own head branch, generalized past GitHub: any extension resuming work on a real branch needs this, not just GitHub). `Host.Classify` - a single free-text model round trip for an inline classification decision BEFORE shaping a `DispatchRequest` (the GitHub extension's work-vs-conversational mention triage), not a dispatched/gated/observed run - discovered mid-move, not in the original design doc's Host-capabilities list. `RunConfig.Timeout` - bounds one dispatch's execution; closes the `RunOutcome.TimedOut` gap v0.2.0 shipped hardcoded to `false` pending this migration (extensions.go's own comment named it).
+`sdk`'s exported identifiers are the contract between quack and every extension; the doc comments in [`sdk/sdk.go`](sdk/sdk.go) describe the current surface and the `sdk/vX.Y.Z` tags carry its history. Optional capabilities are interfaces quack detects by type assertion, and `Host` func fields may be nil on an older host, so callers nil-check them.
 
 ## Module layout
 
@@ -24,10 +18,12 @@ Multi-module monorepo, one Go module per directory, each independently tagged (t
 
 ```text
 sdk/         github.com/fagerbergj/quack-extensions/sdk         - the Extension API
-github/      github.com/fagerbergj/quack-extensions/github      - GitHub App integration (migrated from quack's internal/github)
-noop/        github.com/fagerbergj/quack-extensions/noop        - proves the loop end to end
+github/      github.com/fagerbergj/quack-extensions/github      - GitHub App integration
+noop/        github.com/fagerbergj/quack-extensions/noop        - proves the loop end to end (quack's e2e test fixture)
 remarkable/  github.com/fagerbergj/quack-extensions/remarkable  - rmfakecloud document browser -> document-ingest
+sleeper/     github.com/fagerbergj/quack-extensions/sleeper     - Sleeper fantasy-football tools, page and plugin
 usage/       github.com/fagerbergj/quack-extensions/usage       - in-app Prometheus usage dashboard (inbound-only)
+tools/       CI-only gates (sloplint, coverdiff) and the quack-compat check
 ```
 
 Future extensions land as sibling modules the same way.

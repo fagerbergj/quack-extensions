@@ -14,11 +14,8 @@ import (
 // can't leak a goroutine per dashboard request.
 const promAPITimeout = 10 * time.Second
 
-// queryRangeParams/queryParams are the ONLY query params ever forwarded
-// upstream, matching Prometheus's own /api/v1/query_range and /api/v1/query
-// parameter sets. Anything else on the incoming request is silently
-// dropped - this is what keeps the proxy narrow (see the package doc):
-// there is no user-controlled upstream path or param name, ever.
+// The only params ever forwarded upstream; anything else is dropped, so no upstream path or
+// param name is ever user-controlled.
 var (
 	queryRangeParams = []string{"query", "start", "end", "step"}
 	queryParams      = []string{"query", "time"}
@@ -95,10 +92,8 @@ func (p *prometheusProxy) forward(w http.ResponseWriter, r *http.Request, path s
 	_, _ = io.Copy(w, resp.Body)
 }
 
-// writePromError shapes a synthetic failure (network error, bad request)
-// the same way Prometheus's own API does ({"status":"error","error":...}),
-// so the dashboard's error handling has one response shape to deal with
-// regardless of whether the failure was ours or upstream's.
+// writePromError mirrors Prometheus's own error shape so the page handles one response
+// shape whether the failure was ours or upstream's.
 func writePromError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

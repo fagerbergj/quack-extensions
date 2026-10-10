@@ -31,9 +31,7 @@ type docState struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// state is the whole extension-private record, persisted as one JSON file
-// in Host.DataDir. Writes (ingest handler, RunEnded callbacks) serialize
-// through extension.mu - no need for sqlite.
+// state is persisted as one JSON file in Host.DataDir; writes serialize through extension.mu.
 type state struct {
 	Documents map[string]docState `json:"documents"`
 }

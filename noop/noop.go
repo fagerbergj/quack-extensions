@@ -1,7 +1,5 @@
-// Package noop is the extension that proves the register -> route ->
-// dispatch -> run-as-chat loop end to end. It has no real function beyond
-// that: /status reports how many dispatched runs have completed, and
-// /dispatch fires one with a fixed payload.
+// Package noop proves the register -> route -> dispatch -> run-as-chat loop end to end:
+// /dispatch fires a run and /status counts the runs that completed.
 package noop
 
 import (
@@ -27,14 +25,12 @@ type config struct {
 }
 
 func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
-	cfg := config{Greeting: "noop"}
-	if len(raw) > 0 {
-		if err := yaml.Unmarshal(raw, &cfg); err != nil {
-			return nil, fmt.Errorf("noop: parse config: %w", err)
-		}
-		if cfg.Greeting == "" {
-			cfg.Greeting = "noop"
-		}
+	var cfg config
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		return nil, fmt.Errorf("noop: parse config: %w", err)
+	}
+	if cfg.Greeting == "" {
+		cfg.Greeting = "noop"
 	}
 
 	e := &extension{host: host, greeting: cfg.Greeting}
@@ -63,9 +59,7 @@ func (e *extension) RegisterRoutes(authed chi.Router, public chi.Router) {
 	authed.Post("/dispatch", e.handleDispatch)
 }
 
-// RunEnded is the completion signal for a dispatched run - /status only
-// counts runs that finished, so the counter is proof the whole loop
-// (dispatch through orchestration back to this callback) actually ran.
+// RunEnded counts finished runs, so /status proves the whole loop ran back to this callback.
 func (e *extension) RunEnded(chatID string, outcome sdk.RunOutcome) {
 	e.runEnded.Add(1)
 }

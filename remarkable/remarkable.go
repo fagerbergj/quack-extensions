@@ -1,10 +1,5 @@
-// Package remarkable browses a self-hosted rmfakecloud instance's documents
-// and dispatches the ones a user explicitly selects into quack's
-// document-ingest workflow.
-
-// Inbound is the rmfakecloud UI API, not its webhook (no document identity);
-// ingest is user-driven because every autosave bumps lastModified, so
-// anything automatic would run on half-written notes.
+// Package remarkable browses an rmfakecloud instance and dispatches the documents a user selects
+// into document-ingest. Ingest is user-driven: every autosave bumps lastModified.
 package remarkable
 
 import (
@@ -26,27 +21,21 @@ func init() {
 	sdk.Register(extensionName, factory)
 }
 
-// config is this extension's own YAML shape, under extensions.remarkable in
-// quack.yaml. It must not redefine BaseConfig's "enabled"/"data_dir" keys -
-// quack reads those itself before Factory ever sees the bytes.
+// config is extensions.remarkable in quack.yaml; it must not redefine sdk.BaseConfig's keys.
 type config struct {
 	// BaseURL is the rmfakecloud instance, e.g.
 	// "https://remarkable.example.duckdns.org".
 	BaseURL string `yaml:"base_url"`
 
-	// Email/Password are the rmfakecloud UI account's login credentials -
-	// what its /ui/api/login endpoint requires (no long-lived API token
-	// exists; the extension re-logs in on 401).
+	// Email/Password log in to the rmfakecloud UI API (no long-lived token exists).
 	Email    string `yaml:"email"`
 	Password string `yaml:"password"`
 }
 
 func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
-	cfg := config{}
-	if len(raw) > 0 {
-		if err := yaml.Unmarshal(raw, &cfg); err != nil {
-			return nil, fmt.Errorf("remarkable: parse config: %w", err)
-		}
+	var cfg config
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		return nil, fmt.Errorf("remarkable: parse config: %w", err)
 	}
 	if cfg.BaseURL == "" {
 		return nil, fmt.Errorf("remarkable: base_url is required")
@@ -90,10 +79,8 @@ func (e *extension) RegisterRoutes(authed chi.Router, public chi.Router) {
 	authed.Get("/status.json", e.handleStatusJSON)
 }
 
-// Start loads persisted state and does one synchronous login so an
-// unreachable or misconfigured rmfakecloud fails startup loudly instead of
-// idling silently. No background loop: ingest only happens when a user
-// submits the documents page.
+// Start loads state and logs in once so a bad rmfakecloud config fails startup loudly. There is
+// no background loop.
 func (e *extension) Start(ctx context.Context) error {
 	st, err := loadState(e.statePath)
 	if err != nil {
@@ -127,9 +114,7 @@ func (e *extension) Start(ctx context.Context) error {
 	return nil
 }
 
-// RunEnded clears InFlight and records the terminal outcome. quack passes
-// the namespaced chat id ("ext:<extension>:<localID>"), so strip that back
-// to the document ID the state file is keyed by.
+// RunEnded records the terminal outcome against the doc ID inside the namespaced chat id.
 func (e *extension) RunEnded(chatID string, outcome sdk.RunOutcome) {
 	docID := strings.TrimPrefix(chatID, "ext:"+extensionName+":")
 

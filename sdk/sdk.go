@@ -1,22 +1,5 @@
-// Package sdk is the quack extension API. It is self-contained: it must
-// never import github.com/fagerbergj/quack, so an extension written against
-// it can never accidentally depend on quack internals. quack imports this
-// package (and each extension package) - never the reverse.
-//
-// Design principles that shape every type below:
-//   - Dispatch-time shaping only: DispatchRequest is the entire surface an
-//     extension has to influence a run. There are no agent-loop hooks -
-//     enforcement stays gate-owned inside quack.
-//   - Ownership test for strings: a field stays a plain string only if
-//     quack-core never interprets it, only passes it through or matches it
-//     opaquely. A string quack-core parses, branches on, or must keep in
-//     sync with the extension becomes a named type (DeliveryKind, RunStatus)
-//     so a typo is a compile error, not silent behavior loss.
-//   - RunObserver is observation-only: it never blocks or mutates a run,
-//     and fires only after the run's outcome is final.
-//   - Factories must be side-effect free: validate config and construct,
-//     nothing more - they also run in contexts that never serve, such as
-//     config checks. Background resources belong in Start.
+// Package sdk is the quack extension API. It must never import github.com/fagerbergj/quack:
+// quack imports this package and each extension package, never the reverse.
 package sdk
 
 import (
@@ -30,62 +13,48 @@ import (
 	"google.golang.org/adk/v2/tool"
 )
 
-// ErrUnknownChat is returned by Host.UpdateChatOrigin when localID never
-// reached Dispatch, or its chat is gone. Extensions should treat it as an
-// expected, common case (a state-change webhook for an issue/PR that never
-// had a chat) - log at Debug, not Warn/Error.
+// ErrUnknownChat is Host.UpdateChatOrigin's error for a localID that never reached Dispatch
+// or whose chat is gone. It is an expected case: log at Debug.
 var ErrUnknownChat = errors.New("sdk: unknown chat")
 
 // Extension is what a module provides to quack.
 type Extension interface {
-	// Tools join every agent's tool set. Return nil/empty for an
-	// inbound-only extension (routes/dispatch, no tools).
+	// Tools join every agent's tool set; nil for an inbound-only extension.
 	Tools() []tool.Tool
 
-	// RegisterRoutes mounts the extension's inbound routes. authed sits
-	// behind quack's session auth (UI pages, extension APIs); public does
-	// not (webhooks, which own their own verification - see Starter
-	// doc for the shared precedent). Either router may be left unused.
+	// RegisterRoutes mounts inbound routes. authed sits behind quack's session auth;
+	// public does not, so webhooks there must verify themselves.
 	RegisterRoutes(authed chi.Router, public chi.Router)
 }
 
-// Starter is an optional lifecycle interface for extensions that own
-// background resources (watchers, pollers). Factories themselves must stay
-// side-effect free - they also run in contexts that never serve, such as
-// config validation - so resource acquisition belongs in Start, not the
-// Factory.
+// Starter is optional, for extensions that own background resources. Factories must stay
+// side-effect free (they also run during config validation), so acquisition belongs here.
 type Starter interface {
 	Start(ctx context.Context) error
 }
 
-// UIDescriptor names an extension's entry point in the host's navigation.
-// Href is a same-origin relative reference into the extension's own routes
-// (e.g. "/remarkable/review").
+// UIDescriptor names an extension's entry point in the host's navigation. Href is a
+// same-origin relative reference into the extension's own routes (e.g. "/remarkable/review").
 type UIDescriptor struct {
 	Title string
 	Href  string
 
-	// Icon is a Material Symbols name (preferred) or inline SVG; emoji fall
-	// back to the generic extension glyph.
+	// Icon is a Material Symbols name (preferred) or inline SVG; emoji fall back to the
+	// generic extension glyph.
 	Icon string
 }
 
-// UI is an optional interface: an extension implementing it appears in the
-// host's navigation (quack's GET /api/v1/extensions). Without it the
-// extension is listed by name only.
+// UI is optional: an extension implementing it appears in the host's navigation;
+// without it the extension is listed by name only.
 type UI interface {
 	UI() UIDescriptor
 }
 
-// UIKitCSS is the same-origin path to quack's extension design-language
-// kit: link it from any HTML an extension serves to pick up the host's
-// tokens and primitives (.qk-page, .qk-card, .qk-badge, ...) with no shared
-// toolchain. The v1 contract is frozen-additive - a breaking restyle ships
-// at /v2/, and this path keeps serving unchanged.
+// UIKitCSS is the same-origin path to quack's extension design kit (.qk-page, .qk-card, ...).
+// The v1 contract is frozen-additive: a breaking restyle ships at /v2/.
 const UIKitCSS = "/assets/ext/v1/kit.css"
 
-// RunStatus is the terminal outcome of a dispatched run, reported to
-// RunObserver.
+// RunStatus is the terminal outcome of a dispatched run, reported to RunObserver.
 type RunStatus string
 
 const (
@@ -93,148 +62,100 @@ const (
 	RunFailed     RunStatus = "failed"
 	RunNeedsInput RunStatus = "needs_input"
 
-	// RunCancelled means the user stopped the run. Answer may carry
-	// partial text, but it is mid-thought, not a finished product - an
-	// observer must not treat it as an answer to deliver.
+	// RunCancelled means the user stopped the run. Answer may hold mid-thought partial text;
+	// an observer must not deliver it as an answer.
 	RunCancelled RunStatus = "cancelled"
 )
 
-// ArtifactSchemas is optional. Keys are artifact kinds, values JSON Schema
-// documents; quack refuses a violating write and fails boot on one it cannot compile. Nil means nothing to validate.
+// ArtifactSchemas is optional: artifact kind to JSON Schema. quack refuses a violating write
+// and fails boot on a schema it cannot compile. Nil means nothing to validate.
 type ArtifactSchemas interface {
 	ArtifactSchemas() map[string]json.RawMessage
 }
 
-// RunObserver is an optional, observation-only interface: quack calls
-// RunEnded after a dispatched run's outcome is final so extensions can
-// mark their own records done/failed, never blocking or mutating the run.
+// RunObserver is optional and observation-only: RunEnded fires after a dispatched run's
+// outcome is final and must never block or mutate the run.
 type RunObserver interface {
 	RunEnded(chatID string, outcome RunOutcome)
 }
 
-// RunOutcome is the terminal state of a dispatched run. Status is always
-// set; the rest is populated to the extent that status makes them
-// meaningful (Question/NodeID only for RunNeedsInput, Answer best-effort
-// partial text when TimedOut).
+// RunOutcome is the terminal state of a dispatched run. Status is always set; the other
+// fields only where Status makes them meaningful.
 type RunOutcome struct {
 	Status RunStatus
 
-	// Answer is the run's final text; a best-effort partial answer if
-	// TimedOut is true.
+	// Answer is the run's final text; best-effort partial text when TimedOut.
 	Answer string
 
-	// Question is the paused node's question when Status is
-	// RunNeedsInput.
+	// Question and NodeID name the paused node's question when Status is RunNeedsInput.
 	Question string
+	NodeID   string
 
-	// NodeID is which node paused when Status is RunNeedsInput.
-	NodeID string
-
-	// Error is the failed node's sanitized cause when Status is RunFailed;
-	// empty means a true silent-gap failure with no known cause.
+	// Error is the failed node's sanitized cause when Status is RunFailed; empty means a
+	// failure with no known cause.
 	Error string
 
-	// PlanRan is false when a label/trigger-driven dispatch produced no
-	// plan at all - the caller may choose to re-dispatch once.
+	// PlanRan is false when a label/trigger-driven dispatch produced no plan at all; the
+	// caller may re-dispatch once.
 	PlanRan bool
 
-	// TimedOut is true when the run hit its time budget before finishing.
+	// TimedOut is true when the run hit RunConfig.Timeout before finishing.
 	TimedOut bool
 }
 
-// Host is what quack hands an extension's Factory.
+// Host is what quack hands an extension's Factory. Func fields other than Dispatch may be
+// nil (unavailable or an older host); callers must nil-check and degrade.
 type Host struct {
-	// Dispatch starts a run, or appends a turn to one already in progress -
-	// see ChatRef.LocalID.
+	// Dispatch starts a run, or appends a turn to one in progress (see ChatRef.LocalID).
 	Dispatch DispatchFunc
 
-	// Log is pre-tagged component=ext.<name>; extensions should log through
-	// it rather than building their own handler.
+	// Log is pre-tagged component=ext.<name>; log through it rather than a new handler.
 	Log *slog.Logger
 
-	// DataDir is extension-private persistent storage, e.g. a SQLite
-	// registry mapping external documents to chat ids. Extensions own its
-	// contents; quack only guarantees the directory exists and is theirs
-	// alone.
+	// DataDir is extension-private persistent storage. quack guarantees only that the
+	// directory exists and is this extension's alone.
 	DataDir string
 
-	// Version is the running quack build stamp (e.g. "0.51.26"), for an
-	// extension that wants to name it somewhere inconspicuous (a comment
-	// footer). "" when unknown - callers must degrade to omitting it.
+	// Version is the running quack build stamp (e.g. "0.51.26"); "" when unknown.
 	Version string
 
-	// PublicURL is the server's externally reachable base URL (e.g.
-	// "https://quack.example.com"), for an extension that wants to link
-	// posted content back to the run that produced it. "" when unset -
-	// callers must degrade to omitting the link.
+	// PublicURL is the server's externally reachable base URL, for linking back to a run;
+	// "" when unset, in which case omit the link.
 	PublicURL string
 
-	// Location is the user's configured zone (quack's timezone: never sets time.Local).
-	// nil when unconfigured or the host predates it - callers fall back to time.Local.
+	// Location is the user's configured zone (quack never sets time.Local). nil when
+	// unconfigured: fall back to time.Local.
 	Location *time.Location
 
-	// Deprecated: EnsureContextDir is superseded by ReadArtifact/
-	// WriteArtifact (quack issue #1010) - a workspace-dir sibling to a
-	// dispatched run's clone, for evidence files too large or too raw for
-	// Ask.Message/ContextItems. Kept only until this module stops calling
-	// it; slated for removal once no consumer remains.
-	EnsureContextDir func(userID, chatID string) (string, error)
-
-	// ReadArtifact returns the latest bytes for a named input artifact in
-	// this chat, or ok=false when it does not exist yet (e.g. first
-	// dispatch - no baseline to diff against). nil = host predates this
-	// capability; callers treat that the same as "no baseline". user is
-	// the same value the extension puts in ChatRef.User for this chat;
-	// quack keeps a chat's first user stable, so the host may substitute
-	// the stored user for an existing chat.
+	// ReadArtifact returns the latest bytes of a named input artifact in this chat, ok=false
+	// when absent. user is the chat's ChatRef.User; the host may substitute the stored one.
 	ReadArtifact func(chatID, user, name string) (data []byte, ok bool)
 
-	// WriteArtifact persists (or re-saves) a named input artifact for this
-	// chat and returns the resulting revision (1-based, increasing per
-	// name) and whether the bytes changed versus the prior revision.
-	// nil = capability unavailable. user is the same value the extension
-	// puts in ChatRef.User for this chat; quack keeps a chat's first user
-	// stable, so the host may substitute the stored user for an existing
-	// chat.
+	// WriteArtifact saves a named input artifact and returns its 1-based per-name revision
+	// and whether the bytes changed from the prior one. user is as for ReadArtifact.
 	WriteArtifact func(chatID, user, name, mimeType string, data []byte) (revision int64, changed bool, err error)
 
-	// ChatUser returns the ADK session identity a chat is running as -
-	// e.g. recovering the acting user when an extension re-engages a chat
-	// with no fresh triggering user available. ok is false for an unknown
-	// chatID.
+	// ChatUser returns the ADK session identity a chat runs as, e.g. to re-engage a chat
+	// with no fresh triggering user. ok is false for an unknown chatID.
 	ChatUser func(chatID string) (user string, ok bool)
 
-	// ArchiveChat archives a chat, e.g. on the extension's own "this is
-	// resolved" signal.
+	// ArchiveChat archives a chat, e.g. on the extension's own "resolved" signal.
 	ArchiveChat func(chatID string) error
 
-	// UpdateChatOrigin refreshes a chat's provenance after dispatch time -
-	// e.g. an issue closing or a PR merging - so a badge stamped once at
-	// Dispatch doesn't go stale forever. Same non-run, nil-tolerant class as
-	// EnsureContextDir/ArchiveChat: callers must degrade gracefully when this
-	// is nil. localID mirrors ChatRef.LocalID exactly - the extension passes
-	// its own local id, and the host namespaces it into the chat id
-	// ("ext:<extension>:<localID>"), same as Dispatch. Returns
-	// ErrUnknownChat when localID never reached Dispatch.
+	// UpdateChatOrigin refreshes a chat's provenance after dispatch (an issue closing, a PR
+	// merging). localID is ChatRef.LocalID; ErrUnknownChat if it never reached Dispatch.
 	UpdateChatOrigin func(localID string, origin ChatOrigin) error
 
-	// InvalidateSetup tells quack the branch a run was cloned from has moved
-	// under it, so the clone no longer matches. quack decides whether
-	// refreshing it is safe - re-cloning is destructive and it will refuse
-	// rather than discard a node's work. Same nil-tolerant, best-effort class
-	// as ArchiveChat: callers must nil-check.
+	// InvalidateSetup says the branch a run was cloned from moved. quack decides whether a
+	// refresh is safe and refuses rather than discard a node's work.
 	InvalidateSetup func(chatID string) error
 
-	// Classify is a single free-text model round trip for a judgment an
-	// extension needs INLINE before shaping a DispatchRequest. Not a
-	// dispatched, gated, observed run: no callback, delivery, or history.
-
-	// Bound to quack's judge/advisor model. nil = no judge model
-	// configured; callers must degrade gracefully.
+	// Classify is one free-text round trip to quack's judge model for an inline decision
+	// before shaping a DispatchRequest. Not a run: no callback, delivery, or history.
 	Classify func(ctx context.Context, prompt string) (string, error)
 
-	// Decide asks the host's decision handler about a declared point (see
-	// DecisionPoints); nil or an error means "no decision", proceed as before.
+	// Decide asks the host's decision handler about a declared point (see DecisionPoints);
+	// nil or an error means "no decision", proceed as before.
 	Decide func(ctx context.Context, req DecideRequest) (Decision, error)
 }
 
@@ -262,9 +183,8 @@ type DecisionPoints interface {
 	DecisionPoints() []DecisionPoint
 }
 
-// DecideRequest is the input to Host.Decide. The mode (observe, guard or
-// decide) is host config; the extension supplies Baseline and acts only on
-// Decision.Act or Decision.Restrict. Point is namespaced ext:<plugin>/<name>.
+// DecideRequest is the input to Host.Decide. The mode is host config; the extension supplies
+// Baseline and acts only on Decision.Act or Decision.Restrict.
 type DecideRequest struct {
 	Point    string // a declared DecisionPoint's Name
 	State    any    // the evidence the handler reads
@@ -290,15 +210,11 @@ type Decision struct {
 	Restrict      bool   // a guard says to narrow, never widen
 }
 
-// DispatchFunc starts or continues a run. See ChatRef.LocalID for the
-// new-chat-vs-append-a-turn semantics.
+// DispatchFunc starts or continues a run (see ChatRef.LocalID).
 type DispatchFunc func(ctx context.Context, req DispatchRequest) error
 
-// DispatchRequest is the dispatch-time shape of a run, grouped by concern:
-// where it goes (Chat), what it asks (Ask), how it runs (Run), and what it
-// may deliver (Delivery). This is the entire surface an extension has to
-// influence a run - there are no agent-loop hooks (see the package doc):
-// everything here is decided once, before the workflow starts.
+// DispatchRequest is the entire surface an extension has to influence a run, decided once
+// before the workflow starts: there are no agent-loop hooks.
 type DispatchRequest struct {
 	Chat     ChatRef
 	Ask      Ask
@@ -308,13 +224,8 @@ type DispatchRequest struct {
 
 // ChatRef identifies and titles the chat a dispatch targets.
 type ChatRef struct {
-	// LocalID is a stable identity chosen by the extension, scoped to that
-	// extension - e.g. "doc-42", not "remarkable-doc-42". quack namespaces
-	// it into the global chat id as "ext:<extension>:<localID>", so two
-	// extensions (or an extension and a user chat) can never collide.
-	// Dispatching to a LocalID that already has a chat appends a turn to
-	// it (the GitHub webhook's resume semantics); one quack hasn't seen
-	// starts a fresh chat.
+	// LocalID is extension-scoped ("doc-42"); quack namespaces it as "ext:<extension>:<localID>".
+	// A LocalID that already has a chat gets a new turn; an unseen one starts a chat.
 	LocalID string
 
 	// User is the ADK session identity the run executes as.
@@ -323,20 +234,15 @@ type ChatRef struct {
 	// Title is applied only if the chat has no title yet.
 	Title string
 
-	// Origin is sidebar provenance: how the chat should present itself and
-	// group with others from the same extension. Nil is fine - the chat
-	// just renders with no origin chip.
+	// Origin is sidebar provenance; nil renders no origin chip.
 	Origin *ChatOrigin
 
-	// ResetHistory clears the chat's prior turns before this one is
-	// appended, replacing v1's Runner.ResetSession call.
+	// ResetHistory clears the chat's prior turns before this one is appended.
 	ResetHistory bool
 }
 
-// SubjectState is the typed lifecycle state of a ChatOrigin's subject (an
-// issue, PR, or extension-defined equivalent), for hosts that need to
-// interpret transitions without parsing Badge's display text. "" means
-// unknown or not applicable.
+// SubjectState is the typed lifecycle state of a ChatOrigin's subject, so hosts never parse
+// Badge's display text. "" means unknown or not applicable.
 type SubjectState string
 
 const (
@@ -345,36 +251,25 @@ const (
 	SubjectClosed SubjectState = "closed"
 )
 
-// ChatOrigin is generic provenance the SPA renders without knowing the
-// extension that produced it: a label chip, an optional badge and external
-// link, and grouping by extension/kind/whatever dimensions Labels carries.
+// ChatOrigin is generic provenance the SPA renders without knowing the extension: a label
+// chip, optional badge and link, and grouping by Kind and Labels.
 type ChatOrigin struct {
 	Extension string // registration name, e.g. "remarkable"
 	Label     string // human handle, e.g. the doc title or "owner/repo#42"
 	Kind      string // grouping category, e.g. "document", "pr", "issue"
-	// Href is the ONE navigable link for the chat's subject. Named for the
-	// role (a hypermedia reference), not the datatype - a plain URL type
-	// would say what it IS, not what it's FOR.
-	Href  string
-	Badge string // optional short status chip, e.g. "draft"
+	Href      string // the one navigable link for the chat's subject
+	Badge     string // optional short status chip, e.g. "draft"
 
-	// State is the machine-readable subject state. Badge remains
-	// display-only and hosts must never branch on Badge.
+	// State is the machine-readable subject state. Badge is display-only; hosts must never
+	// branch on it.
 	State SubjectState
 
-	// Labels carries extra grouping dimensions beyond Kind - repo, state,
-	// folder, tags, whatever the extension's domain needs - keyed for
-	// grouping (the sidebar renders one labeled section per key) and
-	// slice-valued because a single chat can carry several values on one
-	// dimension (e.g. a document with multiple tags). Named for the domain
-	// word extensions actually deal in (GitHub labels, reMarkable tablet
-	// tags), not frontend rendering jargon.
+	// Labels are extra grouping dimensions (repo, folder, tags), one sidebar section per key;
+	// slice-valued because one chat can carry several values on a dimension.
 	Labels map[string][]LabelValue
 }
 
-// LabelValue is one value within a ChatOrigin.Labels dimension. Display
-// (not Label) so a Labels[...] value's own display text doesn't stutter
-// against the map it lives in.
+// LabelValue is one value within a ChatOrigin.Labels dimension.
 type LabelValue struct {
 	Value   string // raw value; what matching/counting keys on
 	Display string // display text; "" falls back to Value
@@ -386,16 +281,14 @@ type Ask struct {
 	// Message is the turn content the planner sees.
 	Message string
 
-	// NodeContext is per-node background text - a narrower ask than
-	// Message, injected into a specific node's task rather than the
-	// planner-scoped evidence Message carries.
+	// NodeContext is per-node background text, injected into a specific node's task rather
+	// than the planner-scoped Message.
 	NodeContext string
 
 	// Attachments are delivered alongside Message.
 	Attachments []Attachment
 
-	// ContextItems are name-keyed detail a node's task may reference by
-	// name - e.g. one failing check's detail, one lint finding's detail.
+	// ContextItems are name-keyed details a node's task may reference by name.
 	ContextItems []NamedContext
 }
 
@@ -415,8 +308,8 @@ type Attachment struct {
 
 // RunConfig controls how the dispatched run executes.
 type RunConfig struct {
-	// Workflow names a workflow-catalog shape, e.g. "document-ingest".
-	// Empty selects quack's default planner-driven flow.
+	// Workflow names a workflow-catalog shape, e.g. "document-ingest". Empty selects
+	// quack's default planner-driven flow.
 	Workflow string
 
 	// ReadOnly forces every node read-only, with no delivery target.
@@ -425,10 +318,7 @@ type RunConfig struct {
 	// Setup is pre-clone coordinates; nil means no pre-provisioned clone.
 	Setup *Setup
 
-	// Timeout bounds this run's execution (not queue wait); zero means no
-	// per-run bound. Populating RunOutcome.TimedOut needs this: without a
-	// deadline scoped to the dispatch itself, "did this run time out" has
-	// nothing to compare against.
+	// Timeout bounds this run's execution, not queue wait; zero means no per-run bound.
 	Timeout time.Duration
 }
 
@@ -438,18 +328,13 @@ type Setup struct {
 	BaseRef    string
 	WorkBranch string
 
-	// ExistingHeadRef, when non-empty, names a branch that already exists on
-	// Repo and must be checked out as-is instead of creating WorkBranch fresh
-	// from BaseRef - e.g. resuming work on a pull request's own head branch.
-	// It overrides WorkBranch for the checkout, not just supplements it.
+	// ExistingHeadRef names a branch already on Repo to check out as-is instead of creating
+	// WorkBranch from BaseRef (e.g. a PR's head branch). It overrides WorkBranch.
 	ExistingHeadRef string
 }
 
-// DeliveryKind is the closed vocabulary of things a run can stage for
-// delivery. It is core-owned (quack stages delivery items; the extension
-// only allowlists kinds), so it is a typed constant rather than an open
-// string - two parties matching untyped strings means a typo is silent
-// non-delivery.
+// DeliveryKind is quack's closed vocabulary of deliverable items; typed so a mismatch
+// between quack and an extension is a compile error, not silent non-delivery.
 type DeliveryKind string
 
 const (
@@ -461,10 +346,8 @@ const (
 
 // DeliveryAuthority declares which delivery kinds a run may use.
 type DeliveryAuthority struct {
-	// AllowedKinds nil = unrestricted (today's nil-Grant semantics);
-	// non-nil empty = deny all. The extension resolves its own permission
-	// logic (labels, authorship, scope) down to this flat list before
-	// dispatch.
+	// AllowedKinds nil = unrestricted; non-nil empty = deny all. The extension resolves its
+	// own permission logic to this flat list before dispatch.
 	AllowedKinds []DeliveryKind
 }
 
@@ -503,10 +386,7 @@ func CallInfoFrom(ctx context.Context) (CallInfo, bool) {
 
 // --- Inverse capabilities: quack calls into the extension. ---
 
-// Deliverer is an optional interface an extension implements to receive
-// staged delivery items quack has already gated and pushed. Detected via
-// type assertion on the registered Extension, the same pattern as
-// Starter.
+// Deliverer is optional: quack hands it staged items it has already gated and pushed.
 type Deliverer interface {
 	Deliver(ctx context.Context, dc DeliveryContext) ([]DeliveryItemOutcome, error)
 }
@@ -520,15 +400,11 @@ type DeliveryContext struct {
 
 	CloneURL string
 
-	// PushedSHA is proof quack already pushed Branch before calling
-	// Deliver - the extension never touches quack's clone directory
-	// itself.
+	// PushedSHA proves quack already pushed Branch; the extension never touches quack's clone.
 	PushedSHA string
 
-	// PushError is non-empty when quack's own push failed before Deliver was
-	// called - Items are still the originally staged set (never attempted).
-	// Deliverer implementations must skip attempting them and report this as
-	// each item's failure instead (quack #1155/#1158).
+	// PushError is set when quack's own push failed. Deliverers must not attempt Items and
+	// should report this as each item's failure.
 	PushError string
 
 	Branch string
@@ -539,11 +415,8 @@ type DeliveryContext struct {
 	GateFeedback   string
 	ChecksSkipNote string
 
-	// IdempotencyKey identifies this delivery for crash recovery (#1093,
-	// quack design V4 §4.9): quack's target artifact id + revision. "" on a
-	// build that predates this field - an extension that embeds it in the
-	// posted item (e.g. a hidden marker) makes that post findable later by
-	// DeliveryRecoverer without ever posting twice.
+	// IdempotencyKey (target artifact id + revision) lets DeliveryRecoverer find a post after a
+	// crash, e.g. via a hidden marker. "" from an older host.
 	IdempotencyKey string
 }
 
@@ -558,9 +431,7 @@ type StagedDelivery struct {
 	TitleOmitted bool
 	BodyOmitted  bool
 
-	// Event and Slot are opaque to quack-core: Event is dropped into the
-	// judge prompt as label text (never parsed against an enum), Slot is
-	// used only as half of a dedup key. Both stay plain strings - the
+	// Event and Slot are opaque to quack (judge-prompt label text and half a dedup key); the
 	// extension owns their vocabulary.
 	Event string
 	Slot  string
@@ -570,9 +441,7 @@ type StagedDelivery struct {
 	Recovered bool
 }
 
-// ReviewComment is one inline comment on a staged review. Path/Line earn
-// their place as structural fields (not opaque strings) because quack-core
-// itself formats them for the judge's findings report.
+// ReviewComment is one inline comment on a staged review.
 type ReviewComment struct {
 	Path string
 	Line int
@@ -590,20 +459,14 @@ type DeliveryItemOutcome struct {
 	Error string
 }
 
-// DeliveryRecoverer is an optional interface an extension implements so
-// quack can reconcile a delivery.intent with no delivery.done after a crash
-// (#1093, quack design V4 §4.9): look the idempotency key up at the target
-// (a hidden body marker, a document id) and report whether it was already
-// posted, without posting again. Detected via type assertion, same pattern
-// as Deliverer.
+// DeliveryRecoverer is optional: after a crash between delivery intent and done, it looks the
+// idempotency key up at the target and reports whether it was posted, never posting again.
 type DeliveryRecoverer interface {
 	RecoverDelivery(ctx context.Context, key string, dc DeliveryContext) (found bool, outcome DeliveryItemOutcome, err error)
 }
 
-// GitCredentialSource is an optional interface an extension implements to
-// hand quack credentials for cloning or pushing to its own remotes. Used
-// both for the initial clone and for quack's own push before Deliver is
-// called.
+// GitCredentialSource is optional: credentials for cloning or pushing to the extension's own
+// remotes, used for the initial clone and quack's push before Deliver.
 type GitCredentialSource interface {
 	GitCredential(ctx context.Context, rawURL string) (*GitCredential, error)
 }
@@ -626,9 +489,8 @@ type Assignment struct {
 	ContextID string
 	TaskID    string
 
-	// Meta is namespaced per extension: quack stores each extension's own
-	// OnAssignment return value under Meta[<that extension's registered
-	// name>], never under a key the extension didn't itself return.
+	// Meta is keyed by extension name: Meta[name] holds only that extension's own
+	// OnAssignment return value.
 	Meta map[string]map[string]any
 }
 
@@ -644,26 +506,17 @@ type AssignmentFreshnessChecker interface {
 	BeforeAssignment(ctx context.Context, a Assignment) (fresh bool, reason string)
 }
 
-// Factory builds an extension. config is the raw bytes of the deployment's
-// extensions.<name> block - the extension unmarshals its own config; quack
-// treats extension blocks as opaque beyond the reserved BaseConfig keys
-// (see its doc comment). Factories must be side-effect free: validate
-// config and construct, nothing more (see Starter).
+// Factory builds an extension from the raw bytes of its extensions.<name> block. It must be
+// side-effect free: validate and construct only (see Starter).
 type Factory func(host Host, config []byte) (Extension, error)
 
-// BaseConfig is the small set of keys quack itself reads from every
-// extensions.<name> block before handing the same raw bytes to Factory -
-// "enabled" and "data_dir" are reserved: an extension's own config struct
-// should not redefine them (yaml silently ignores unknown fields, so
-// leaving them out of an extension's struct is enough).
+// BaseConfig is the keys quack reads from every extensions.<name> block before Factory sees the
+// same bytes; "enabled" and "data_dir" are reserved, so extension configs must not redefine them.
 type BaseConfig struct {
-	// Enabled, read from the "enabled" key, defaults to true when the
-	// extensions.<name> block exists at all - so a deployment can disable
-	// a module (dormant, exactly like an absent block) without deleting
-	// its config.
+	// Enabled defaults to true when the block exists, so a deployment can disable a module
+	// without deleting its config.
 	Enabled *bool `yaml:"enabled"`
 
-	// DataDir, read from the "data_dir" key, overrides Host.DataDir's
-	// default (<workspace>/extensions/<name>) when non-empty.
+	// DataDir overrides Host.DataDir's default (<workspace>/extensions/<name>) when non-empty.
 	DataDir string `yaml:"data_dir"`
 }
