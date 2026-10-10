@@ -9,18 +9,10 @@ import (
 	"github.com/fagerbergj/quack-extensions/sdk"
 )
 
-// TestHostContextDirChatUserArchiveChat pins the v0.3.0 Host additions'
-// signatures - a real caller (quack's serve package) wires these as plain
-// closures, so the sdk package itself only proves the shape is callable.
-func TestHostContextDirChatUserArchiveChat(t *testing.T) {
+// TestHostChatUserArchiveChat pins the ChatUser/ArchiveChat signatures quack wires as closures.
+func TestHostChatUserArchiveChat(t *testing.T) {
 	var archived []string
 	h := sdk.Host{
-		EnsureContextDir: func(userID, chatID string) (string, error) {
-			if userID == "" || chatID == "" {
-				return "", errors.New("missing id")
-			}
-			return "/data/" + userID + "/" + chatID, nil
-		},
 		ChatUser: func(chatID string) (string, bool) {
 			if chatID == "known" {
 				return "alice", true
@@ -31,11 +23,6 @@ func TestHostContextDirChatUserArchiveChat(t *testing.T) {
 			archived = append(archived, chatID)
 			return nil
 		},
-	}
-
-	dir, err := h.EnsureContextDir("u1", "c1")
-	if err != nil || dir != "/data/u1/c1" {
-		t.Errorf("EnsureContextDir(u1, c1) = (%q, %v), want (/data/u1/c1, nil)", dir, err)
 	}
 
 	if user, ok := h.ChatUser("known"); !ok || user != "alice" {

@@ -127,10 +127,6 @@ type Host struct {
 	// unconfigured: fall back to time.Local.
 	Location *time.Location
 
-	// Deprecated: use ReadArtifact/WriteArtifact. Returns a workspace dir beside a
-	// dispatched run's clone; kept until no consumer remains.
-	EnsureContextDir func(userID, chatID string) (string, error)
-
 	// ReadArtifact returns the latest bytes of a named input artifact in this chat, ok=false
 	// when absent. user is the chat's ChatRef.User; the host may substitute the stored one.
 	ReadArtifact func(chatID, user, name string) (data []byte, ok bool)
