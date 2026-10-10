@@ -767,12 +767,6 @@ func formatArgs(args map[string]string) string {
 	return " " + strings.Join(parts, "; ") + "."
 }
 
-// jobRunnable gates dispatch: an unbound job would leave the planner guessing.
-func jobRunnable(job string) bool {
-	_, ok := jobWorkflows[job]
-	return ok
-}
-
 type runnableJobsResponse struct {
 	Runnable []string `json:"runnable"`
 }
@@ -802,11 +796,6 @@ func (e *extension) handleJobs(w http.ResponseWriter, r *http.Request) {
 	}
 	if !jobIsValid(req.Job, jobs, talksAllowed) {
 		e.writeErr(w, http.StatusBadRequest, fmt.Sprintf("job %q is not valid for stop %q", req.Job, req.Stop))
-		return
-	}
-	// Drift guard: unreachable today; fires if jobsForStop gains a job jobWorkflows lacks.
-	if !jobRunnable(req.Job) {
-		e.writeErr(w, http.StatusConflict, fmt.Sprintf("no agent is bound for the %s job yet", req.Job))
 		return
 	}
 	localID, title, err := localIDFor(req)

@@ -540,7 +540,6 @@ func TestHandleRunnableJobsMatchesJobWorkflows(t *testing.T) {
 	}
 }
 
-// These pin localIDFor's trade branch directly: handleJobs' 409 gate short-circuits trade before HTTP does.
 func TestLocalIDForTradeRequiresPartner(t *testing.T) {
 	_, _, err := localIDFor(jobRequest{LeagueID: testLeague, Stop: "2", Job: "trade"})
 	if err == nil {

@@ -76,17 +76,6 @@ func TestRunEndedUnknownChatIsNoop(t *testing.T) {
 	}
 }
 
-func TestJobRunnableMatchesJobWorkflows(t *testing.T) {
-	for _, job := range []string{"lineup", "waivers", "trends", "digest", "retro", "draft", "history", "trade", "trade-finder"} {
-		if !jobRunnable(job) {
-			t.Errorf("jobRunnable(%q) = false, want true (in jobWorkflows)", job)
-		}
-	}
-	if jobRunnable("nonexistent-job") {
-		t.Error(`jobRunnable("nonexistent-job") = true, want false (no jobWorkflows entry)`)
-	}
-}
-
 // TestDispatchTrackedMarksRunningBeforeDispatch: a Dispatch that fires RunEnded before returning must
 // not leave the chat marked running.
 func TestDispatchTrackedMarksRunningBeforeDispatch(t *testing.T) {
