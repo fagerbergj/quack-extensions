@@ -259,31 +259,7 @@ func TestHandleArtifactsBadStop(t *testing.T) {
 	}
 }
 
-func TestHandleArtifactsFixtureFallback(t *testing.T) {
-	_, r := newTestExtension(t, sdk.Host{}, config{Fixture: true})
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/artifacts?league_id="+testLeague+"&stop=2", nil))
-	var resp artifactsResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	lineup := resp.Jobs["lineup"]
-	if !lineup.Found || !lineup.Example {
-		t.Errorf("lineup = %+v, want found+example from the fixture", lineup)
-	}
-	if len(lineup.Data) == 0 {
-		t.Error("fixture data is empty")
-	}
-	if resp.SeasonNotes == nil || !resp.SeasonNotes.Found || !resp.SeasonNotes.Example {
-		t.Errorf("season_notes = %+v, want a fixture example", resp.SeasonNotes)
-	}
-	if len(resp.Talks) != 1 || !resp.Talks[0].Example {
-		t.Errorf("talks = %+v, want one example talk", resp.Talks)
-	}
-}
-
-// TestHandleArtifactsRealTradeTalkDiscovery exercises readTradeTalks' discovery over real league members,
-// not the fixture fallback.
+// TestHandleArtifactsRealTradeTalkDiscovery exercises readTradeTalks' discovery over real league members.
 func TestHandleArtifactsRealTradeTalkDiscovery(t *testing.T) {
 	const riceCookerOwnerID = "740613226189987840" // pirates5 / "Rice Cooker" in testLeague's fixture users
 	chatID := "ext:sleeper:" + testLeague + ":trade:" + riceCookerOwnerID
@@ -329,42 +305,19 @@ func TestHandleArtifactsRunningFirstTalkSurfaces(t *testing.T) {
 	}
 }
 
-// TestHandleArtifactsFixtureDoesNotShadowRealArtifact pins readArtifact's
-// real-first order: with Fixture on AND a real chat, the real one must win.
-func TestHandleArtifactsFixtureDoesNotShadowRealArtifact(t *testing.T) {
-	chatID := "ext:sleeper:" + testLeague + ":2:lineup"
-	host := &fakeHost{artifacts: map[string]map[string][]byte{
-		chatID: {"lineup": []byte(`{"week":2,"team":"real"}`)},
-	}}
-	_, r := newTestExtension(t, host.sdkHost(), config{Fixture: true})
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/artifacts?league_id="+testLeague+"&stop=2", nil))
-	var resp artifactsResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	lineup := resp.Jobs["lineup"]
-	if !lineup.Found || lineup.Example {
-		t.Errorf("lineup = %+v, want Found && !Example (real artifact must win over the fixture)", lineup)
-	}
-	if string(lineup.Data) != `{"week":2,"team":"real"}` {
-		t.Errorf("data = %s, want the real stored bytes, not the fixture", lineup.Data)
-	}
-}
-
-func TestHandleArtifactsNoFixtureLeavesEmpty(t *testing.T) {
-	_, r := newTestExtension(t, sdk.Host{}, config{Fixture: false})
+func TestHandleArtifactsNoHostLeavesEmpty(t *testing.T) {
+	_, r := newTestExtension(t, sdk.Host{}, config{})
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/artifacts?league_id="+testLeague+"&stop=2", nil))
 	var resp artifactsResponse
 	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 	for job, env := range resp.Jobs {
 		if env.Found {
-			t.Errorf("jobs[%s] found with no host and fixture off: %+v", job, env)
+			t.Errorf("jobs[%s] found with no host: %+v", job, env)
 		}
 	}
 	if len(resp.Talks) != 0 {
-		t.Errorf("talks = %+v, want none with no host and fixture off", resp.Talks)
+		t.Errorf("talks = %+v, want none with no host", resp.Talks)
 	}
 }
 
@@ -639,7 +592,7 @@ func TestHandleJobsBadInput(t *testing.T) {
 // TestUIServesUnderQuackMount mounts like quack's router (r.Mount("/"+name, ...), which chi does not
 // strip); the page and assets must still resolve.
 func TestUIServesUnderQuackMount(t *testing.T) {
-	e := &extension{host: sdk.Host{}, cfg: config{Fixture: true, DefaultUser: testUser, DefaultLeague: testLeague}, client: newTestClient(t)}
+	e := &extension{host: sdk.Host{}, cfg: config{DefaultUser: testUser, DefaultLeague: testLeague}, client: newTestClient(t)}
 	combined := chi.NewRouter()
 	e.RegisterRoutes(combined, combined)
 	r := chi.NewRouter()

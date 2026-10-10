@@ -2,6 +2,7 @@ package sleeper
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -12,6 +13,20 @@ import (
 
 	"github.com/fagerbergj/quack-extensions/sdk"
 )
+
+//go:embed ui/fixtures
+var uiFixturesFS embed.FS
+
+// fixtureBytes holds the reference artifacts the storybook stories also render.
+var fixtureBytes = func() map[string][]byte {
+	out := map[string][]byte{}
+	for _, name := range artifactKinds {
+		if b, err := uiFixturesFS.ReadFile("ui/fixtures/" + name + ".json"); err == nil {
+			out[name] = b
+		}
+	}
+	return out
+}()
 
 // decideRecorder is a fake Host.Decide that records each request.
 type decideRecorder struct {

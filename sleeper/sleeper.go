@@ -36,9 +36,6 @@ type config struct {
 
 	// Timezone overrides Host.Location for *_local fields; an IANA name like America/Chicago.
 	Timezone string `yaml:"timezone"`
-
-	// Fixture serves the reference example JSON (marked Example) for any card with no real chat yet.
-	Fixture bool `yaml:"fixture"`
 }
 
 func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {

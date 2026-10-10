@@ -26,17 +26,14 @@ import (
 //go:embed ui/static
 var uiStaticFS embed.FS
 
-//go:embed ui/fixtures
-var uiFixturesFS embed.FS
-
 //go:embed ui/schemas
 var uiSchemasFS embed.FS
 
 // ArtifactSchemas implements sdk.ArtifactSchemas with the schemas the page
 // itself reads by, so an agent's artifact is checked against its one consumer.
 func (e *extension) ArtifactSchemas() map[string]json.RawMessage {
-	out := make(map[string]json.RawMessage, len(fixtureJobNames))
-	for _, kind := range fixtureJobNames {
+	out := make(map[string]json.RawMessage, len(artifactKinds))
+	for _, kind := range artifactKinds {
 		b, err := uiSchemasFS.ReadFile("ui/schemas/" + kind + ".json")
 		if err != nil {
 			panic("sleeper: embedded schema missing for artifact kind " + kind + ": " + err.Error())
@@ -46,21 +43,8 @@ func (e *extension) ArtifactSchemas() map[string]json.RawMessage {
 	return out
 }
 
-var fixtureBytes = loadFixtures()
-
-// fixtureJobNames is every artifact name with a fixture: the job ids plus season-notes and trade.
-var fixtureJobNames = []string{"lineup", "waivers", "trade", "trade-finder", "digest", "trends", "retro", "draft", "history", "season-notes"}
-
-func loadFixtures() map[string]json.RawMessage {
-	out := make(map[string]json.RawMessage, len(fixtureJobNames))
-	for _, name := range fixtureJobNames {
-		b, err := uiFixturesFS.ReadFile("ui/fixtures/" + name + ".json")
-		if err == nil {
-			out[name] = json.RawMessage(b)
-		}
-	}
-	return out
-}
+// artifactKinds is every artifact name with a schema: the job ids plus season-notes and trade.
+var artifactKinds = []string{"lineup", "waivers", "trade", "trade-finder", "digest", "trends", "retro", "draft", "history", "season-notes"}
 
 func (e *extension) mountUI(authed chi.Router) {
 	authed.Get("/api/seasons", e.handleSeasons)
@@ -515,8 +499,7 @@ type artifactEnvelope struct {
 // maxInvalidTextBytes caps an invalid artifact's raw text so an agent runaway can't balloon the response.
 const maxInvalidTextBytes = 64 * 1024
 
-// readArtifact tries the real chat first (non-JSON comes back Invalid); with cfg.Fixture a miss serves the
-// reference example, marked Example.
+// readArtifact reads the job chat's artifact; non-JSON comes back Invalid.
 func (e *extension) readArtifact(chatID, name string) artifactEnvelope {
 	if e.host.ReadArtifact != nil {
 		if data, ok := e.host.ReadArtifact(chatID, e.cfg.DefaultUser, name); ok {
@@ -524,11 +507,6 @@ func (e *extension) readArtifact(chatID, name string) artifactEnvelope {
 				return artifactEnvelope{Found: true, Data: parsed}
 			}
 			return artifactEnvelope{Found: true, Invalid: true, Text: capText(data, maxInvalidTextBytes)}
-		}
-	}
-	if e.cfg.Fixture {
-		if fx, ok := fixtureBytes[name]; ok {
-			return artifactEnvelope{Found: true, Example: true, Data: fx}
 		}
 	}
 	return artifactEnvelope{Found: false}
@@ -603,7 +581,7 @@ func (e *extension) readTradeTalks(ctx context.Context, leagueID string) []trade
 		env := e.readArtifact(chatID, "trade")
 		running := e.isRunning(chatID)
 		switch {
-		case env.Found && !env.Example:
+		case env.Found:
 			env.Running = running
 			out = append(out, tradeTalkEnvelope{Partner: t.Name, PartnerID: t.ID, artifactEnvelope: env})
 		case running:
@@ -611,23 +589,7 @@ func (e *extension) readTradeTalks(ctx context.Context, leagueID string) []trade
 			out = append(out, tradeTalkEnvelope{Partner: t.Name, PartnerID: t.ID, artifactEnvelope: artifactEnvelope{Running: true}})
 		}
 	}
-	if len(out) == 0 && e.cfg.Fixture {
-		if fx, ok := fixtureBytes["trade"]; ok {
-			name, id := fixturePartner(fx)
-			out = append(out, tradeTalkEnvelope{Partner: name, PartnerID: id, artifactEnvelope: artifactEnvelope{Found: true, Example: true, Data: fx}})
-		}
-	}
 	return out
-}
-
-// fixturePartner reads the fixture's own partner_id so fixture talks key on a user_id like real ones.
-func fixturePartner(fx json.RawMessage) (name, id string) {
-	var v struct {
-		Partner   string `json:"partner"`
-		PartnerID string `json:"partner_id"`
-	}
-	_ = json.Unmarshal(fx, &v)
-	return v.Partner, v.PartnerID
 }
 
 // jobsForStop is the closed set of artifact-backed jobs per stop; only week stops allow trade talks.
