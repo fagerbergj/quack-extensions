@@ -2,6 +2,7 @@ package usage
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -146,5 +147,13 @@ func TestRegisteredInInit(t *testing.T) {
 	factories := sdk.Registered()
 	if _, ok := factories["usage"]; !ok {
 		t.Fatal(`sdk.Registered() missing "usage" - init() should have registered it`)
+	}
+}
+
+// An empty extensions.usage block must reach validation, not fail as a YAML parse error.
+func TestFactoryEmptyConfig(t *testing.T) {
+	_, err := factory(newTestHost(), nil)
+	if err == nil || !strings.Contains(err.Error(), "prometheus_url is required") {
+		t.Fatalf("factory(nil raw) = %v, want prometheus_url is required", err)
 	}
 }
