@@ -17,53 +17,6 @@ func permissionsText(allowedKinds []string) string {
 	return strings.Join(allowedKinds, ", ")
 }
 
-// dropField reports keys dropped from filtered event/comment JSON.
-func dropField(key string) bool {
-	switch key {
-	case "node_id", "avatar_url", "reactions", "performed_via_github_app", "url":
-		return true
-	}
-	return strings.HasSuffix(key, "_url")
-}
-
-// filterGitHubJSON decodes raw and re-marshals with dropField's keys removed. "{}" on failure.
-func filterGitHubJSON(raw []byte) string {
-	if len(raw) == 0 {
-		return "{}"
-	}
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return "{}"
-	}
-	out, err := json.Marshal(filterJSONValue(v))
-	if err != nil {
-		return "{}"
-	}
-	return string(out)
-}
-
-func filterJSONValue(v any) any {
-	switch t := v.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(t))
-		for k, val := range t {
-			if dropField(k) {
-				continue
-			}
-			out[k] = filterJSONValue(val)
-		}
-		return out
-	case []any:
-		out := make([]any, len(t))
-		for i, val := range t {
-			out[i] = filterJSONValue(val)
-		}
-		return out
-	default:
-		return v
-	}
-}
-
 // seededComment is a comment's four-field seed: id, created_at, user.login, body.
 type seededComment struct {
 	ID        int64  `json:"id"`

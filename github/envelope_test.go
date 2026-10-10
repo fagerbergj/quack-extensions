@@ -160,63 +160,6 @@ func TestBuildEnvelopeTitleChangeMarking(t *testing.T) {
 	}
 }
 
-// The filter is a drop-list, never a rename: GitHub's names and nesting survive, while node_id,
-// *_url, avatar_url and bare "url" are dropped at every nesting level.
-func TestFilterGitHubJSONDropsNoiseKeepsShape(t *testing.T) {
-	raw := []byte(`{
-		"action":"opened",
-		"pull_request":{
-			"number":97,"node_id":"PR_abc","url":"https://api.github.com/x",
-			"head":{"ref":"feat/x","sha":"abc123","repo":{"full_name":"acme/widgets"}},
-			"base":{"ref":"main"},
-			"user":{"login":"alice","avatar_url":"https://x","node_id":"U_1"}
-		},
-		"repository":{"full_name":"acme/widgets","html_url":"https://x"},
-		"sender":{"login":"alice","avatar_url":"https://x"},
-		"reactions":{"total_count":0},
-		"performed_via_github_app":null
-	}`)
-	filtered := filterGitHubJSON(raw)
-
-	var v map[string]any
-	if err := json.Unmarshal([]byte(filtered), &v); err != nil {
-		t.Fatalf("filtered output is not valid JSON: %v\n%s", err, filtered)
-	}
-	pr, ok := v["pull_request"].(map[string]any)
-	if !ok {
-		t.Fatalf("pull_request missing from filtered output:\n%s", filtered)
-	}
-	head, ok := pr["head"].(map[string]any)
-	if !ok || head["ref"] != "feat/x" || head["sha"] != "abc123" {
-		t.Errorf("pull_request.head.ref/sha not preserved with GitHub's own names/nesting:\n%s", filtered)
-	}
-	if base, ok := pr["base"].(map[string]any); !ok || base["ref"] != "main" {
-		t.Errorf("pull_request.base.ref not preserved:\n%s", filtered)
-	}
-	for _, dropped := range []string{`"node_id"`, `"avatar_url"`, `"html_url"`, `"reactions"`, `"performed_via_github_app"`} {
-		if strings.Contains(filtered, dropped) {
-			t.Errorf("filtered event still contains dropped key %s:\n%s", dropped, filtered)
-		}
-	}
-	// A bare "url" key is dropped too, everywhere - but "full_name" (which
-	// merely CONTAINS no "url" substring at a word boundary) must survive.
-	if _, ok := pr["url"]; ok {
-		t.Errorf("pull_request.url should have been dropped:\n%s", filtered)
-	}
-	if repo, ok := v["repository"].(map[string]any); !ok || repo["full_name"] != "acme/widgets" {
-		t.Errorf("repository.full_name not preserved:\n%s", filtered)
-	}
-}
-
-// An unknown field survives: only the named drop-list is removed, so new GitHub fields need no maintenance.
-func TestFilterGitHubJSONUnknownFieldSurvives(t *testing.T) {
-	raw := []byte(`{"action":"opened","brand_new_field_from_github":"some value"}`)
-	filtered := filterGitHubJSON(raw)
-	if !strings.Contains(filtered, "brand_new_field_from_github") {
-		t.Errorf("an unrecognised GitHub field should survive the drop-list filter unchanged:\n%s", filtered)
-	}
-}
-
 // <permissions> states exactly the closed vocabulary (pull_request, review, comment) that staged delivery
 // and the trust gate's allowlist use.
 func TestPermissionsTextRendersAllowedKinds(t *testing.T) {
