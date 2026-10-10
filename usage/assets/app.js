@@ -1,32 +1,22 @@
-// quack usage dashboard - vanilla JS, no build step, no CDN. Charts are
-// hand-rolled inline SVG (stacked area / multi-line / columns / donut): the
-// dataset here is a handful of series over a handful of ranges, nowhere
-// near where a ~40KB charting library (uPlot et al.) earns its weight.
+// quack usage dashboard: vanilla JS, no build step, no CDN. Charts are hand-rolled inline SVG;
+// a few series over a few ranges doesn't earn a ~40KB charting library.
 
-// Single source of truth for every metric/label string this page queries.
-// MIRRORS quack's internal/otelobs token/cost/latency instruments
-// (internal/otelobs/metrics.go) - that contract can drift, so this block is
-// the one place to fix on integration. OTel counters/histograms surface to
-// Prometheus as "<dotted_name_with_underscores>[_unit]_total|_bucket|_sum|_count".
+// Every metric/label string this page queries; mirrors quack's internal/otelobs/metrics.go.
+// OTel surfaces to Prometheus as "<dotted_name_with_underscores>[_unit]_total|_bucket|_sum|_count".
 const METRICS = {
   tokenUsage: "gen_ai_client_token_usage_total",
-  // The collector appends the metric's unit to the name (verified live
-  // 2026-08-13: gen_ai.client.cost, unit USD -> gen_ai_client_cost_USD_total).
-  // Match both spellings so a unit-stripping exporter config still works.
+  // The collector appends the unit (gen_ai_client_cost_USD_total); match both spellings so a
+  // unit-stripping exporter config still works.
   costNameRegex: 'gen_ai_client_cost(_USD)?_total',
   labels: {
-    // the contract names this gen_ai_request_model, but semconv-derived
-    // OTel->Prometheus exporters sometimes surface it unqualified as
-    // "model" - group by both and resolve whichever is non-empty (see
-    // firstLabel below) rather than guessing which one lands.
+    // Exporters sometimes surface gen_ai_request_model unqualified as "model": group by both and
+    // resolve whichever is non-empty (firstLabel).
     model: "gen_ai_request_model",
     modelFallback: "model",
     source: "source",
     agent: "agent",
     user: "user",
-    // Same translation hazard as model: the semconv attr gen_ai.token.type
-    // lands as gen_ai_token_type (verified live 2026-08-12); keep the
-    // unqualified name as fallback for other exporter configs.
+    // Same hazard: gen_ai.token.type lands as gen_ai_token_type; keep the unqualified fallback.
     tokenType: "gen_ai_token_type",
     tokenTypeFallback: "token_type",
   },
@@ -35,30 +25,21 @@ const METRICS = {
   tokenTypeOutput: "output",
 };
 
-// TOKEN_TYPES is the canonical display order for the headline stacked chart
-// and the cache-rate chart - fixed (not discovery-order) so "cached"/"input"
-// carry the same color in both places regardless of which panel's fetch
-// resolves first.
+// TOKEN_TYPES is a fixed display order so "cached"/"input" keep one color across panels
+// whichever fetch resolves first.
 const TOKEN_TYPES = ["input", "output", "reasoning", "cached"];
 
-// LATENCY mirrors quack.model.call.duration (internal/otelobs/metrics.go):
-// a Float64Histogram, unit "s", attrs: model. Name verified against the live
-// collector 2026-08-12. The presence probe below still never fakes data:
-// it checks for the "_bucket" series before claiming a p50/p95/p99 chart.
+// LATENCY is quack.model.call.duration (a histogram, unit "s"). The page probes for its
+// "_bucket" series before claiming a p50/p95/p99 chart.
 const LATENCY = {
   metric: "quack_model_call_duration_seconds",
 };
 
-// Sparse-data presentation. At a few runs a day a per-step increase() line
-// is mostly a flat zero with occasional spikes, and the polyline's slopes
-// between them imply activity that never happened. Below this many NON-ZERO
-// points, an additive chart draws columns instead: one mark per step that
-// actually had traffic, nothing drawn between them.
+// Below this many NON-ZERO points an additive chart draws columns: a line through the zeros
+// between a few daily runs implies traffic that never happened.
 const SPARSE_MAX_NONZERO = 8;
 
-// Donut slice budget. Six named slices + "Other" is the readable ceiling for
-// a 180px ring; the series beside it uses the SAME ranking so a label keeps
-// one color across both halves of the card.
+// Six named slices + "Other" is the readable ceiling for a 180px ring.
 const DONUT_TOP_N = 6;
 
 const RANGES = { "1h": 3600, "24h": 86400, "7d": 604800, "30d": 2592000 };
@@ -69,10 +50,7 @@ const EMPTY_TOKENS_MSG = "no token data in this range (token metrics need quack 
 const EMPTY_COST_MSG = "no cost data — cost needs a price table (providers.<p>.models.<model>) in quack's config, v0.30+.";
 const EMPTY_LATENCY_MSG = `no data — the ${LATENCY.metric}_bucket histogram isn't present (check the OTel collector's Prometheus naming translation, or quack hasn't made a model call yet).`;
 
-// --- Step heuristic. MIRRORS usage/step.go's stepForSpan exactly (same
-// table, same rounding) - the Go copy seeds the page's initial default
-// range server-side; this copy drives every range change/custom pick the
-// server never sees. Keep the two in lockstep by hand if the formula moves. ---
+// Step heuristic: ~150 points per span, rounded up to a human-legible step.
 
 const NICE_STEPS = [15, 30, 60, 300, 900, 1800, 3600, 7200, 21600, 43200, 86400, 172800, 604800];
 
@@ -85,21 +63,8 @@ function stepForSpan(spanSeconds) {
   return raw;
 }
 
-// --- Categorical color. Two different needs, two different mechanisms:
-//
-// token_type is the one dimension that appears in more than one panel (the
-// headline chart and the cache-rate chart) - it gets a FIXED mapping so
-// "cached" is the same color everywhere, independent of fetch order.
-//
-// Every other dimension (model/source/agent/user) is scoped to exactly one
-// card - the donut and the series in it share ONE assigner, fed the same
-// ranked list, so a label is one color across both - so each card gets its
-// own fresh discovery-order assigner
-// (makeColorAssigner) over the full 8-slot palette - there's no cross-panel
-// value overlap to protect, and sharing one global counter across
-// unrelated dimensions would just starve later panels of slots for no
-// reason. A 9th+ series folds to the neutral "other" color, never a
-// borrowed categorical slot. ---
+// token_type spans panels, so it gets a FIXED color mapping. Other dimensions live in one card each
+// and get a fresh discovery-order assigner; a 9th+ series folds to the neutral "other" color.
 
 const MAX_PALETTE_SLOTS = 8;
 
@@ -124,9 +89,7 @@ function makeColorAssigner() {
   };
 }
 
-// Latency percentiles get distinct FIXED colors, independent of any
-// discovery-order assigner - percentile identity, not any dimension value,
-// is what needs to stay visually stable here.
+// Latency percentiles get fixed colors: percentile identity is what must stay visually stable.
 function latencyColor(quantileLabel) {
   if (quantileLabel === "p50") return cssVar("--series-1");
   if (quantileLabel === "p95") return cssVar("--series-2");
@@ -161,11 +124,8 @@ async function promFetch(path) {
   return body;
 }
 
-// promResultOrStatus classifies a Prometheus API response into
-// {ok:true, series} or {ok:false, empty, message}. "empty" means the whole
-// query returned zero result vectors - callers with more than one series in
-// play (e.g. cache-rate's cached+input) should NOT rely on this alone to
-// decide emptiness; see loadCachePanel's own presence check.
+// promResultOrStatus returns {ok:true, series} or {ok:false, empty, message}. "empty" means zero
+// result vectors; multi-series panels (cache) must make their own presence check.
 function promResultOrStatus(resp) {
   if (resp.networkError) {
     return { ok: false, empty: false, message: resp.networkError };
@@ -196,9 +156,8 @@ function firstLabel(metric, ...names) {
   return "(unknown)";
 }
 
-// matrixSeriesPoints turns one query_range result item into [{t,v}],
-// dropping NaN samples (histogram_quantile emits "NaN" for a bucket with no
-// observations in that window - that's an absent point, not a zero).
+// matrixSeriesPoints drops NaN samples: histogram_quantile emits "NaN" for an empty bucket,
+// which is an absent point, not a zero.
 function matrixSeriesPoints(item) {
   return item.values
     .map(([t, v]) => ({ t, v: Number(v) }))
@@ -211,11 +170,8 @@ function countNonZeroPoints(points) {
   return n;
 }
 
-// shouldRenderBars decides columns-vs-line for a whole chart (never a mix -
-// two mark types in one plot read as two different measurements). Only
-// additive charts qualify: stacking p50/p95/p99 or a percentage would be a
-// lie. The busiest series decides, so one dense series keeps the whole
-// chart on lines.
+// shouldRenderBars decides columns-vs-line for a whole chart, never a mix. Only additive charts
+// qualify, and the busiest series decides.
 function shouldRenderBars(series, additive) {
   if (!additive) return false;
   let most = 0;
@@ -282,12 +238,8 @@ function showError(el, msg) {
   el.appendChild(p);
 }
 
-// tooltipRow builds one "<swatch> text" tooltip line out of DOM nodes.
-// NEVER assemble one by interpolating into an HTML sink: `text` carries
-// Prometheus label values (model/agent/user names), which reach this page
-// straight out of the metrics store and would otherwise be parsed as
-// markup. `color` is ours (a --series-* token), not data. The test pins
-// that this file has no such sink at all.
+// tooltipRow builds a tooltip line from DOM nodes: `text` carries Prometheus label values, so it
+// must never reach an HTML sink. `color` is ours.
 function tooltipRow(color, text) {
   const row = document.createElement("div");
   const mark = document.createElement("span");
@@ -320,32 +272,16 @@ function donutEl(name) {
   return document.querySelector(`[data-donut="${name}"]`);
 }
 
-// ============================================================
-// Chart renderer: shared multi-series SVG chart with a fixed
-// [start, end] x-domain (every panel uses the SAME domain from the one
-// picker - never derived per-chart from its own data), a legend with a
-// cheap local show/hide toggle (no cross-panel filter state), and a
-// hover crosshair + tooltip.
-// ============================================================
+// Chart renderer: every panel shares the picker's [start, end] x-domain, a local legend toggle,
+// and a hover crosshair + tooltip.
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const CHART_W = 600;
 const CHART_H = 150;
 const CHART_PAD = 8;
 
-// renderSeriesChart(el, spec) returns {redraw} so an external legend (the
-// donut's, on the dimension cards) can toggle a series and repaint. spec:
-//   series: [{key, label, color, points: [{t,v}]}]
-//   start, end: shared x-domain, unix seconds
-//   step: query step in seconds, sets the column width in bars mode
-//   mode: "stacked-area" | "lines"
-//   additive: true when the series sum to a meaningful total - the
-//     precondition for stacking, and for the sparse->columns switch
-//   hidden: optional externally-owned Set of hidden series keys
-//   emptyMsg: shown when every series has zero points
-//   valueFormat: fn(v) => string (tooltip + legend), defaults to formatNumber
-//   yMax: optional forced axis max (e.g. 100 for a percentage)
-//   showLegend: default true when series.length > 1
+// renderSeriesChart(el, {series, start, end, step, mode, additive, hidden, emptyMsg, valueFormat,
+// yMax, showLegend}) returns {redraw}. additive gates both stacking and the sparse->columns switch.
 function renderSeriesChart(el, spec) {
   const valueFormat = spec.valueFormat || formatNumber;
   const nonEmpty = spec.series.filter((s) => s.points.length > 0);
@@ -432,8 +368,7 @@ function renderSeriesChart(el, spec) {
     svg.appendChild(baseline);
 
     if (useBars) {
-      // One column per step that actually had traffic, stacked in series
-      // order. Zero steps draw nothing at all - the gaps ARE the data.
+      // One column per step that had traffic, stacked in series order; zero steps draw nothing.
       const span = Math.max(1, spec.end - spec.start);
       const stepSeconds = spec.step || (ticks.length > 1 ? ticks[1] - ticks[0] : span);
       const barW = Math.max(5, Math.min(28, (stepSeconds / span) * (CHART_W - 2 * CHART_PAD)));
@@ -491,8 +426,7 @@ function renderSeriesChart(el, spec) {
         line.setAttribute("stroke", s.color);
         line.setAttribute("stroke-width", "2");
         svg.appendChild(line);
-        // A 1-2 point series has no visible segment (bit the 30d view when
-        // the metric was a day old) - mark the points instead.
+        // A 1-2 point series has no visible segment: mark the points instead.
         if (s.points.length <= 2) for (const p of s.points) svg.appendChild(dotMarker(x(p.t), y(p.v), s.color));
       }
     }
@@ -588,29 +522,16 @@ function renderSeriesChart(el, spec) {
   return { redraw: draw };
 }
 
-// ============================================================
-// Donut: the "who used what share of this window" half of a dimension card.
-// One instant sum per label, so it answers a question the time series
-// can't - and at a handful of runs a day it's the half that carries the
-// information. Arcs are stroke-dasharray on concentric circles (not path A
-// commands): a single 100% slice is then just a full circle instead of the
-// degenerate zero-length arc a 360-degree A command draws.
-// ============================================================
+// Donut: each label's share of the window. Arcs are stroke-dasharray on circles so a 100% slice
+// is a full circle, not the degenerate arc a 360-degree path A command draws.
 
 const DONUT_SIZE = 180;
 const DONUT_R = 66;
 const DONUT_STROKE = 26;
 const DONUT_GAP = 1.5; // units of circumference shaved off each arc's end
 
-// renderDonut(el, spec) where spec:
-//   slices: [{key, label, value, color}] - already ranked/colored by the
-//     caller so the series beside it can share the exact same assignment
-//   hidden: optional externally-owned Set of hidden keys (shared with the
-//     series chart); hidden slices dim but keep their share of the total,
-//     because re-basing percentages on a toggle reads as data changing
-//   onToggle: fn(key) called after `hidden` is mutated
-//   caption: small label under the center total
-//   emptyMsg: shown when nothing in the window has a positive value
+// renderDonut(el, {slices, hidden, onToggle, caption, emptyMsg}); slices arrive ranked and colored.
+// Hidden slices dim but keep their share: re-basing on a toggle reads as data changing.
 function renderDonut(el, spec) {
   clear(el);
   const hidden = spec.hidden || new Set();
@@ -753,9 +674,7 @@ function renderDonut(el, spec) {
   paint(null);
 }
 
-// ============================================================
 // Query builders
-// ============================================================
 
 function tokenTypeTotalsQuery(rangeSeconds) {
   return `sum by (${METRICS.labels.tokenType}, ${METRICS.labels.tokenTypeFallback}) (increase(${METRICS.tokenUsage}[${rangeSeconds}s]))`;
@@ -773,9 +692,8 @@ function modelSeriesQuery(stepSeconds) {
   return `sum by (${METRICS.labels.model}, ${METRICS.labels.modelFallback}) (increase(${METRICS.tokenUsage}[${stepSeconds}s]))`;
 }
 
-// cacheByModelQuery/cacheByAgentQuery cross a dimension with token_type in
-// ONE instant query over the whole window, so a model/agent's cached and
-// input volumes come from the same query and can't drift against each other.
+// One instant query crosses a dimension with token_type, so a label's cached and input volumes
+// can't drift against each other.
 function cacheByModelQuery(rangeSeconds) {
   return `sum by (${METRICS.labels.model}, ${METRICS.labels.modelFallback}, ${METRICS.labels.tokenType}, ${METRICS.labels.tokenTypeFallback}) (increase(${METRICS.tokenUsage}[${rangeSeconds}s]))`;
 }
@@ -808,18 +726,11 @@ function latencySeriesQuantileQuery(q, stepSeconds) {
   return `histogram_quantile(${q}, sum by (le) (rate(${LATENCY.metric}_bucket[${stepSeconds}s])))`;
 }
 
-// ============================================================
-// Panel loaders. Each queries Prometheus and renders directly into its own
-// mount point. See the "Categorical color" section above for how token_type
-// stays consistent across panels while model/source/agent/user each get
-// their own independent per-panel color assignment.
-// ============================================================
+// Panel loaders: each queries Prometheus and renders into its own mount point.
 
 function topKWithOther(series, k) {
-  // series: [{label, points}] with a precomputed `.total`. Keeps the top k
-  // by total, folds the rest into one "Other" series (dataviz rule: a 9th+
-  // categorical series is never a generated hue - isOther marks it for the
-  // neutral color instead of the discovery-order assigner).
+  // Keeps the top k by total and folds the rest into one "Other" series (isOther gets the neutral
+  // color, never a generated hue).
   const sorted = series.slice().sort((a, b) => b.total - a.total);
   if (sorted.length <= k) return sorted.map((s) => ({ ...s, isOther: false }));
   const kept = sorted.slice(0, k).map((s) => ({ ...s, isOther: false }));
@@ -841,10 +752,8 @@ function topKWithOther(series, k) {
   return kept;
 }
 
-// dimQuery builds one dimension's query for an arbitrary window: the SAME
-// builder feeds the range query (window = step, one point per step) and the
-// instant query (window = the whole range, one number per label) so the two
-// halves of a card can never drift into measuring different things.
+// dimQuery feeds both the range query (window = step) and the instant query (window = range),
+// so a card's two halves never measure different things.
 function dimQuery(dimLabel, windowSeconds) {
   return dimLabel === "__model__" ? modelSeriesQuery(windowSeconds) : dimSeriesQuery(dimLabel, windowSeconds);
 }
@@ -854,10 +763,8 @@ function dimValue(metric, dimLabel) {
   return metric[dimLabel] || "(unknown)";
 }
 
-// loadDimPanel fills one dimension card: donut (share of the window) left,
-// series (when) right. Both are built from ONE ranking - the instant totals,
-// ranked and folded by topKWithOther, colored once - so a label carries the
-// same color in both halves and one legend can drive both.
+// loadDimPanel fills one dimension card from ONE ranking of the instant totals, colored once,
+// so a label has one color in the donut and the series and one legend drives both.
 async function loadDimPanel(name, dimLabel, win) {
   const seriesMount = panelEl(name);
   const donutMount = donutEl(name);
@@ -897,9 +804,8 @@ async function loadDimPanel(name, dimLabel, win) {
       totals.set(label, (totals.get(label) || 0) + Number(s.value[1]));
     }
   } else {
-    // Instant query empty/failed: rank off the range's own sums so the
-    // series still renders. The donut stays empty rather than showing a
-    // total it didn't measure.
+    // Instant query empty/failed: rank off the range's own sums so the series still renders; the
+    // donut stays empty rather than show a total it didn't measure.
     for (const [label, m] of pointsByLabel) {
       totals.set(label, Array.from(m.values()).reduce((a, v) => a + v, 0));
     }
@@ -965,24 +871,16 @@ async function loadHeadlineTokens(start, end, step) {
   return byType;
 }
 
-// --- Cache rate computation. A raw percentage over the window reads better
-// at this call volume than a ratio-over-time line (that was noise) - see
-// cacheRateFor's Go mirror (cache.go) for the same rate + exclusion math. ---
-
-// cacheRateFor mirrors usage/cache.go's cacheRateFor. Returns null - not 0 -
-// for zero prompt traffic, so an idle model/agent is excluded rather than
-// rendered as a fake "0%" row.
+// cacheRateFor returns null, not 0, for zero prompt traffic so an idle model/agent is excluded
+// rather than rendered as a fake "0%" row.
 function cacheRateFor(cached, input) {
   const volume = cached + input;
   if (volume <= 0) return null;
   return (cached / volume) * 100;
 }
 
-// aggregateCacheByDim folds an instant query's series (one per
-// dimension-value x token-type) into one {cached, input, output} triple per
-// dimension-value label. output rides along only to let cacheRowsFromTotals
-// tell an embeddings-only label from a chat model with a real 0% cache rate -
-// it never enters the rate math itself.
+// aggregateCacheByDim folds per (label, token_type) series into {cached, input, output} per label.
+// output only tells embeddings apart from a real 0% cache rate; it never enters the rate math.
 function aggregateCacheByDim(series, dimLabel) {
   const totals = new Map();
   for (const s of series) {
@@ -996,12 +894,8 @@ function aggregateCacheByDim(series, dimLabel) {
   return totals;
 }
 
-// cacheRowsFromTotals drops zero-traffic rows (no cached+input at all) and
-// ranks what's left by volume, busiest first - a 100% rate on 3 tokens isn't
-// worth leading the table. A label with prompt traffic but zero output
-// tokens never went through chat completion - embeddings, which have no
-// cache concept, are the only traffic shaped like that - so it renders with
-// rate: null (n/a) instead of a fake 0%, rather than being dropped.
+// cacheRowsFromTotals drops zero-traffic rows and ranks by volume. Prompt traffic with zero output
+// is embeddings, which have no cache concept: rate null (n/a), not dropped.
 function cacheRowsFromTotals(totals) {
   const rows = [];
   for (const [label, { cached, input, output }] of totals) {
@@ -1052,8 +946,7 @@ function renderCacheRows(el, rows) {
     label.title = row.label;
     const rate = document.createElement("span");
     rate.className = "cache-row-rate";
-    // row.rate is null for embeddings-shaped traffic (see cacheRowsFromTotals)
-    // - the cache concept doesn't apply, so it reads "n/a" rather than 0.0%.
+    // row.rate is null for embeddings-shaped traffic: "n/a", not 0.0%.
     rate.textContent = row.rate === null ? "n/a" : formatPercent(row.rate);
     const vol = document.createElement("span");
     vol.className = "cache-row-volume";
@@ -1063,9 +956,8 @@ function renderCacheRows(el, rows) {
   }
 }
 
-// loadCachePanel renders the raw-percentage cache section plus the savings
-// tile. Empty state is ONE decision for the whole section - no prompt
-// traffic anywhere means the honest empty message everywhere, never a 0%.
+// loadCachePanel renders the cache section and savings tile. Empty is ONE decision for the whole
+// section: no prompt traffic means the empty message everywhere, never a 0%.
 async function loadCachePanel(win, instantTotals) {
   const overallEl = panelEl("cache-overall");
   const modelEl = panelEl("cache-by-model");
@@ -1101,11 +993,8 @@ async function loadCachePanel(win, instantTotals) {
     }
   }
 
-  // Cache savings (est.): cached_tokens * (cost / input_tokens) over the
-  // same instant totals used for the KPI row - true per-token price isn't
-  // queryable, so this approximates it from the range's own average cost
-  // per input token. Empty only when the cost series itself is absent (no
-  // price table configured), independent of the rate panels' own state.
+  // Cache savings (est.) = cached_tokens * (cost / input_tokens): per-token price isn't queryable.
+  // Empty only when the cost series is absent, independent of the rate panels.
   const formula = "est. = cached_tokens × (cost ÷ input_tokens)";
   if (!instantTotals.cost.ok) {
     if (instantTotals.cost.empty) {
@@ -1211,8 +1100,7 @@ async function loadLatencyPanel(start, end, step, latencyAvailable) {
   });
 }
 
-// --- KPI row: the compact "current instant sums" row, sticky above every
-// chart, computed once per refresh from the range's own instant totals. ---
+// KPI row: sticky instant sums above every chart, computed once per refresh.
 
 function setKPI(name, value, title) {
   const tile = document.querySelector(`[data-kpi="${name}"] .kpi-value`);
@@ -1264,10 +1152,7 @@ async function fetchInstantTotals(rangeSeconds, now) {
   return { tokens, cost };
 }
 
-// ============================================================
-// Timeframe state: presets + custom range, persisted to localStorage,
-// drives every panel's start/end/step (the one shared x-axis domain).
-// ============================================================
+// Timeframe state: presets + custom range, persisted to localStorage; drives every panel's domain.
 
 function loadStoredTimeframe() {
   try {
@@ -1288,8 +1173,7 @@ function saveTimeframe(tf) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(tf));
   } catch (err) {
-    // localStorage unavailable (private browsing etc) - persistence is a
-    // nicety, not a requirement.
+    // localStorage unavailable (private browsing): persistence is a nicety.
   }
 }
 
@@ -1348,9 +1232,7 @@ function initTimeframeUI() {
 
   let tf = loadStoredTimeframe() || { mode: "preset", presetKey: defaultKey };
 
-  // Presets are the segments carrying data-range; "Custom…" is the one
-  // segment without it (RANGES has no entry for it) and only reveals the
-  // date row - the range itself doesn't change until Apply.
+  // Presets carry data-range; "Custom…" has none and only reveals the date row until Apply.
   const presetButtons = document.querySelectorAll("#range-select button[data-range]");
   const customBtn = document.getElementById("range-custom");
   const customRow = document.getElementById("custom-range");

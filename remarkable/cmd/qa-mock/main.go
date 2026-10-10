@@ -1,12 +1,5 @@
-// Command qa-mock is a standalone fake rmfakecloud UI/export API for QA -
-// the only surface the remarkable extension talks to (POST /ui/api/login,
-// GET /ui/api/documents, GET /ui/api/documents/{id}?type=pdf). Not part of
-// the quack binary; run with `go run`.
-//
-// Subcommands:
-//
-//	serve --fixtures DIR --addr :8091 --email E --password P
-//	drop  --fixtures DIR --name "2-page note" [--folder inbox] --pdf FILE
+// Command qa-mock fakes rmfakecloud's UI/export API for QA (see quack's docs/qa-mocks.md).
+// Subcommands: serve, drop.
 package main
 
 import (
@@ -91,7 +84,7 @@ func saveDocs(fixtures string, docs []fixtureDoc) error {
 	return os.WriteFile(docsFile(fixtures), b, 0o644)
 }
 
-// --- drop: add a new document fixture, picked up by the next poll ---
+// --- drop: add a new document fixture to a running serve ---
 
 func runDrop(args []string) {
 	fs := flag.NewFlagSet("drop", flag.ExitOnError)

@@ -1,7 +1,6 @@
 package usage
 
 import (
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -84,17 +83,14 @@ func TestAppJSServesEmbeddedContent(t *testing.T) {
 	}
 }
 
-// TestDefaultRangeWindowConstant pins the documented default so a drive-by
-// edit to the constant doesn't silently change quack.yaml's zero-config
-// behavior without a test noticing.
+// A drive-by edit here would silently change quack.yaml's zero-config behavior.
 func TestDefaultRangeWindowConstant(t *testing.T) {
 	if defaultRangeWindow != 24*time.Hour {
 		t.Errorf("defaultRangeWindow = %v, want 24h", defaultRangeWindow)
 	}
 }
 
-// The page computes its own step (app.js's stepForSpan mirror), so the config
-// handoff must not carry one - the injected value was dead on arrival (qx#14).
+// The page computes its own step, so the config handoff must not carry one.
 func TestDashboardOmitsStepFromConfig(t *testing.T) {
 	e := newTestExtension(t)
 	r := newChiRouterForTest(e)
@@ -107,11 +103,8 @@ func TestDashboardOmitsStepFromConfig(t *testing.T) {
 	}
 }
 
-// TestDashboardIncludesThemeDetectionScript pins the dark-mode fix: the page
-// must read the SAME localStorage key/logic as quack's own SPA
-// (frontend/src/App.tsx: localStorage["theme"], "dark" or
-// prefers-color-scheme) and stamp data-theme before the kit stylesheet
-// loads, so the dashboard doesn't always render light against a dark host.
+// The page must read quack's SPA theme key (localStorage["theme"]) and stamp data-theme before
+// the kit stylesheet loads, or it renders light against a dark host.
 func TestDashboardIncludesThemeDetectionScript(t *testing.T) {
 	e := newTestExtension(t)
 	r := newChiRouterForTest(e)
@@ -136,9 +129,7 @@ func TestDashboardIncludesThemeDetectionScript(t *testing.T) {
 	}
 }
 
-// TestDashboardIncludesCustomRangeControls pins the timeframe picker's
-// custom-range half: two datetime-local inputs and an apply control, kept
-// alongside the preset buttons rather than replacing them.
+// The custom range sits alongside the preset buttons rather than replacing them.
 func TestDashboardIncludesCustomRangeControls(t *testing.T) {
 	e := newTestExtension(t)
 	r := newChiRouterForTest(e)
@@ -182,8 +173,7 @@ func TestDashboardIncludesKPIRow(t *testing.T) {
 	}
 }
 
-// TestDashboardIncludesTimeSeriesPanels pins the panels added for the
-// headline token-type series, cache savings, cumulative cost, and latency.
+// TestDashboardIncludesTimeSeriesPanels pins the token-type, cache savings, cost and latency panels.
 func TestDashboardIncludesTimeSeriesPanels(t *testing.T) {
 	e := newTestExtension(t)
 	r := newChiRouterForTest(e)
@@ -212,24 +202,20 @@ func TestDashboardIncludesTimeSeriesPanels(t *testing.T) {
 	}
 }
 
-// TestAppJSMirrorsGoStepHeuristic pins that app.js's client-side step
-// heuristic (used for range changes/custom picks the server never sees)
-// carries the same table as usage/step.go's stepForSpan.
-func TestAppJSMirrorsGoStepHeuristic(t *testing.T) {
-	if !strings.Contains(appJS, "function stepForSpan(spanSeconds)") {
-		t.Error("app.js missing its stepForSpan mirror of usage/step.go")
-	}
-	for _, s := range niceSteps {
-		if !strings.Contains(appJS, fmt.Sprintf("%d", s)) {
-			t.Errorf("app.js NICE_STEPS table missing %d from Go's niceSteps", s)
+// app.js computes its own query step; pin the nice-step table it rounds up to.
+func TestAppJSStepHeuristic(t *testing.T) {
+	for _, want := range []string{
+		"function stepForSpan(spanSeconds)",
+		"const NICE_STEPS = [15, 30, 60, 300, 900, 1800, 3600, 7200, 21600, 43200, 86400, 172800, 604800];",
+	} {
+		if !strings.Contains(appJS, want) {
+			t.Errorf("app.js step heuristic missing %q", want)
 		}
 	}
 }
 
-// TestAppJSCacheRateTimeseriesRemoved pins the redesign's deletion: the
-// cache section is raw percentages over the window, not a ratio-over-time
-// line (that was noise at this call volume). No mount, no query, no chart
-// call for it should remain.
+// The cache section is raw percentages over the window; the ratio-over-time line was noise at
+// this call volume and must not come back.
 func TestAppJSCacheRateTimeseriesRemoved(t *testing.T) {
 	if strings.Contains(appJS, `panelEl("cache-rate")`) {
 		t.Error("app.js still mounts the removed cache-rate timeseries panel")
@@ -242,9 +228,7 @@ func TestAppJSCacheRateTimeseriesRemoved(t *testing.T) {
 	}
 }
 
-// TestAppJSCacheRateFor pins the rate + zero-traffic-exclusion computation
-// this Go file mirrors (cache.go's cacheRateFor): the JS copy must return
-// null - not 0 - for a pair with no prompt traffic, so a genuinely idle
+// cacheRateFor must return null, not 0, for zero prompt traffic so an idle
 // model/agent is excluded rather than rendered as a fake "0%" row.
 func TestAppJSCacheRateFor(t *testing.T) {
 	for _, want := range []string{
@@ -259,9 +243,8 @@ func TestAppJSCacheRateFor(t *testing.T) {
 	}
 }
 
-// TestAppJSCacheSectionSharesOneEmptyDecision pins requirement #4: no prompt
-// traffic anywhere in the window is ONE decision for the whole cache
-// section (overall + both breakdowns), never a fake 0% in some of them.
+// No prompt traffic anywhere in the window is ONE decision for the whole cache section,
+// never a fake 0% in some of it.
 func TestAppJSCacheSectionSharesOneEmptyDecision(t *testing.T) {
 	if !strings.Contains(appJS, "cacheRateFor(cachedTotal, inputTotal) === null") {
 		t.Error("app.js cache section must gate its shared empty state on the overall cached+input totals")
@@ -277,8 +260,7 @@ func TestAppJSCacheSectionSharesOneEmptyDecision(t *testing.T) {
 	}
 }
 
-// TestAppJSCacheBreakdownRankedByVolume pins requirement #2's sort order and
-// the by-model/by-agent instant queries they're built from.
+// The cache breakdowns sort by volume and come from by-model/by-agent instant queries.
 func TestAppJSCacheBreakdownRankedByVolume(t *testing.T) {
 	if !strings.Contains(appJS, "rows.sort((a, b) => b.volume - a.volume);") {
 		t.Error("app.js cache breakdown rows must sort by volume, busiest first")
@@ -291,11 +273,8 @@ func TestAppJSCacheBreakdownRankedByVolume(t *testing.T) {
 	}
 }
 
-// TestAppJSCacheBreakdownShowsNAForEmbeddings pins the fix for embeddings
-// models (e.g. qwen3-embed) rendering a fake "0.0%" cache rate: a label whose
-// only token_type is "input" (no output - see traced.go's recordEmbedUsage,
-// which never records output/reasoning/cached for an /embeddings call) never
-// went through chat completion, so the cache concept doesn't apply to it.
+// A label whose only token_type is "input" is an embeddings model: cache does not apply, so it
+// shows n/a rather than a fake "0.0%".
 func TestAppJSCacheBreakdownShowsNAForEmbeddings(t *testing.T) {
 	for _, want := range []string{
 		`tokenTypeOutput: "output"`,
@@ -309,10 +288,8 @@ func TestAppJSCacheBreakdownShowsNAForEmbeddings(t *testing.T) {
 	}
 }
 
-// TestAppJSLatencyHasHonestPresenceProbe pins the "never fake it" latency
-// requirement: the panel must probe for the histogram's _bucket series
-// before rendering percentiles, and show a message naming what's missing
-// otherwise.
+// Latency probes for the histogram's _bucket series before rendering percentiles and names
+// what's missing otherwise.
 func TestAppJSLatencyHasHonestPresenceProbe(t *testing.T) {
 	if !strings.Contains(appJS, "_bucket") {
 		t.Error("app.js missing a histogram _bucket presence probe for the latency panel")
@@ -322,10 +299,7 @@ func TestAppJSLatencyHasHonestPresenceProbe(t *testing.T) {
 	}
 }
 
-// TestDashboardIncludesDimensionDonuts pins the rolled-up-comparison half
-// of each dimension card: a donut mount BESIDE the existing series mount
-// (the series mounts themselves are pinned by
-// TestDashboardIncludesTimeSeriesPanels), in a two-column split that wraps.
+// Each dimension card has a donut mount beside its series mount, in a two-column split that wraps.
 func TestDashboardIncludesDimensionDonuts(t *testing.T) {
 	e := newTestExtension(t)
 	r := newChiRouterForTest(e)
@@ -349,10 +323,8 @@ func TestDashboardIncludesDimensionDonuts(t *testing.T) {
 	}
 }
 
-// TestAppJSDonutSharesTheSeriesRanking pins WHY the donut and the series
-// beside it agree: one ranking (topKWithOther over the instant totals), one
-// color assigner, the neutral color for the folded remainder. Two
-// independent rankings would give the same label two colors in one card.
+// The donut and the series beside it share one ranking and one color assigner; two rankings
+// would give the same label two colors in one card.
 func TestAppJSDonutSharesTheSeriesRanking(t *testing.T) {
 	for _, want := range []string{
 		"function renderDonut(el, spec)",
@@ -375,14 +347,11 @@ func TestAppJSDonutSharesTheSeriesRanking(t *testing.T) {
 	}
 }
 
-// TestAppJSSwitchesSparseSeriesToBars pins the sparse-data rule: below
-// SPARSE_MAX_NONZERO non-zero points an ADDITIVE chart draws columns, so a
-// polyline never implies traffic between two distant bursts. Non-additive
-// charts (latency percentiles, cache rate) are excluded - stacking those
-// would be a lie - and the 1-2 point dot-marker fallback (qx#15) stays.
+// Below SPARSE_MAX_NONZERO non-zero points an additive chart draws columns, so a line never
+// implies traffic between bursts. Non-additive charts stay lines; 1-2 point series keep dots.
 func TestAppJSSwitchesSparseSeriesToBars(t *testing.T) {
 	for _, want := range []string{
-		fmt.Sprintf("const SPARSE_MAX_NONZERO = %d", sparseMaxNonZero),
+		"const SPARSE_MAX_NONZERO = 8;",
 		"function countNonZeroPoints(points)",
 		"function shouldRenderBars(series, additive)",
 		"if (!additive) return false;",
@@ -398,11 +367,8 @@ func TestAppJSSwitchesSparseSeriesToBars(t *testing.T) {
 	}
 }
 
-// TestAppJSBuildsTooltipsWithoutInnerHTML pins the injection fix (qx#18):
-// tooltips render Prometheus label values - a model/agent/user name comes
-// out of the metrics store, not out of this repo - so nothing on this page
-// may build markup by string interpolation. There is no HTML sink here at
-// all, which is the only version of this rule that a string pin can check.
+// Tooltips render Prometheus label values, which this repo does not control, so the page must
+// have no HTML sink at all: the only version of the rule a string pin can check.
 func TestAppJSBuildsTooltipsWithoutInnerHTML(t *testing.T) {
 	for _, sink := range []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"} {
 		if strings.Contains(appJS, sink) {
@@ -414,11 +380,8 @@ func TestAppJSBuildsTooltipsWithoutInnerHTML(t *testing.T) {
 	}
 }
 
-// TestDashboardTimeframeIsOneSegmentedControl pins the picker redesign: the
-// presets and "Custom…" are segments of ONE control, and the date row is
-// collapsed until Custom is chosen. Element ids are load-bearing - other
-// tests here and the page's own wiring select on them - so this pins the
-// restyle without renaming anything.
+// Presets and "Custom…" are segments of ONE control and the date row stays collapsed until
+// Custom is chosen. Element ids are load-bearing for the page's wiring.
 func TestDashboardTimeframeIsOneSegmentedControl(t *testing.T) {
 	e := newTestExtension(t)
 	r := newChiRouterForTest(e)
@@ -448,10 +411,8 @@ func TestDashboardTimeframeIsOneSegmentedControl(t *testing.T) {
 	}
 }
 
-// TestDashboardCacheSectionLayout pins the redesigned cache section's
-// markup: one overall stat, by-model/by-agent breakdown tables with a
-// header row each, the savings tile, and the ACP-usage-granularity
-// footnote (kept a single removable line - qx cache-stats redesign).
+// The cache section has one overall stat, by-model/by-agent tables with header rows, the savings
+// tile and the ACP-granularity footnote.
 func TestDashboardCacheSectionLayout(t *testing.T) {
 	e := newTestExtension(t)
 	r := newChiRouterForTest(e)
@@ -478,9 +439,8 @@ func TestDashboardCacheSectionLayout(t *testing.T) {
 	}
 }
 
-// Pins the live-verified label translation (2026-08-12): the semconv attr
-// gen_ai.token.type lands in Prometheus as gen_ai_token_type. The dashboard
-// showed a false "no data" empty state while querying the unqualified name.
+// gen_ai.token.type lands in Prometheus as gen_ai_token_type; querying the unqualified name
+// showed a false "no data" state.
 func TestAppJSUsesTranslatedTokenTypeLabel(t *testing.T) {
 	if !strings.Contains(appJS, `tokenType: "gen_ai_token_type"`) {
 		t.Error("app.js token-type label must be the translated gen_ai_token_type")

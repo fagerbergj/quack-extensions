@@ -17,9 +17,8 @@ const (
 	workflowDocumentIngest = "document-ingest"
 	documentsPath          = "/remarkable/documents"
 
-	// maxPerSubmit caps one submit. Dispatch returns as soon as the run is
-	// spawned, so N selections mean N concurrent multi-minute pipeline runs
-	// on one GPU. A cap instead of a queue, deliberately.
+	// maxPerSubmit caps one submit: each selection is a concurrent multi-minute run on one GPU.
+	// A cap instead of a queue, deliberately.
 	maxPerSubmit = 5
 )
 
@@ -32,9 +31,8 @@ type documentsPage struct {
 
 func (documentsPage) MaxPerSubmit() int { return maxPerSubmit }
 
-// handleDocuments lists what's in rmfakecloud right now. An unreachable
-// cloud renders 200 with a banner, not 500: this page is the extension's
-// nav entry (sdk.UI Href) and must not break the nav.
+// handleDocuments renders 200 with a banner when rmfakecloud is unreachable: this page is the
+// nav entry and must not break the nav.
 func (e *extension) handleDocuments(w http.ResponseWriter, r *http.Request) {
 	page := documentsPage{BaseURL: e.client.baseURL, Notice: submitNotice(r.URL.Query())}
 
@@ -170,10 +168,7 @@ func (e *extension) ingest(ctx context.Context, d remoteDoc) error {
 	return nil
 }
 
-// buildLabels carries folder as a Labels dimension. No "tags" dimension:
-// rmfakecloud's GET /ui/api/documents never surfaces tags (Document has no
-// such field, and /documents/:id/metadata is an unimplemented stub as of
-// v0.0.31) - an rmfakecloud limitation, not an SDK one.
+// buildLabels carries folder only: rmfakecloud's document list never surfaces tags.
 func buildLabels(d remoteDoc) map[string][]sdk.LabelValue {
 	if d.Folder == "" {
 		return nil

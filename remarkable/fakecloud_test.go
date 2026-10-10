@@ -19,9 +19,7 @@ type fixtureDoc struct {
 	PDF          []byte
 }
 
-// fakeRMCloud is an httptest-backed stand-in for rmfakecloud's UI/export
-// API - the only surface this module talks to (POST /ui/api/login,
-// GET /ui/api/documents, GET /ui/api/documents/{id}?type=pdf).
+// fakeRMCloud is an httptest stand-in for rmfakecloud's UI/export API.
 type fakeRMCloud struct {
 	email    string
 	password string

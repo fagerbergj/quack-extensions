@@ -22,9 +22,8 @@ type remoteDoc struct {
 	LastModified time.Time
 }
 
-// rawEntry mirrors rmfakecloud's viewmodel.Entry union (Directory or
-// Document) as it actually serializes - see internal/ui/viewmodel/models.go
-// in ddvk/rmfakecloud. A Document has no "isFolder" key, so it decodes false.
+// rawEntry mirrors rmfakecloud's viewmodel.Entry union as it serializes; a Document has no
+// "isFolder" key, so it decodes false.
 type rawEntry struct {
 	ID           string     `json:"id"`
 	Name         string     `json:"name"`
@@ -39,10 +38,8 @@ type rawTree struct {
 	Entries []rawEntry `json:"Entries"`
 }
 
-// rmClient talks to one rmfakecloud instance's UI/export API: the only
-// surface that turns its content-addressed blob store into flat metadata
-// and PDFs (see .quack/rmfakecloud-eval.md SS3). Login yields a JWT sent as
-// a bearer token, valid 24h; authedRequest re-logs in once on a 401.
+// rmClient talks to rmfakecloud's UI/export API, the only surface with flat metadata and PDFs.
+// Login yields a 24h bearer JWT; authedRequest re-logs in once on a 401.
 type rmClient struct {
 	baseURL    string
 	email      string

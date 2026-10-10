@@ -16,9 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// fakeDispatchHost captures dispatched requests and lets a test inject a
-// per-call error, mirroring noop's fakeHost pattern (this module can't
-// import quack, so there's no real orchestrator to dispatch into).
+// fakeDispatchHost captures dispatched requests and can inject a per-call error.
 type fakeDispatchHost struct {
 	mu    sync.Mutex
 	calls []sdk.DispatchRequest

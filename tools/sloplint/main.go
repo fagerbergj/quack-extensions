@@ -1,5 +1,5 @@
-// sloplint: the slop-gate half no standard tool covers - a comment-run
-// gate over diff-touched lines (diff <ref>) + a report-only repo ledger (repo); CC/dup gating is golangci-lint's (.golangci.yml).
+// sloplint gates comment runs and CC over diff-touched lines (diff <ref>) and prints a
+// report-only repo ledger (repo); dup gating is golangci-lint's.
 package main
 
 import (
@@ -20,9 +20,7 @@ func main() {
 		usage()
 	}
 	root, _ := os.Getwd()
-	// Optional trailing root arg (extensions repo layout: this module is not at
-	// the repo root, so CI runs it from here and names the root). quack calls
-	// it from the repo root with no arg - behavior there is unchanged.
+	// Optional trailing root arg: this module is not at the repo root, so CI names the root.
 	if os.Args[1] == "diff" && len(os.Args) > 3 {
 		root = os.Args[3]
 	}
@@ -189,9 +187,8 @@ func funcsFail(fset *token.FileSet, f *ast.File, rel string, rs []rng, src []byt
 	return fail
 }
 
-// ccAllowed: the reviewable exemption for inherent branchiness no split
-// can reduce - the directive must carry a reason, scanning the lines
-// directly above the declaration (fd.Doc only binds the adjacent block).
+// ccAllowed finds a reasoned cc-allow directive in the lines just above the declaration
+// (fd.Doc binds only the adjacent block).
 func ccAllowed(src []byte, fset *token.FileSet, fd *ast.FuncDecl) bool {
 	const mark = "sloplint: cc-allow"
 	top := fset.Position(fd.Pos()).Line

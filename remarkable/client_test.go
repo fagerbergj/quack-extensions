@@ -84,9 +84,7 @@ func TestClientReLoginsOnExpiredToken(t *testing.T) {
 	c := newRMClient(fc.Server.URL, "user@example.com", "hunter2")
 	ctx := context.Background()
 
-	// simulate an expired/never-obtained token: authedRequest should
-	// transparently log in and retry once, without the caller ever calling
-	// login() itself.
+	// No token yet: authedRequest must log in and retry once on its own.
 	if _, err := c.listDocuments(ctx); err != nil {
 		t.Fatalf("listDocuments: %v", err)
 	}

@@ -1,6 +1,5 @@
-// coverdiff gates changed-line statement coverage: lines added in
-// `diff <ref> <root> <module>` must sit at >= minPct covered; test
-// files and statement-less lines are outside the denominator.
+// coverdiff gates changed-line coverage: lines added in `diff <ref> <root> <module>` must be >= minPct
+// covered; test files and statement-less lines are outside the denominator.
 package main
 
 import (

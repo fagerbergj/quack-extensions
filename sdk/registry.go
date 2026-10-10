@@ -1,13 +1,14 @@
 package sdk
 
-import "fmt"
+import (
+	"fmt"
+	"maps"
+)
 
 var registry = map[string]Factory{}
 
-// Register is called from an extension package's init(); quack's registry
-// file blank-imports extension packages to populate this. A duplicate name
-// is a programmer error (two extensions claiming the same identity), so it
-// panics at init time rather than surfacing as a runtime startup error.
+// Register is called from an extension package's init(). A duplicate name is a
+// programmer error, so it panics at init rather than failing at startup.
 func Register(name string, f Factory) {
 	if _, exists := registry[name]; exists {
 		panic(fmt.Sprintf("sdk: extension %q already registered", name))
@@ -15,12 +16,7 @@ func Register(name string, f Factory) {
 	registry[name] = f
 }
 
-// Registered returns a snapshot of all registered factories, keyed by name.
-// It copies the live map so callers can't mutate registration state.
+// Registered returns a copy of all registered factories, keyed by name.
 func Registered() map[string]Factory {
-	out := make(map[string]Factory, len(registry))
-	for name, f := range registry {
-		out[name] = f
-	}
-	return out
+	return maps.Clone(registry)
 }

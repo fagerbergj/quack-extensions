@@ -15,9 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// fakeHost is the SDK-fake used across this package's tests: it captures
-// dispatched requests in memory. This module can't import quack, so there is
-// no real orchestrator to dispatch into.
+// fakeHost captures dispatched requests in memory; this module can't import quack.
 type fakeHost struct {
 	mu       sync.Mutex
 	captured []sdk.DispatchRequest

@@ -13,10 +13,7 @@ func newTestHost() sdk.Host {
 	return sdk.Host{}
 }
 
-// newChiRouterForTest mounts an extension's authed routes on a bare chi
-// router, mirroring how quack itself would mount them - used by tests that
-// need to exercise routing (404 on unregistered paths, method dispatch)
-// rather than calling handlers directly.
+// newChiRouterForTest mounts the authed routes on a bare chi router, as quack would.
 func newChiRouterForTest(e *extension) http.Handler {
 	r := chi.NewRouter()
 	e.RegisterRoutes(r, chi.NewRouter())
