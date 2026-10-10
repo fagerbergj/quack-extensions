@@ -38,20 +38,6 @@ func TestFactorySnapshotsValidation(t *testing.T) {
 	}
 }
 
-func TestFactorySeasonValidation(t *testing.T) {
-	if _, err := factory(sdk.Host{}, []byte("season: -1\n")); err == nil {
-		t.Error("expected a negative season to error")
-	} else if !strings.Contains(err.Error(), "season") {
-		t.Errorf("error %q should name the season field", err)
-	}
-	if _, err := factory(sdk.Host{}, []byte("season: 2026\n")); err != nil {
-		t.Errorf("season: 2026 should be valid, got %v", err)
-	}
-	if _, err := factory(sdk.Host{}, nil); err != nil {
-		t.Errorf("no config (season defaults to /v1/state/nfl) should be valid, got %v", err)
-	}
-}
-
 // TestUIDescriptor pins the nav entry quack's rail renders: an inline SVG
 // icon (not a name quack has to ship/recognize), themed via currentColor.
 func TestUIDescriptor(t *testing.T) {

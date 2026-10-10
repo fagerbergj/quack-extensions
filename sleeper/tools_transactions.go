@@ -80,14 +80,11 @@ func (e *extension) getTransactions(ctx context.Context, a transactionsArgs) (tr
 	if err != nil {
 		return transactionsResult{}, fmt.Errorf("sleeper_transactions: %w", err)
 	}
-	season, state, err := e.season(ctx)
+	_, state, err := e.season(ctx)
 	if err != nil {
 		return transactionsResult{}, err
 	}
-	currentWeek, err := weekForSeason(season, state)
-	if err != nil {
-		return transactionsResult{}, fmt.Errorf("sleeper_transactions: %w", err)
-	}
+	currentWeek := state.Week
 	names := teamNames(rosters, users)
 	var out []transactionEntry
 	for week := currentWeek - weeksBack + 1; week <= currentWeek; week++ {
@@ -196,10 +193,7 @@ func (e *extension) getFreeAgents(ctx context.Context, a freeAgentsArgs) (freeAg
 	if err != nil {
 		return freeAgentsResult{}, err
 	}
-	week, err := weekForSeason(season, state)
-	if err != nil {
-		return freeAgentsResult{}, fmt.Errorf("sleeper_free_agents: %w", err)
-	}
+	week := state.Week
 	proj, err := e.client.WeekProjections(ctx, season, week)
 	if err != nil {
 		return freeAgentsResult{}, fmt.Errorf("sleeper_free_agents: projections: %w", err)

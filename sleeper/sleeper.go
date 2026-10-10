@@ -34,9 +34,6 @@ type config struct {
 	// DefaultLeague lets the orchestrator omit league_id in chat.
 	DefaultLeague string `yaml:"default_league"`
 
-	// Season defaults to /v1/state/nfl's current season when zero.
-	Season int `yaml:"season"`
-
 	// Timezone overrides Host.Location for *_local fields; an IANA name like America/Chicago.
 	Timezone string `yaml:"timezone"`
 
@@ -57,9 +54,6 @@ func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
 	case "", "off", "daily":
 	default:
 		return nil, fmt.Errorf("sleeper: snapshots must be \"off\" or \"daily\", got %q", cfg.Snapshots)
-	}
-	if cfg.Season < 0 {
-		return nil, fmt.Errorf("sleeper: season must not be negative, got %d", cfg.Season)
 	}
 	loc := hostZone(host)
 	if cfg.Timezone != "" {

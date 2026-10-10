@@ -111,33 +111,21 @@ func (e *extension) resolveUserIdentifier(arg string) (string, error) {
 	return "", fmt.Errorf("user is required (no default_user configured)")
 }
 
-// season returns the configured season, or the live one from /state/nfl.
+// season returns the live season from /state/nfl.
 func (e *extension) season(ctx context.Context) (string, *sleepergen.NflState, error) {
 	state, err := e.client.State(ctx)
 	if err != nil {
 		return "", nil, fmt.Errorf("sleeper: state: %w", err)
 	}
-	if e.cfg.Season > 0 {
-		return fmt.Sprintf("%d", e.cfg.Season), state, nil
-	}
 	return state.Season, state, nil
 }
 
-// resolveWeek returns arg if positive, else the live week; a pinned non-live season has no current week
-// to borrow.
-func resolveWeek(arg int, season string, state *sleepergen.NflState) (int, error) {
+// resolveWeek returns arg if positive, else the live week.
+func resolveWeek(arg int, state *sleepergen.NflState) int {
 	if arg > 0 {
-		return arg, nil
+		return arg
 	}
-	return weekForSeason(season, state)
-}
-
-// weekForSeason is resolveWeek without an arg, for tools that take no week.
-func weekForSeason(season string, state *sleepergen.NflState) (int, error) {
-	if season != state.Season {
-		return 0, fmt.Errorf("season %s is not the live NFL season (%s); week must be given explicitly", season, state.Season)
-	}
-	return state.Week, nil
+	return state.Week
 }
 
 // resolveRosterID returns rosterID if set, else the roster owned by user (default_user if empty).

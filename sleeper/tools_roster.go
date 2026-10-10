@@ -93,10 +93,7 @@ func (e *extension) getRoster(ctx context.Context, a rosterArgs) (rosterResult, 
 	if err != nil {
 		return rosterResult{}, err
 	}
-	week, err := weekForSeason(season, state)
-	if err != nil {
-		return rosterResult{}, fmt.Errorf("sleeper_roster: %w", err)
-	}
+	week := state.Week
 	cc := newCallContext(c, week, season, state)
 	sl := e.playerSlate(ctx, &cc, season, state, c, true)
 	res := buildRosterResult(league, r, dump, sl, teamNames(rosters, users))

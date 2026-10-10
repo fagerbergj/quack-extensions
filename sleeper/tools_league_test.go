@@ -153,22 +153,6 @@ func fmtBoolPtr(b *bool) string {
 	return fmt.Sprint(*b)
 }
 
-// TestResolveWeekRequiresExplicitWeekForPinnedSeason: a non-live config season has no current week to borrow.
-func TestResolveWeekRequiresExplicitWeekForPinnedSeason(t *testing.T) {
-	state := &sleepergen.NflState{Season: "2026", Week: 2}
-	if _, err := resolveWeek(0, "2025", state); err == nil {
-		t.Fatal("expected an error: season 2025 is pinned but the live NFL season is 2026")
-	}
-	got, err := resolveWeek(1, "2025", state)
-	if err != nil || got != 1 {
-		t.Errorf("resolveWeek(1, ...) = %d, %v; want 1, nil (explicit week bypasses the mismatch)", got, err)
-	}
-	got, err = resolveWeek(0, "2026", state)
-	if err != nil || got != 2 {
-		t.Errorf("resolveWeek(0, matching season) = %d, %v; want 2, nil", got, err)
-	}
-}
-
 func TestNewClock(t *testing.T) {
 	chicago, _ := time.LoadLocation("America/Chicago")
 	e := &extension{}
