@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
@@ -162,9 +163,8 @@ func playerNameOf(p sleepergen.Player) string {
 	if p.FullName != nil && *p.FullName != "" {
 		return *p.FullName
 	}
-	first, last := strVal(p.FirstName), strVal(p.LastName)
-	if first != "" || last != "" {
-		return first + " " + last
+	if full := strings.TrimSpace(strVal(p.FirstName) + " " + strVal(p.LastName)); full != "" {
+		return full
 	}
 	if p.Position != nil && *p.Position == "DEF" {
 		return strVal(p.Team)

@@ -292,30 +292,13 @@ func (e *extension) findOpponent(ctx context.Context, c *Client, league *sleeper
 	return &opponentInfo{Team: teamName(u), Owner: ownerName(u), Wins: oppRoster.Settings["wins"], Losses: oppRoster.Settings["losses"]}
 }
 
-func playerLabel(id string, players map[string]sleepergen.Player) string {
-	p, ok := players[id]
-	if !ok {
-		return id
-	}
-	if name := strVal(p.FullName); name != "" {
-		return name
-	}
-	if full := strings.TrimSpace(strVal(p.FirstName) + " " + strVal(p.LastName)); full != "" {
-		return full
-	}
-	if strVal(p.Position) == "DEF" {
-		return strVal(p.Team) + " DEF"
-	}
-	return id
-}
-
 func playerNames(m *map[string]int, players map[string]sleepergen.Player) []string {
 	if m == nil {
 		return nil
 	}
 	out := make([]string, 0, len(*m))
 	for id := range *m {
-		out = append(out, playerLabel(id, players))
+		out = append(out, playerName(players, id))
 	}
 	sort.Strings(out)
 	return out
