@@ -206,3 +206,10 @@ func TestIngestSurvivesRequestCancellation(t *testing.T) {
 		t.Fatalf("dispatched %v, want both docs despite the cancelled request", got)
 	}
 }
+
+func TestFactoryRejectsMalformedYAML(t *testing.T) {
+	fh := &fakeDispatchHost{}
+	if _, err := factory(testHost(t, fh), []byte("base_url: [")); err == nil || !strings.Contains(err.Error(), "parse config") {
+		t.Fatalf("err = %v, want a parse error", err)
+	}
+}
