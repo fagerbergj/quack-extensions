@@ -23,9 +23,8 @@ var requiredCheckFailingRe = regexp.MustCompile(`(?i)required status check "([^"
 // check has not finished yet - not a failure, the next check event retries.
 var mergePendingRe = regexp.MustCompile(`(?i)required status check.*\b(in progress|expected|pending|queued)\b`)
 
-// mergeAPIErrorMessage extracts the "message" field from a wrapped merge API
-// error's trailing JSON body so the review never carries raw JSON - full
-// detail stays in the slog entry that logged err.
+// mergeAPIErrorMessage extracts "message" from a merge API error's trailing JSON body so the review
+// never carries raw JSON; full detail stays in the log.
 func mergeAPIErrorMessage(err error) string {
 	msg := err.Error()
 	if i := strings.IndexByte(msg, '{'); i >= 0 {
@@ -39,7 +38,7 @@ func mergeAPIErrorMessage(err error) string {
 	return msg
 }
 
-// isHeadBranchModified reports GitHub's "the tip advanced mid-merge" error (#1142).
+// isHeadBranchModified reports GitHub's "the tip advanced mid-merge" error.
 func isHeadBranchModified(err error) bool {
 	return strings.Contains(mergeAPIErrorMessage(err), "Head branch was modified")
 }
@@ -75,10 +74,8 @@ const (
 // greenConclusions are check-run conclusions that count as passing.
 var greenConclusions = map[string]bool{"success": true, "neutral": true, "skipped": true}
 
-// allChecksGreen reports whether the head has actually finished CI clean. An
-// EMPTY list is not green: pull_request_review.submitted can arrive before
-// any workflow has even queued (event ordering), and treating "nothing
-// reported yet" as "nothing to wait for" merges a PR CI hasn't touched.
+// allChecksGreen: an empty list is not green, since a review can arrive before any workflow queues
+// and "nothing reported yet" would merge a PR CI hasn't touched.
 func allChecksGreen(checks []checkRunView) bool {
 	if len(checks) == 0 {
 		return false
@@ -101,14 +98,8 @@ const (
 	ciFailed                      // a suite finished with a non-green conclusion and posted no runs
 )
 
-// headHasPendingCI classifies the head's check suites. Called only when
-// listCheckRuns came back empty, to tell apart "CI queued, no run reported
-// yet" (wait), "a suite already failed without ever posting a run" (stop -
-// GitHub's own required-check refusal would read as merely "expected" and
-// never resolve), and "no CI on this head at all" (nothing to wait for). A
-// suite is only pending while it hasn't reached "completed": a terminal
-// suite - success or failure - will never fire another event, so treating
-// it as pending would stall the merge forever with no re-evaluation.
+// headHasPendingCI classifies check suites when no runs exist: queued (wait), failed without a run (stop),
+// or no CI (clear). A completed suite never fires again, so only non-completed suites count as pending.
 func (e *Extension) headHasPendingCI(ctx context.Context, owner, repo, sha string) (ciSuiteState, error) {
 	suites, err := e.app.listCheckSuites(ctx, owner, repo, sha)
 	if err != nil {
@@ -129,13 +120,8 @@ func (e *Extension) headHasPendingCI(ctx context.Context, owner, repo, sha strin
 	return state, nil
 }
 
-// blockingHumanReviewer reports the first reviewer (any login, quack's own
-// included) whose latest review AGAINST THE CURRENT HEAD is a standing
-// CHANGES_REQUESTED (5): the quack:merge label authorizes merging a green,
-// approved PR, never overriding a live human objection. A review against an
-// older head is stale the same way an old approval is (#71) - a push clears
-// it; only a later approval or an explicit dismissal (both show up as a
-// newer, or state-changed, review from that same login) clears it otherwise.
+// blockingHumanReviewer finds a reviewer whose latest review of the current head is CHANGES_REQUESTED:
+// the merge label never overrides a live objection. Reviews of older heads are stale, like old approvals.
 func blockingHumanReviewer(reviews []prReview, headSHA string) (login string, blocked bool) {
 	type latest struct {
 		state string
@@ -160,12 +146,11 @@ func blockingHumanReviewer(reviews []prReview, headSHA string) (login string, bl
 	return "", false
 }
 
-// reviewVerdictMarkerRe extracts quack's verdict from the hidden marker in an own-PR review comment (GitHub forbids self-review).
+// reviewVerdictMarkerRe extracts quack's verdict from an own-PR comment's hidden marker (GitHub forbids self-review).
 var reviewVerdictMarkerRe = regexp.MustCompile(`<!-- quack:delivery:review:(approve|request_changes|comment) -->`)
 
-// reviewHeadMarkerRe extracts the head SHA an own-PR verdict was pinned
-// against - embedded alongside the verdict marker since a plain issue
-// comment (unlike a formal review) has no commit_id of its own to compare.
+// reviewHeadMarkerRe extracts the head SHA an own-PR verdict was pinned against; a plain issue
+// comment has no commit_id of its own.
 var reviewHeadMarkerRe = regexp.MustCompile(`<!-- quack:delivery:head:(\S+) -->`)
 
 // formalReviewVerdicts maps GitHub review states to the same vocabulary as reviewVerdictMarkerRe.
@@ -175,11 +160,8 @@ var formalReviewVerdicts = map[string]string{
 	"COMMENTED":         "comment",
 }
 
-// verdictRef is quack's latest verdict on a PR plus where it lives, so a
-// merge outcome can be appended to that same body. commitID is empty when no
-// head SHA is available: an issue-comment marker predating
-// quack:delivery:head, or a review whose GitHub-reported commit_id is
-// somehow empty and whose body has no head marker either.
+// verdictRef is quack's latest verdict and where it lives, so a merge outcome can be appended to it.
+// commitID is empty when neither commit_id nor a head marker is available.
 type verdictRef struct {
 	verdict   string
 	commitID  string
@@ -206,9 +188,8 @@ func (e *Extension) latestQuackVerdict(ctx context.Context, owner, repo string, 
 			continue
 		}
 		at, _ := time.Parse(time.RFC3339, r.SubmittedAt)
-		// Marker first: an own-PR review always submits as state COMMENTED
-		// (GitHub disallows approve/request_changes on your own PR) but carries
-		// the REAL verdict in the marker - the state alone would read as "comment".
+		// Marker first: an own-PR review always submits as COMMENTED but carries the real verdict
+		// in the marker.
 		if m := reviewVerdictMarkerRe.FindStringSubmatch(r.Body); m != nil {
 			commitID := r.CommitID
 			if commitID == "" {
@@ -251,9 +232,8 @@ func (e *Extension) latestQuackVerdict(ctx context.Context, owner, repo string, 
 	return verdicts[len(verdicts)-1], nil
 }
 
-// appendToVerdict appends line to the review (or own-PR comment) carrying
-// the verdict, once. Only when there is nothing to edit does the line become
-// a comment of its own - still the single message for this outcome.
+// appendToVerdict appends line once to the review or own-PR comment carrying the verdict; only
+// when there is nothing to edit does it become its own comment.
 func (e *Extension) appendToVerdict(ctx context.Context, owner, repo string, number int, ref verdictRef, line string) {
 	body, changed := appendLine(ref.body, line)
 	if !changed {
@@ -278,16 +258,10 @@ func (e *Extension) appendToVerdict(ctx context.Context, owner, repo string, num
 	}
 }
 
-// tryMerge is the one merge decision, re-run on every event that can change
-// its inputs: merge iff a standing intent (the label) exists, quack's latest
-// verdict approves the CURRENT head, every check run on that head is green
-// (at least one exists, and none is missing/running/failed), and no other
-// reviewer has a standing CHANGES_REQUESTED on that head. Anything short of
-// that is silent - the next event re-evaluates, with no timer and no
-// polling. A non-nil error is an infrastructure failure (GitHub/store
-// unreadable), never a merge refusal. Serialized per PR (e.mergeMu).
+// tryMerge merges iff an intent stands, quack approved the current head, its checks are green and no
+// reviewer objects. Re-run per event, no polling; err is infrastructure failure, never a refusal.
 func (e *Extension) tryMerge(ctx context.Context, owner, repo string, number int) (mergeOutcome, error) {
-	sessionID := fmt.Sprintf("github-%s-%s-%d", owner, repo, number)
+	sessionID := issueSessionID(owner, repo, number)
 	chatID := globalChatID(sessionID)
 	unlock := e.mergeMu.Lock(chatID)
 	defer unlock()
@@ -330,16 +304,13 @@ func (e *Extension) tryMerge(ctx context.Context, owner, repo string, number int
 	return e.mergeAndSettle(ctx, owner, repo, number, ref, m.HeadSHA, intent, chatID)
 }
 
-// checkMergeBlockers: the closed-PR, stale-approval (#71), and human-objection
-// checks between a fresh approval and the CI gate.
+// checkMergeBlockers: the closed-PR, stale-approval and human-objection checks before the CI gate.
 func (e *Extension) checkMergeBlockers(ctx context.Context, owner, repo string, number int, chatID string, m *prMeta, ref verdictRef) (mergeOutcome, error, bool) {
 	if m.Merged || m.State == "closed" {
 		e.clearMergeIntent(ctx, chatID)
 		return mergeNoIntent, nil, true
 	}
-	// #71: the approval must be for the PR's actual current head; a push
-	// after it invalidates it. An own-PR marker comment carries no commit_id
-	// and is trusted as-is.
+	// A push after the approval invalidates it; a marker comment with no commit_id is trusted as-is.
 	if ref.commitID != "" && ref.commitID != m.HeadSHA {
 		return mergeStale, nil, true
 	}
@@ -354,9 +325,8 @@ func (e *Extension) checkMergeBlockers(ctx context.Context, owner, repo string, 
 	return 0, nil, false
 }
 
-// adoptMergeIntent: no stored intent - adopt one from the quack:merge label
-// itself, failing closed on any doubt about who applied it (webhook.go
-// enforces the same pair on delivery).
+// adoptMergeIntent adopts an intent from the quack:merge label itself, failing closed on any doubt
+// about who applied it.
 func (e *Extension) adoptMergeIntent(ctx context.Context, owner, repo string, number int, chatID string) (*MergeIntent, *prMeta, error) {
 	meta, merr := e.app.pullMeta(ctx, owner, repo, number)
 	if merr != nil {
@@ -365,9 +335,7 @@ func (e *Extension) adoptMergeIntent(ctx context.Context, owner, repo string, nu
 	if !slices.Contains(meta.Labels, e.labels.Merge) {
 		return nil, nil, nil
 	}
-	// The label's "labeled" delivery can go missing, but GET /pulls/{n}
-	// doesn't report who applied it - re-check the timeline's actor against
-	// the delivery path's own two checks before adopting.
+	// GET /pulls doesn't say who applied the label, so check the timeline actor like delivery does.
 	actor, stillApplied, known, aerr := e.app.mergeLabelActor(ctx, owner, repo, number, e.labels.Merge)
 	if aerr != nil || !known || !stillApplied || strings.HasSuffix(actor, "[bot]") || !e.isInvokerAllowed(actor) {
 		slog.Warn("github: quack:merge label present but its actor is not an authorized invoker; not adopting",
@@ -391,13 +359,8 @@ func (e *Extension) ciGate(ctx context.Context, owner, repo string, number int, 
 		return mergeDone, false
 	}
 	if len(checks) == 0 {
-		// Zero runs is ambiguous: pull_request_review.submitted can beat every
-		// workflow's queue (event ordering), this head may never get a run at
-		// all (docs-only PR under path filters, no CI), or a suite already
-		// failed without posting one. GitHub creates a check suite for every
-		// workflow a push triggers before any run exists, so consult that to
-		// tell the three apart - no CI ever waits forever for an event that
-		// never arrives.
+		// Zero runs means queued, no CI at all, or a suite that failed without a run. Suites exist
+		// before runs, so they tell the three apart.
 		if state, serr := e.headHasPendingCI(ctx, owner, repo, headSHA); serr != nil {
 			slog.Warn("github: check-suites lookup failed before merge; letting GitHub decide", "component", "github", "repo", owner+"/"+repo, "pr", number, "err", serr)
 		} else if state == ciWaiting {
@@ -406,9 +369,7 @@ func (e *Extension) ciGate(ctx context.Context, owner, repo string, number int, 
 			e.appendToVerdict(ctx, owner, repo, number, ref, "Merge blocked: CI failed on this head and posted no check run to retry.")
 			return mergeFailed, true
 		}
-		// ciClear (or the lookup failed): no relevant suite - attempt the
-		// merge and let GitHub's own required-check refusal (mergePendingRe)
-		// be the guard wherever branch protection is actually configured.
+		// ciClear or lookup failed: attempt the merge; branch protection's refusal is the guard.
 		return mergeDone, false
 	}
 	if !allChecksGreen(checks) {
@@ -451,13 +412,11 @@ func (e *Extension) clearMergeIntent(ctx context.Context, chatID string) {
 	}
 }
 
-// mergeIfApproved handles the merge label: records the human's standing
-// authorization, acks with a reaction, and evaluates the merge. A PR quack
-// has not reviewed at its current head gets a review dispatched so the label
-// never silently waits for one.
+// mergeIfApproved records the label's standing authorization and evaluates the merge; an unreviewed
+// head gets a review dispatched so the label never silently waits.
 func (e *Extension) mergeIfApproved(p pullRequestPayload, rawBody []byte) {
 	owner, repo, number := p.Repository.Owner.Login, p.Repository.Name, p.Number
-	sessionID := fmt.Sprintf("github-%s-%s-%d", owner, repo, number)
+	sessionID := issueSessionID(owner, repo, number)
 	chatID := globalChatID(sessionID)
 	ctx, cancel := context.WithTimeout(context.Background(), mergeTimeout)
 	defer cancel()
@@ -486,12 +445,8 @@ func (e *Extension) mergeIfApproved(p pullRequestPayload, rawBody []byte) {
 	e.spawn(func() { e.dispatch(autoReviewPayload(p, rawBody), autoReviewTask) })
 }
 
-// reviewOnMovedHeadUnderIntent dispatches a fresh review when a push moves
-// the head of a PR under a standing quack:merge intent (#1277): otherwise an
-// approved-then-pushed PR sits waiting for a human to comment /review, since
-// nothing else re-reviews a head that moved after delivery already
-// finished. Guarded by the head SHA recorded on the intent row itself -
-// concurrent or repeated synchronize events for the same head dispatch once.
+// reviewOnMovedHeadUnderIntent re-reviews a pushed head under a standing merge intent; the head SHA
+// recorded on the intent row makes repeated synchronize events dispatch once.
 func (e *Extension) reviewOnMovedHeadUnderIntent(p pullRequestPayload, rawBody []byte) {
 	if !e.triggers["merge"] {
 		return
@@ -501,7 +456,7 @@ func (e *Extension) reviewOnMovedHeadUnderIntent(p pullRequestPayload, rawBody [
 	if head == "" {
 		return
 	}
-	sessionID := fmt.Sprintf("github-%s-%s-%d", owner, repo, number)
+	sessionID := issueSessionID(owner, repo, number)
 	chatID := globalChatID(sessionID)
 	unlock := e.mergeMu.Lock(chatID)
 	defer unlock()
@@ -523,9 +478,8 @@ func (e *Extension) reviewOnMovedHeadUnderIntent(p pullRequestPayload, rawBody [
 	e.spawn(func() { e.dispatch(autoReviewPayload(p, rawBody), autoReviewTask) })
 }
 
-// mergeOnEvent re-evaluates the merge after a state-changing webhook (check
-// completed, head pushed, review submitted). Silent by design: nothing to
-// say until the PR is mergeable, and the outcome then lands on the review.
+// mergeOnEvent re-evaluates the merge after a state-changing webhook. Silent: the outcome lands
+// on the review once the PR is mergeable.
 func (e *Extension) mergeOnEvent(owner, repo string, number int, event string) {
 	if !e.triggers["merge"] {
 		return
@@ -556,10 +510,8 @@ func (e *Extension) ackIssue(owner, repo string, number int) {
 	}
 }
 
-// reReviewMovedHead builds the auto-review payload for a head that moved
-// under an approving review (#1142): the standing intent is left untouched
-// and merges once THIS review approves the new head. No comment - the fresh
-// review is the visible outcome.
+// reReviewMovedHead builds the auto-review for a head that moved under an approval; the intent
+// stands and merges once this review approves the new head.
 func (e *Extension) reReviewMovedHead(ctx context.Context, pr *pendingRun) *issueCommentPayload {
 	owner, repo, number := pr.owner, pr.repo, pr.number
 	title := ""
@@ -574,39 +526,20 @@ func (e *Extension) reReviewMovedHead(ctx context.Context, pr *pendingRun) *issu
 	return &p
 }
 
-// reReviewPayload synthesizes an issueCommentPayload for a re-review that
-// quack itself triggers (no webhook event backs it) - same auto-review path
-// a label trigger dispatches.
+// reReviewPayload is a quack-triggered auto-review with no backing webhook event.
 func reReviewPayload(owner, repo string, number int, title, cloneURL, defaultBranch string, installationID int64) issueCommentPayload {
-	synthetic := issueCommentPayload{Action: "created"}
-	synthetic.Issue.Number = number
-	synthetic.Issue.Title = title
-	synthetic.Issue.PullRequest = &struct{}{}
-	synthetic.Comment.User.Login = autoReviewUser
-	synthetic.Repository.Name = repo
-	synthetic.Repository.Owner.Login = owner
-	synthetic.Repository.CloneURL = cloneURL
-	synthetic.Repository.DefaultBranch = defaultBranch
-	synthetic.Installation.ID = installationID
-	synthetic.isLabelTrigger = true // auto-review, never a mention (T4)
-	synthetic.rawEvent = json.RawMessage(`{}`)
-	synthetic.eventName = "github.head_branch_modified_rereview"
-	return synthetic
+	ri := repoInfo{owner, repo, cloneURL, defaultBranch, installationID}
+	return ri.autoReview(number, title, []byte(`{}`), "github.head_branch_modified_rereview")
 }
 
 // checkEventPayload is the shared subset of check_suite / check_run /
 // workflow_run webhooks: which PRs the completed CI object belongs to.
 type checkEventPayload struct {
-	Action      string  `json:"action"`
-	CheckSuite  *ciHead `json:"check_suite"`
-	CheckRun    *ciHead `json:"check_run"`
-	WorkflowRun *ciHead `json:"workflow_run"`
-	Repository  struct {
-		Name  string `json:"name"`
-		Owner struct {
-			Login string `json:"login"`
-		} `json:"owner"`
-	} `json:"repository"`
+	Action      string       `json:"action"`
+	CheckSuite  *ciHead      `json:"check_suite"`
+	CheckRun    *ciHead      `json:"check_run"`
+	WorkflowRun *ciHead      `json:"workflow_run"`
+	Repository  ghRepository `json:"repository"`
 }
 
 type ciHead struct {
@@ -615,17 +548,8 @@ type ciHead struct {
 	} `json:"pull_requests"`
 }
 
-// mergeOnCheckEvent fans a completed CI event out to tryMerge for every PR it
-// belongs to. A PR with no stored intent still costs one GET /pulls/{n}
-// label check per fanned-out event before tryMerge gives up.
-//
-// Required topology: pull_requests is populated only when the check's head
-// AND base both live in p.Repository (GitHub's own scoping) - so for a fork
-// PR whose CI runs in the fork's own Actions, this array (and this fan-out)
-// is already empty; there is no base-repo PR number here to resolve it
-// from. Checks must run where the base repo can see them (the app installed
-// on the fork, or a pull_request_target-style workflow) or the merge stalls
-// silently the same way an all-empty check-suite list would.
+// mergeOnCheckEvent fans a completed CI event out to tryMerge per PR. GitHub fills pull_requests only
+// when head and base share the repo, so fork CI must run where the base repo sees it or merges stall.
 func (e *Extension) mergeOnCheckEvent(event string, body []byte) {
 	var p checkEventPayload
 	if json.Unmarshal(body, &p) != nil || p.Action != "completed" {

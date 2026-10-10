@@ -164,9 +164,8 @@ func TestListReviews(t *testing.T) {
 	}
 }
 
-// pullMeta's Fork detection (#662) feeds computeGrant's fork check directly -
-// a wrong read here silently over-grants the pull_request kind on a fork PR
-// quack cannot push to.
+// pullMeta's Fork detection feeds computeGrant's fork check: a wrong read here
+// silently over-grants pull_request on a fork PR quack cannot push to.
 func TestPullMetaDetectsFork(t *testing.T) {
 	keyPEM, _ := testKeyPEM(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -212,17 +211,12 @@ func TestPullMetaDetectsFork(t *testing.T) {
 	}
 }
 
-// fastResilientClient is a resilient http.Client tuned for tests: same
-// method-aware policy as production (internal/httpx), just without the real
-// backoff delay.
+// fastResilientClient uses production's method-aware retry policy (internal/httpx) without the real backoff delay.
 func fastResilientClient() *http.Client {
 	return &http.Client{Transport: httpx.NewTransport(nil, time.Millisecond, 5*time.Millisecond)}
 }
 
-// TestDoJSONRetriesGETOn503 pins #467's fix: a GET that hits a transient 503
-// (GitHub's "no server available") succeeds on retry instead of failing the
-// whole call. The retry itself now lives in the shared httpx transport - see
-// internal/httpx for the method-aware policy this pins at the App level.
+// A GET hitting a transient 503 ("no server available") succeeds on retry instead of failing the whole call.
 func TestDoJSONRetriesGETOn503(t *testing.T) {
 	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -249,9 +243,7 @@ func TestDoJSONRetriesGETOn503(t *testing.T) {
 	}
 }
 
-// TestDoJSONDoesNotRetryPOST pins the idempotency guard: a POST that 503s
-// must be tried exactly once - retrying a mutating call risks a duplicate
-// (e.g. a comment posted twice).
+// A POST that 503s is tried exactly once: retrying a mutating call risks a duplicate (e.g. a comment posted twice).
 func TestDoJSONDoesNotRetryPOST(t *testing.T) {
 	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -270,10 +262,8 @@ func TestDoJSONDoesNotRetryPOST(t *testing.T) {
 	}
 }
 
-// TestVerifyPushedBranchRetries404ThenSucceeds pins #570: GitHub's git-refs
-// API isn't read-your-writes consistent, so a ref lookup right after an
-// accepted push can 404 even though the branch landed. verifyPushedBranch
-// must retry that 404 and return the SHA once it appears.
+// GitHub's git-refs API isn't read-your-writes consistent, so a ref lookup right after an accepted push
+// can 404; verifyPushedBranch must retry that 404 and return the SHA once it appears.
 func TestVerifyPushedBranchRetries404ThenSucceeds(t *testing.T) {
 	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -298,9 +288,7 @@ func TestVerifyPushedBranchRetries404ThenSucceeds(t *testing.T) {
 	}
 }
 
-// TestVerifyPushedBranchPersistentNotFoundFails pins the other half: a ref
-// that genuinely never appears must still fail loud - retrying can't turn a
-// real phantom push into a false success.
+// A ref that never appears must still fail loud: retrying can't turn a phantom push into a false success.
 func TestVerifyPushedBranchPersistentNotFoundFails(t *testing.T) {
 	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -322,9 +310,7 @@ func TestVerifyPushedBranchPersistentNotFoundFails(t *testing.T) {
 	}
 }
 
-// TestVerifyPushedBranchDoesNotRetryOtherFailures pins that the 404-only retry
-// doesn't paper over a genuinely different failure (auth, 5xx that doJSON's
-// own retry already exhausted, etc.) - those return on the first attempt.
+// The 404-only retry must not paper over other failures (auth, exhausted 5xx); those return on the first attempt.
 func TestVerifyPushedBranchDoesNotRetryOtherFailures(t *testing.T) {
 	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -438,9 +424,7 @@ func TestAddLabelsAPIErrorPropagates(t *testing.T) {
 	}
 }
 
-// TestGateCaveat pins the graceful-fallback banner: a failing gate prepends a
-// visible warning (with feedback) to the delivered body; a passing gate leaves
-// it untouched. gateCaveat now lives in tools.go and takes sdk.DeliveryContext.
+// A failing gate prepends a visible warning (with feedback) to the delivered body; a passing gate leaves it untouched.
 func TestGateCaveat(t *testing.T) {
 	body := "## What\nadds a thing"
 	if got := gateCaveat(sdk.DeliveryContext{GatePassed: true}, body); got != body {
@@ -458,9 +442,8 @@ func TestGateCaveat(t *testing.T) {
 	}
 }
 
-// TestGateCaveatChecksSkipNote pins #780 test case 1: a node that PASSED the
-// gate but ran no build/test check gets a plain NOTE - not a warning about
-// the code - in its delivered PR body, carrying the skip reason verbatim.
+// A node that passed the gate but ran no build/test check gets a plain NOTE, not a warning about the code,
+// carrying the skip reason verbatim.
 func TestGateCaveatChecksSkipNote(t *testing.T) {
 	body := "## What\nadds a thing"
 	note := "quack did not run a build/test check on this change (skip_reason: unsupported_build_system)."
@@ -479,10 +462,7 @@ func TestGateCaveatChecksSkipNote(t *testing.T) {
 	}
 }
 
-// TestGateCaveatFailingNodeIgnoresChecksSkipNote pins #780 test case 3: a
-// failing node's existing warning banner is unchanged by ChecksSkipNote -
-// this feature adds a case for a passing node, it does not reword the one
-// that already works.
+// A failing node's warning banner is unchanged by ChecksSkipNote.
 func TestGateCaveatFailingNodeIgnoresChecksSkipNote(t *testing.T) {
 	body := "## What\nadds a thing"
 	dc := sdk.DeliveryContext{GatePassed: false, GateFeedback: "tests fail", ChecksSkipNote: "unsupported_build_system"}

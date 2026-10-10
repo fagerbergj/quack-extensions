@@ -10,24 +10,13 @@ import (
 	"sync"
 	"time"
 
-	// glebarez/go-sqlite, not modernc.org/sqlite directly: quack itself
-	// already imports glebarez/go-sqlite (transitively via glebarez/sqlite's
-	// GORM dialector, internal/store.go) to register the "sqlite"
-	// database/sql driver - importing modernc.org/sqlite here too would
-	// register the SAME driver name a second time and panic at init
-	// ("sql: Register called twice for driver sqlite"). glebarez/go-sqlite
-	// is itself a modernc.org/sqlite wrapper, so this is the same engine,
-	// not a different one.
+	// Not modernc.org/sqlite directly: quack already registers "sqlite" via glebarez, and a second
+	// registration panics at init. glebarez wraps modernc, so it's the same engine.
 	_ "github.com/glebarez/go-sqlite"
 )
 
-// ghStore is this extension's private persistence for the four
-// GitHub-specific tables that used to live in quack's shared Postgres
-// store: snapshot, review baseline, CI-fix state, and merge intent
-// (design doc Risk 2 - extension-owned storage loses that shared
-// connection/transaction surface). SQLite over a mutexed JSON blob: four
-// independently-keyed tables with their own read-modify-write patterns
-// don't belong serialized behind one file-wide lock.
+// ghStore is this extension's private SQLite: snapshot, review baseline, CI-fix state, merge intent and
+// pending run, each keyed by chat with its own read-modify-write pattern.
 type ghStore struct {
 	path   string
 	mu     sync.Mutex
@@ -115,8 +104,7 @@ func openDB(path string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("github: migrate store: %w", err)
 	}
-	// Additive migration for a database created before dispatched_head
-	// existed - ignore "duplicate column" on a database that already has it.
+	// Additive migration for databases predating dispatched_head; "duplicate column" means already applied.
 	if _, err := db.Exec(`ALTER TABLE github_merge_intent ADD COLUMN dispatched_head TEXT NOT NULL DEFAULT ''`); err != nil &&
 		!strings.Contains(err.Error(), "duplicate column") {
 		_ = db.Close()
@@ -218,29 +206,23 @@ type FixState struct {
 // GetFixState returns the auto-heal state, or (nil, nil) when none exists.
 func (s *ghStore) GetFixState(ctx context.Context, chatID string) (*FixState, error) {
 	var fs FixState
-	var stopped int
 	err := s.queryRow(ctx, `SELECT chat_id, last_sha, stopped FROM github_fix_state WHERE chat_id = ?`, chatID).
-		Scan(&fs.ChatID, &fs.LastSHA, &stopped)
+		Scan(&fs.ChatID, &fs.LastSHA, &fs.Stopped)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	fs.Stopped = stopped != 0
 	return &fs, nil
 }
 
 // SetFixState upserts the auto-heal state (persisted before the fix run so a crash doesn't refund it).
 func (s *ghStore) SetFixState(ctx context.Context, fs FixState) error {
-	stopped := 0
-	if fs.Stopped {
-		stopped = 1
-	}
 	_, err := s.exec(ctx, `
 		INSERT INTO github_fix_state (chat_id, last_sha, stopped, updated_at) VALUES (?, ?, ?, ?)
 		ON CONFLICT(chat_id) DO UPDATE SET last_sha = excluded.last_sha, stopped = excluded.stopped, updated_at = excluded.updated_at`,
-		fs.ChatID, fs.LastSHA, stopped, time.Now().UTC())
+		fs.ChatID, fs.LastSHA, fs.Stopped, time.Now().UTC())
 	return err
 }
 
@@ -250,11 +232,8 @@ func (s *ghStore) DeleteFixState(ctx context.Context, chatID string) error {
 	return err
 }
 
-// MergeIntent records a standing merge authorization for a PR chat, durable
-// across restarts so quack:merge applied before a review still works.
-// DispatchedHead is the head SHA a push-triggered re-review was last
-// dispatched for under this intent (#1277) - the guard so two synchronize
-// events for the same head dispatch once.
+// MergeIntent is a durable standing merge authorization for a PR chat. DispatchedHead is the head a
+// push-triggered re-review last went out for, so two synchronize events for one head dispatch once.
 type MergeIntent struct {
 	ChatID         string
 	RequestedBy    string
@@ -276,9 +255,8 @@ func (s *ghStore) GetMergeIntent(ctx context.Context, chatID string) (*MergeInte
 	return &mi, nil
 }
 
-// SetMergeIntent upserts the merge authorization (quack:merge label applied).
-// dispatched_head is left untouched on conflict - re-labeling the same PR
-// must not forget a head a push-triggered re-review already covered.
+// SetMergeIntent upserts the merge authorization. dispatched_head is kept on conflict: re-labeling must
+// not forget a head a push-triggered re-review already covered.
 func (s *ghStore) SetMergeIntent(ctx context.Context, chatID, requestedBy string) error {
 	now := time.Now().UTC()
 	_, err := s.exec(ctx, `
@@ -288,9 +266,8 @@ func (s *ghStore) SetMergeIntent(ctx context.Context, chatID, requestedBy string
 	return err
 }
 
-// SetMergeIntentDispatchedHead records the head SHA a push-triggered
-// re-review was just dispatched for (#1277) - a no-op if the intent was
-// cleared out from under it (unlabel/close racing the push).
+// SetMergeIntentDispatchedHead records the head a push-triggered re-review went out for; a no-op if
+// the intent was cleared underneath (unlabel/close racing the push).
 func (s *ghStore) SetMergeIntentDispatchedHead(ctx context.Context, chatID, head string) error {
 	_, err := s.exec(ctx, `UPDATE github_merge_intent SET dispatched_head = ?, updated_at = ? WHERE chat_id = ?`,
 		head, time.Now().UTC(), chatID)
@@ -303,11 +280,8 @@ func (s *ghStore) DeleteMergeIntent(ctx context.Context, chatID string) error {
 	return err
 }
 
-// PendingRunRow is the durable subset of pendingRun (#65): dispatch's
-// in-memory e.pending sync.Map does not survive a quack restart, so a run
-// resumed at boot has nothing for RunEnded to correlate against and its
-// outcome (including a standing-intent merge) is silently dropped. This row
-// lets RunEnded rebuild what finalize/tryMergeStandingIntent need.
+// PendingRunRow is the durable subset of pendingRun: e.pending doesn't survive a restart, and without
+// this row a run resumed at boot would drop its outcome (including a standing-intent merge).
 type PendingRunRow struct {
 	ChatID, SessionID, Owner, Repo, Login string
 	Number                                int
@@ -327,19 +301,18 @@ func (s *ghStore) SetPendingRun(ctx context.Context, r PendingRunRow) error {
 			is_label_trigger = excluded.is_label_trigger, comment_id = excluded.comment_id,
 			default_branch = excluded.default_branch, installation_id = excluded.installation_id,
 			clone_url = excluded.clone_url, created_at = excluded.created_at`,
-		r.ChatID, r.SessionID, r.Owner, r.Repo, r.Number, boolToInt(r.IsPR), r.Login, boolToInt(r.IsPlan),
-		boolToInt(r.IsLabelTrigger), r.CommentID, r.DefaultBranch, r.InstallationID, r.CloneURL, time.Now().UTC())
+		r.ChatID, r.SessionID, r.Owner, r.Repo, r.Number, r.IsPR, r.Login, r.IsPlan,
+		r.IsLabelTrigger, r.CommentID, r.DefaultBranch, r.InstallationID, r.CloneURL, time.Now().UTC())
 	return err
 }
 
 // GetPendingRun returns the persisted dispatch coordinates, or (nil, nil) when none exist.
 func (s *ghStore) GetPendingRun(ctx context.Context, chatID string) (*PendingRunRow, error) {
 	var r PendingRunRow
-	var isPR, isPlan, isLabelTrigger int
 	err := s.queryRow(ctx, `
 		SELECT chat_id, session_id, owner, repo, number, is_pr, login, is_plan, is_label_trigger, comment_id, default_branch, installation_id, clone_url
 		FROM github_pending_run WHERE chat_id = ?`, chatID).
-		Scan(&r.ChatID, &r.SessionID, &r.Owner, &r.Repo, &r.Number, &isPR, &r.Login, &isPlan, &isLabelTrigger,
+		Scan(&r.ChatID, &r.SessionID, &r.Owner, &r.Repo, &r.Number, &r.IsPR, &r.Login, &r.IsPlan, &r.IsLabelTrigger,
 			&r.CommentID, &r.DefaultBranch, &r.InstallationID, &r.CloneURL)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -347,7 +320,6 @@ func (s *ghStore) GetPendingRun(ctx context.Context, chatID string) (*PendingRun
 	if err != nil {
 		return nil, err
 	}
-	r.IsPR, r.IsPlan, r.IsLabelTrigger = isPR != 0, isPlan != 0, isLabelTrigger != 0
 	return &r, nil
 }
 
@@ -355,11 +327,4 @@ func (s *ghStore) GetPendingRun(ctx context.Context, chatID string) (*PendingRun
 func (s *ghStore) DeletePendingRun(ctx context.Context, chatID string) error {
 	_, err := s.exec(ctx, `DELETE FROM github_pending_run WHERE chat_id = ?`, chatID)
 	return err
-}
-
-func boolToInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }

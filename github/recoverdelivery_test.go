@@ -9,9 +9,8 @@ import (
 	"github.com/fagerbergj/quack-extensions/sdk"
 )
 
-// #1093: RecoverDelivery finds a prior review carrying the idempotency key,
-// and reports not-found when no review carries it (a fresh key, or a
-// pre-#1093 review with no key marker at all).
+// RecoverDelivery finds a prior review carrying the idempotency key, and reports not-found
+// when none carries it (a fresh key, or a review with no key marker).
 func TestRecoverDelivery(t *testing.T) {
 	reviews := []prReview{
 		{ID: 1, HTMLURL: "https://github.com/acme/widgets/pull/7#pullrequestreview-1", Body: "looks fine" + deliveryKeyMarker("code_review:pr:7@1")},

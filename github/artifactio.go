@@ -1,10 +1,5 @@
-// Input artifacts (quack issue #1010): the full GitHub API responses too
-// large or raw for the inline envelope - full comment thread, raw webhook
-// payload, issue timeline, CI check-runs/annotations - are stored as named
-// input artifacts through Host.WriteArtifact rather than dumped as files
-// into a context directory (the deleted #660 mechanism). The dispatch
-// envelope carries only a manifest (name, revision, changed) pointing at
-// them; a worker reads the rest with read_artifact.
+// Input artifacts: GitHub API responses too large or raw for the inline envelope, stored via
+// Host.WriteArtifact; the envelope carries only a manifest and workers use read_artifact.
 package github
 
 import (
@@ -28,27 +23,21 @@ const (
 
 // artifactEntry names one input artifact recorded in a dispatch's manifest.
 type artifactEntry struct {
-	Name     string // artifact-local name ("comments", "event", "annotations-go-test", ...) - what Host.ReadArtifact/WriteArtifact take
+	Name     string // artifact-local name ("comments", "event", ...), as Host.ReadArtifact/WriteArtifact take it
 	Revision int64
 	Changed  bool
 	Note     string // one-line human summary rendered in the manifest
 }
 
-// inputArtifactKind is the recordstore kind core (internal/serve's own
-// inputArtifactKind) saves every dispatch input artifact under. The SDK
-// boundary carries a bare Name, not the store's full id, so read_artifact
-// needs the prefix restored - ID is the one place this extension does that,
-// so the manifest can never drift from what read_artifact actually accepts.
+// inputArtifactKind is the recordstore kind quack saves input artifacts under; the SDK carries a bare
+// Name, so ID restores the prefix read_artifact needs.
 const inputArtifactKind = "bytes"
 
-// ID is the id read_artifact accepts for this entry - the manifest MUST
-// render this, not Name, or a worker's read_artifact call 404s.
+// ID is the id read_artifact accepts; the manifest must render this, not Name, or read_artifact 404s.
 func (e artifactEntry) ID() string { return inputArtifactKind + ":" + e.Name }
 
-// writeArtifact stores data under name via host.WriteArtifact and returns
-// the resulting manifest entry, nil when the capability is unavailable or
-// the write fails (fail-soft, matching the deleted mechanism's convention).
-// user must be the same value passed as this dispatch's ChatRef.User (#1225).
+// writeArtifact stores data via host.WriteArtifact and returns its manifest entry, nil when unavailable
+// or failed (fail-soft). user must equal this dispatch's ChatRef.User.
 func writeArtifact(host sdk.Host, chatID, user, name, mime string, data []byte, note string) *artifactEntry {
 	if host.WriteArtifact == nil {
 		return nil
@@ -69,10 +58,8 @@ type ContextRequest struct {
 	CheckSHA    string // commit whose check runs to dump; "" skips the check-runs artifact
 }
 
-// writeInputArtifacts fetches every endpoint needed for chatID's dispatch and
-// stores each as a named input artifact, returning a manifest sorted the
-// same way WriteContextDir's file listing was: fixed endpoint order, then
-// per-check annotations. Best-effort per artifact.
+// writeInputArtifacts fetches every endpoint chatID's dispatch needs and stores each as a named
+// input artifact, in fixed endpoint order. Best-effort per artifact.
 func (e *Extension) writeInputArtifacts(ctx context.Context, chatID, user string, req ContextRequest) []artifactEntry {
 	tok, err := e.app.tokenForRepo(ctx, req.Owner, req.Repo)
 	if err != nil {
@@ -171,7 +158,8 @@ func (e *Extension) fetchAndWriteList(ctx context.Context, chatID, user, name, a
 	return writeArtifact(e.host, chatID, user, name, "application/json", b, note)
 }
 
-// fetchAndWriteCheckRuns fetches and stores the "check-runs" artifact (wrapped-array endpoint, can't reuse fetchAndWriteList).
+// fetchAndWriteCheckRuns stores the "check-runs" artifact; the endpoint wraps its array,
+// so fetchAndWriteList can't serve it.
 func (e *Extension) fetchAndWriteCheckRuns(ctx context.Context, chatID, user, authz, owner, repo, sha string) ([]checkRunSummary, *artifactEntry) {
 	items, err := e.app.fetchCheckRuns(ctx, authz, owner, repo, sha)
 	if err != nil {
@@ -249,9 +237,8 @@ func (a *App) fetchAllPages(ctx context.Context, firstPath, authz string, cap in
 	return items, false, nil
 }
 
-// doPagedGET performs one authenticated GET and returns the next page URL
-// from the Link header; retry happens transparently inside a.http's
-// transport (see internal/httpx).
+// doPagedGET performs one authenticated GET and returns the Link header's next page URL;
+// a.http's transport retries.
 func (a *App) doPagedGET(ctx context.Context, pathOrURL, authz string, out any) (string, error) {
 	url := pathOrURL
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
@@ -286,9 +273,6 @@ func (a *App) doPagedGET(ctx context.Context, pathOrURL, authz string, out any) 
 var linkNextRe = regexp.MustCompile(`<([^>]+)>;\s*rel="next"`)
 
 func nextLink(header string) string {
-	if header == "" {
-		return ""
-	}
 	if m := linkNextRe.FindStringSubmatch(header); m != nil {
 		return m[1]
 	}

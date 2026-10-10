@@ -6,21 +6,18 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 )
-
-// Trigger envelope (#659, #666): GitHub's own JSON filtered by drop-list, never renamed.
 
 const seedCap = 32 * 1024
 
-// permissionsText renders the run's allowed delivery kinds as the envelope's
-// <permissions> vocabulary - the same closed vocabulary (pull_request,
-// review, comment) staged delivery and the trust gate's allowlist use, so the
-// envelope and enforcement can never name two different things.
+// permissionsText renders allowed delivery kinds in the same closed vocabulary
+// staged delivery and the trust gate's allowlist use, so envelope and enforcement agree.
 func permissionsText(allowedKinds []string) string {
 	return strings.Join(allowedKinds, ", ")
 }
 
-// dropField reports keys dropped from filtered event/comment JSON (node_id, *_url, avatar_url, reactions, performed_via_github_app).
+// dropField reports keys dropped from filtered event/comment JSON.
 func dropField(key string) bool {
 	switch key {
 	case "node_id", "avatar_url", "reactions", "performed_via_github_app", "url":
@@ -67,7 +64,7 @@ func filterJSONValue(v any) any {
 	}
 }
 
-// seededComment is a comment's four-field seed (#666): id, created_at, user.login, body.
+// seededComment is a comment's four-field seed: id, created_at, user.login, body.
 type seededComment struct {
 	ID        int64  `json:"id"`
 	CreatedAt string `json:"created_at"`
@@ -106,18 +103,6 @@ func seededCommentsWithStatus(groups ...struct {
 	return string(b)
 }
 
-func seededCommentsJSON(cs []snapshotComment) string {
-	out := make([]seededComment, 0, len(cs))
-	for _, c := range cs {
-		out = append(out, toSeededComment(c))
-	}
-	b, err := json.Marshal(out)
-	if err != nil {
-		return "[]"
-	}
-	return string(b)
-}
-
 func visibleComments(cs []snapshotComment, excludeCommentID int64) []snapshotComment {
 	out := make([]snapshotComment, 0, len(cs))
 	for _, c := range cs {
@@ -129,17 +114,17 @@ func visibleComments(cs []snapshotComment, excludeCommentID int64) []snapshotCom
 	return out
 }
 
-// commentsBlock renders seed (full) or delta (new + edited + deleted) — uses diffSnapshots, never GitHub's ?since=.
+// commentsBlock renders seed (full) or delta (new + edited + deleted) from diffSnapshots, never GitHub's ?since=.
 func commentsBlock(gh githubContext, excludeCommentID int64) string {
-	if gh.delta == nil {
-		visible := visibleComments(gh.snap.Comments, excludeCommentID)
-		return fmt.Sprintf("<comments count=\"%d\">%s</comments>\n", len(visible), seededCommentsJSON(visible))
-	}
-	d := gh.delta
 	type group = struct {
 		status string
 		cs     []snapshotComment
 	}
+	if gh.delta == nil {
+		visible := visibleComments(gh.snap.Comments, excludeCommentID)
+		return fmt.Sprintf("<comments count=\"%d\">%s</comments>\n", len(visible), seededCommentsWithStatus(group{"", visible}))
+	}
+	d := gh.delta
 	body := seededCommentsWithStatus(
 		group{"new", d.CommentsAdded},
 		group{"edited", d.CommentsEdited},
@@ -153,10 +138,8 @@ func commentsBlock(gh githubContext, excludeCommentID int64) string {
 // matrix build still gets a bounded envelope, with a note that it was cut.
 const maxEnvelopeChecks = 20
 
-// checksBlock renders the PR's current head-commit check runs as compact
-// status lines (name: status[, conclusion]) plus a one-line failing/pending/
-// passing summary - the compact companion to the "check-runs" input
-// artifact's full JSON (#1010). Empty when there are no checks to report.
+// checksBlock renders head-commit check runs as compact status lines plus a summary;
+// the "check-runs" input artifact holds the full JSON.
 func checksBlock(checks []checkRunView) string {
 	if len(checks) == 0 {
 		return ""
@@ -216,13 +199,17 @@ func changedFilesBlock(snap Snapshot) string {
 		len(snap.Files), additions, deletions, string(b))
 }
 
-// truncatedText caps at seedCap bytes with a plain-text note naming the full file.
+// truncatedText caps at seedCap bytes (on a rune boundary) with a note naming the full file.
 func truncatedText(s, fullFile string) string {
 	if len(s) <= seedCap {
 		return s
 	}
+	cut := seedCap
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
 	return fmt.Sprintf("[TRUNCATED: full text is %d bytes; showing the first %d. Full text: %s]\n\n%s",
-		len(s), seedCap, fullFile, s[:seedCap])
+		len(s), cut, fullFile, s[:cut])
 }
 
 func askBlock(p issueCommentPayload, gh githubContext, isPR bool) string {
@@ -242,12 +229,8 @@ func askBlock(p issueCommentPayload, gh githubContext, isPR bool) string {
 		tag, p.Issue.Number, title, desc, tag)
 }
 
-// compactEvent is eventBlock's inline replacement for the raw webhook
-// payload (#1010) - the only four fields any prompt in this codebase
-// actually consumes, plus the triggering comment's own body: it is
-// deliberately excluded from <comments> (visibleComments/diffSnapshots'
-// excludeCommentID) because it's "their request" quoted here instead of
-// double-shipped. The full payload lives in the "event" input artifact.
+// compactEvent is the inline event: the fields prompts consume plus the trigger comment's body, which
+// <comments> excludes so it isn't shipped twice. The full payload is the "event" input artifact.
 type compactEvent struct {
 	Action  string `json:"action"`
 	Actor   string `json:"actor,omitempty"`
@@ -265,10 +248,6 @@ func eventNote(p issueCommentPayload) string {
 }
 
 func eventBlock(p issueCommentPayload) string {
-	name := p.eventName
-	if name == "" {
-		name = "unknown"
-	}
 	ce := compactEvent{Action: p.Action, Actor: p.Comment.User.Login, Number: p.Issue.Number, HeadSHA: p.checkSHA}
 	if p.Comment.ID != 0 {
 		ce.Comment = p.Comment.Body
@@ -277,13 +256,11 @@ func eventBlock(p issueCommentPayload) string {
 	if err != nil {
 		b = []byte("{}")
 	}
-	return fmt.Sprintf("<event name=%q>%s</event>\n", name, string(b))
+	return fmt.Sprintf("<event name=%q>%s</event>\n", eventNote(p), string(b))
 }
 
-// artifactsManifestBlock replaces the deleted context-dir mechanism's
-// <context> block: one line per input artifact this dispatch wrote or
-// reused, so a worker knows what read_artifact can fetch without paying for
-// the content inline (#1010).
+// artifactsManifestBlock lists each input artifact this dispatch wrote or reused, so a worker
+// knows what read_artifact can fetch without paying for the content inline.
 func artifactsManifestBlock(entries []artifactEntry) string {
 	if len(entries) == 0 {
 		return ""
@@ -301,33 +278,18 @@ func artifactsManifestBlock(entries []artifactEntry) string {
 	return b.String()
 }
 
-// buildEnvelope builds the trigger envelope: permissions, deliverable, ask, comments, changed_files, event, artifacts manifest.
+// buildEnvelope builds the orchestrator's trigger envelope.
 func (e *Extension) buildEnvelope(ctx context.Context, p issueCommentPayload, task string, gh githubContext, allowedKinds []string, manifest []artifactEntry) string {
-	isPR := p.Issue.PullRequest != nil
-	deliverable := e.deliverableText(ctx, p, task, gh, allowedKinds, isPR)
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "<permissions>%s</permissions>\n", permissionsText(allowedKinds))
-	fmt.Fprintf(&b, "<deliverable>%s</deliverable>\n", deliverable)
-	if p.checkSHA != "" {
-		b.WriteString(ciMergeRefBlock(p.checkSHA, setupBaseRef(p, gh)))
-	}
-	b.WriteString(askBlock(p, gh, isPR))
-	b.WriteString(commentsBlock(gh, p.Comment.ID))
-	if isPR {
-		b.WriteString(changedFilesBlock(gh.snap))
-		b.WriteString(checksBlock(gh.checks))
-	}
-	b.WriteString(eventBlock(p))
-	b.WriteString(artifactsManifestBlock(manifest))
-	return b.String()
+	return e.envelope(ctx, p, task, gh, allowedKinds, manifest, true)
 }
 
-// buildWorkerAsk is the consumer split for nodes (#664): ask-only text, never
-// orchestrator-level evidence - checksBlock is the one exception (#876/#880/
-// #882): it's a few compact lines, not the churn-scale evidence the split
-// exists to keep out, and a review node with no CI status can approve red.
+// buildWorkerAsk is the node-scoped ask: no changed_files or event evidence. Checks stay,
+// since a review node with no CI status can approve red.
 func (e *Extension) buildWorkerAsk(ctx context.Context, p issueCommentPayload, task string, gh githubContext, allowedKinds []string, manifest []artifactEntry) string {
+	return e.envelope(ctx, p, task, gh, allowedKinds, manifest, false)
+}
+
+func (e *Extension) envelope(ctx context.Context, p issueCommentPayload, task string, gh githubContext, allowedKinds []string, manifest []artifactEntry, full bool) string {
 	isPR := p.Issue.PullRequest != nil
 	deliverable := e.deliverableText(ctx, p, task, gh, allowedKinds, isPR)
 
@@ -339,25 +301,27 @@ func (e *Extension) buildWorkerAsk(ctx context.Context, p issueCommentPayload, t
 	}
 	b.WriteString(askBlock(p, gh, isPR))
 	b.WriteString(commentsBlock(gh, p.Comment.ID))
+	if isPR && full {
+		b.WriteString(changedFilesBlock(gh.snap))
+	}
 	if isPR {
 		b.WriteString(checksBlock(gh.checks))
+	}
+	if full {
+		b.WriteString(eventBlock(p))
 	}
 	b.WriteString(artifactsManifestBlock(manifest))
 	return b.String()
 }
 
-// ciMergeRefBlock states #843's gap: GitHub Actions builds the MERGE of a
-// PR's head with its base, not the head branch alone, so a failure that
-// exists only in that merge (a semantic conflict with base) is invisible to
-// a worker that only inspects the checked-out branch. checkSHA is the head
-// commit the failing checks are reported against - never the merge commit
-// itself. Gated on checkSHA, which only the ci_fix dispatch sets.
+// ciMergeRefBlock: Actions builds head merged with base, so a merge-only failure is invisible on the head
+// branch alone. checkSHA is the head commit the checks report against; only ci_fix dispatch sets it.
 func ciMergeRefBlock(checkSHA, baseRef string) string {
 	return fmt.Sprintf("<ci_ref>GitHub Actions builds the MERGE of this branch with base %q, not the checked-out head branch by itself - the failing checks are reported against head commit %s, but that merge is the actual CI build target. A failure can exist ONLY in the merge (e.g. two independently-fine changes that conflict once combined) and stay invisible if you diagnose the head branch alone. Before diagnosing: run `git merge \"origin/%s\"` in the checked-out clone, then diagnose and fix against that MERGED state, including any merge conflicts or merge-only compile errors. If the merge introduces no changes and you cannot reproduce the reported failure, say so explicitly in your answer - never report the checks as passing or deliver a no-op commit.</ci_ref>\n",
 		baseRef, shortSHA(checkSHA), baseRef)
 }
 
-// reviewDeliverableText scopes a review to commits not seen before (#459 §5).
+// reviewDeliverableText scopes a review to commits not seen before.
 func reviewDeliverableText(gh githubContext) string {
 	if gh.newCommits != nil {
 		if len(gh.newCommits) == 0 {
@@ -376,6 +340,8 @@ func reviewDeliverableText(gh githubContext) string {
 // replyDeliverable: the <deliverable> text for a run whose only legal output is a reply.
 const replyDeliverable = "a reply to their message, posted as a comment - no new work unless they explicitly ask for it"
 
+const commitDeliverable = "a commit addressing the requested change"
+
 // deliverableText is deliverable's text; it keeps the first kind a dispatch resolves for the intent point.
 func (e *Extension) deliverableText(ctx context.Context, p issueCommentPayload, task string, gh githubContext, allowedKinds []string, isPR bool) string {
 	kind, text := e.deliverable(ctx, p, task, gh, allowedKinds, isPR)
@@ -385,7 +351,7 @@ func (e *Extension) deliverableText(ctx context.Context, p issueCommentPayload, 
 	return text
 }
 
-// deliverable classifies the run and states what it produces. Applies classifier or falls back to ImplementationIntent.
+// deliverable classifies the run and states what it produces; ImplementationIntent is the classifier fallback.
 func (e *Extension) deliverable(ctx context.Context, p issueCommentPayload, task string, gh githubContext, allowedKinds []string, isPR bool) (kind, text string) {
 	mentionIsWork := isPR && !p.isLabelTrigger && p.deliverableHint == ""
 	if kind, s := e.mentionWorkText(ctx, mentionIsWork, p, task, gh, allowedKinds); s != "" {
@@ -405,20 +371,15 @@ func (e *Extension) deliverable(ctx context.Context, p issueCommentPayload, task
 		return "", p.deliverableHint
 	}
 
-	if mentionIsWork {
-		if _, ok := e.classifyPRDeliverable(ctx, task, allowedKinds); ok {
-			return "review", reviewDeliverableText(gh)
-		}
-	}
-	if isPR && !ImplementationIntent(task) {
+	// Without push permission a PR mention can only be a review, which the grant alone decides.
+	if (mentionIsWork && slices.Contains(allowedKinds, "review")) || (isPR && !ImplementationIntent(task)) {
 		return "review", reviewDeliverableText(gh)
 	}
-	return "commit", "a commit addressing the requested change"
+	return "commit", commitDeliverable
 }
 
-// mentionWorkText: the #760 pre-pass - on a PR quack can already push to,
-// computeGrant answers the permission question deterministically instead of
-// the generic gate re-deriving it (it once misread one, home-server#3).
+// mentionWorkText: on a PR quack can already push to, computeGrant answers the permission
+// question deterministically instead of the generic gate re-deriving it.
 func (e *Extension) mentionWorkText(ctx context.Context, mentionIsWork bool, p issueCommentPayload, task string, gh githubContext, allowedKinds []string) (kind, text string) {
 	if !mentionIsWork {
 		return "", ""
@@ -428,7 +389,7 @@ func (e *Extension) mentionWorkText(ctx context.Context, mentionIsWork bool, p i
 		if kind, ok := e.classifyGrantedPRDeliverable(ctx, task, allowedKinds); ok {
 			switch kind {
 			case "commit":
-				return "commit", "a commit addressing the requested change"
+				return "commit", commitDeliverable
 			case "review":
 				return "review", reviewDeliverableText(gh)
 			}
@@ -441,11 +402,10 @@ func (e *Extension) mentionWorkText(ctx context.Context, mentionIsWork bool, p i
 	return "", ""
 }
 
-// issueDeliverableText: a non-PR issue comment's deliverable - the classifier
-// (with its "implement" quadrant) first, then the wording heuristic as
-// fallback, never straight to conversational.
+// issueDeliverableText: the classifier (with its "implement" quadrant) first, then the
+// wording heuristic as fallback, never straight to conversational.
 func (e *Extension) issueDeliverableText(ctx context.Context, p issueCommentPayload, task string, allowedKinds []string, gh githubContext, issueCommentDeliverable string) (kind, text string) {
-	// #713: a comment can ask for implementation too - the label only bounds whether it's a legal answer.
+	// A comment can ask for implementation too; the label only bounds whether it's a legal answer.
 	if kind, ok := e.classifyIssueDeliverableCached(ctx, p, task, allowedKinds); ok {
 		if kind == "implement" {
 			return "pull_request", issueImplementDeliverable(e.labels.PartialFix, gh.snap.Labels, p.Issue.Number)

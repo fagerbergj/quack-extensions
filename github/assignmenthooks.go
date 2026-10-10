@@ -13,8 +13,7 @@ var (
 	_ sdk.AssignmentFreshnessChecker = (*Extension)(nil)
 )
 
-// assignmentHookTimeout bounds each hook's own GitHub API call - both run
-// inline inside a tool call, never a detached background goroutine.
+// assignmentHookTimeout bounds each hook's GitHub API call; both run inline inside a tool call.
 const assignmentHookTimeout = 10 * time.Second
 
 // sessionIDer recovers the dispatching chat id via structural typing -
@@ -23,10 +22,8 @@ type sessionIDer interface {
 	SessionID() string
 }
 
-// OnAssignment stamps repo/base_ref/base_sha for a dispatch this extension
-// made (found via e.pending, keyed by the chat id ctx carries) and nil for
-// any other chat. base_ref tracks the PR's own head branch when this run is
-// anchored to one (ExistingHeadRef), else the branch quack cloned from.
+// OnAssignment stamps repo/base_ref/base_sha for this extension's own dispatches (nil otherwise).
+// base_ref is the PR head branch when anchored to one, else the branch quack cloned from.
 func (e *Extension) OnAssignment(ctx context.Context, a sdk.Assignment) map[string]any {
 	sc, ok := ctx.(sessionIDer)
 	if !ok {
@@ -59,9 +56,8 @@ func (e *Extension) OnAssignment(ctx context.Context, a sdk.Assignment) map[stri
 	return map[string]any{"repo": setup.Repo, "base_ref": branch, "base_sha": sha}
 }
 
-// BeforeAssignment compares meta.github.base_sha against the branch's
-// current tip; missing meta means "not mine" (fresh=true), a lookup
-// failure fails closed to fresh=false rather than risk resuming stale work.
+// BeforeAssignment compares meta.github.base_sha against the branch tip; missing meta is "not mine"
+// (fresh), and a lookup failure fails closed rather than risk resuming stale work.
 func (e *Extension) BeforeAssignment(ctx context.Context, a sdk.Assignment) (fresh bool, reason string) {
 	meta, ok := a.Meta["github"]
 	if !ok {

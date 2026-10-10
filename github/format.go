@@ -6,21 +6,16 @@ import (
 	"strings"
 )
 
-// mentionRe matches a GitHub @user or @org/team token; the leading class
-// keeps emails (a@b) and URL paths (/@x) from matching. The team alternative
-// also matches an npm-style scoped package name (@angular/core) in prose -
-// GitHub pings @org/team identically, so there is no grammar-level way to
-// tell them apart; such tokens are deliberately stripped too.
+// mentionRe matches @user or @org/team; the leading class skips emails and URL paths. Scoped package
+// names (@angular/core) match too and are stripped on purpose: GitHub pings them identically.
 var mentionRe = regexp.MustCompile(`(^|[^\w/.:@])@([A-Za-z0-9][A-Za-z0-9-]*(?:/[A-Za-z0-9._-]+)?)`)
 
-// stripMentions drops the "@" from every mention outside fenced or inline
-// code, so nothing quack posts - its own bookkeeping or any agent's prose -
-// can ping a person. The login itself stays, so the sentence still reads.
+// stripMentions drops the "@" from every mention outside fenced or inline code, so nothing quack
+// posts can ping a person; the login stays so the sentence still reads.
 func stripMentions(s string) string {
 	lines := strings.Split(s, "\n")
-	// An odd number of fence markers means an unterminated block (a truncated
-	// diff quote, say) - tracking fenced state would then hide every mention
-	// past it for the rest of the body. Fail safe: strip everywhere instead.
+	// An odd fence count means an unterminated block that would hide every later mention;
+	// fail safe and strip everywhere instead.
 	fenceCount := 0
 	for _, ln := range lines {
 		t := strings.TrimSpace(ln)
@@ -41,10 +36,8 @@ func stripMentions(s string) string {
 		if fenced {
 			continue
 		}
-		// Even segments are prose, odd ones are inline code. With an odd
-		// backtick count the final segment is an unterminated span and the
-		// parity flips, so a trailing mention would survive; fail safe like
-		// the fence block above and strip it too.
+		// Even segments are prose, odd ones inline code. An odd backtick count leaves an unterminated
+		// span; fail safe like fences and strip every segment.
 		parts := strings.Split(ln, "`")
 		allProse := len(parts)%2 == 0
 		for j := 0; j < len(parts); j++ {
@@ -58,9 +51,8 @@ func stripMentions(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-// appendLine adds line to body once: the same outcome re-evaluated on a later
-// event (another check completing, another labeled delivery) must not stack.
-// A trailing quack footer (see withFooter) stays last - line slots in above it.
+// appendLine adds line to body once, so a re-evaluated outcome doesn't stack;
+// a trailing quack footer stays last.
 func appendLine(body, line string) (string, bool) {
 	if strings.Contains(body, line) {
 		return body, false
@@ -82,10 +74,13 @@ const commandsSummary = "Commands quack accepts here"
 // <sub> line, or the line alone) so appendLine slots new lines above it.
 var footerRe = regexp.MustCompile(`(?s)\n\n(?:<details>\n<summary>` + commandsSummary + `</summary>\n\n.*?\n\n</details>(?:\n\n<sub>quack[^\n]*</sub>)?|<sub>quack[^\n]*</sub>)\s*\z`)
 
-// withFooter appends the version/run-link footer once; body is unchanged
-// when the host set neither field or already carries this exact footer.
+// withFooter appends the version/run-link footer once.
 func (a *App) withFooter(body, chatID string) string {
-	text := footerText(a.version, a.publicURL, chatID)
+	return appendFooter(body, footerText(a.version, a.publicURL, chatID))
+}
+
+// appendFooter appends text once; body is unchanged when text is empty or already present.
+func appendFooter(body, text string) string {
 	if text == "" || strings.Contains(body, text) {
 		return body
 	}
@@ -95,8 +90,7 @@ func (a *App) withFooter(body, chatID string) string {
 	return text
 }
 
-// footerText renders the <sub> footer itself, or "" when there is nothing to
-// show - never stamp a bare "quack" with no version and no link.
+// footerText renders the <sub> footer, or "" rather than a bare "quack" with no version or link.
 func footerText(version, publicURL, chatID string) string {
 	if version == "" && publicURL == "" {
 		return ""
@@ -111,9 +105,8 @@ func footerText(version, publicURL, chatID string) string {
 	return s + "</sub>"
 }
 
-// commandsBlockText renders the collapsible block a posted review carries,
-// naming only what this deployment actually accepts - "" when every trigger
-// it could name is disabled.
+// commandsBlockText renders a posted review's collapsible commands block, naming only enabled
+// triggers; "" when none are.
 func commandsBlockText(mention string, labels Labels, triggers map[string]bool) string {
 	var lines []string
 	if triggers["mention"] && mention != "" {
@@ -148,8 +141,7 @@ func commandsBlockText(mention string, labels Labels, triggers map[string]bool) 
 		strings.Join(lines, "\n") + "\n\n</details>"
 }
 
-// reviewFooterText is footerText plus the commands block, block first - the
-// pair a posted review carries, either half optional.
+// reviewFooterText is the commands block then footerText, either half optional.
 func reviewFooterText(mention string, labels Labels, triggers map[string]bool, version, publicURL, chatID string) string {
 	block := commandsBlockText(mention, labels, triggers)
 	footer := footerText(version, publicURL, chatID)
@@ -163,16 +155,7 @@ func reviewFooterText(mention string, labels Labels, triggers map[string]bool, v
 	}
 }
 
-// withReviewFooter is withFooter for a posted review: same idempotent
-// append, but the commands block (see commandsBlockText) sits above the
-// <sub> line.
+// withReviewFooter is withFooter for a posted review, with the commands block above the <sub> line.
 func (a *App) withReviewFooter(body, chatID string) string {
-	text := reviewFooterText(a.mention, a.labels, a.triggers, a.version, a.publicURL, chatID)
-	if text == "" || strings.Contains(body, text) {
-		return body
-	}
-	if b := strings.TrimRight(body, "\n"); b != "" {
-		return b + "\n\n" + text
-	}
-	return text
+	return appendFooter(body, reviewFooterText(a.mention, a.labels, a.triggers, a.version, a.publicURL, chatID))
 }

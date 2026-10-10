@@ -12,9 +12,7 @@ func testLabels() Labels {
 	}
 }
 
-// A fork PR must never receive the pull_request kind (push to an existing
-// PR) - quack cannot push to a fork's head (cifix.go) - regardless of which
-// label would otherwise grant it.
+// A fork PR never gets pull_request (quack cannot push to a fork's head), whatever label would grant it.
 func TestComputeGrant_ForkPRNeverGetsPushCommits(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
@@ -56,7 +54,7 @@ func TestComputeGrant_SameRepoPRGetsPushCommits(t *testing.T) {
 }
 
 // A quack-authored PR gets push + PR-conversation grants even with NO label
-// applied at all - "authorship IS the flag" (#656).
+// applied at all: authorship IS the flag.
 func TestComputeGrant_AuthoredPRGrantsPushAndConversationWithNoLabel(t *testing.T) {
 	kinds := computeGrant(testLabels(), nil /* no labels */, true /* prScoped */, true /* authoredByQuack */, false /* forkHead */)
 	if !slices.Contains(kinds, "pull_request") || !slices.Contains(kinds, "comment") {
@@ -67,9 +65,7 @@ func TestComputeGrant_AuthoredPRGrantsPushAndConversationWithNoLabel(t *testing.
 	}
 }
 
-// An issue with no labels and no authorship (there is no PR yet) grants
-// nothing - permission comes only from labels/authorship/fork state, never
-// from message text.
+// An unlabeled, unauthored issue grants nothing: permission comes from labels/authorship/fork state, never text.
 func TestComputeGrant_PlainIssueNoLabelsGrantsNothing(t *testing.T) {
 	kinds := computeGrant(testLabels(), nil, false /* prScoped */, false, false)
 	if len(kinds) != 0 {

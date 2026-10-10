@@ -1,4 +1,5 @@
-// PR self-heal: quack:fix label or quack-authored PR → CI failure dispatches a fix. ONE fix per failure (authorship breaks the loop; quack's own failures wait for human).
+// PR self-heal: on a quack:fix-labeled or quack-authored PR, a CI failure dispatches one fix.
+// A failure on quack's own fix commit stops the loop and waits for a human.
 package github
 
 import (
@@ -6,15 +7,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/fagerbergj/quack-extensions/sdk"
 )
 
-// gitCommitAuthorEmail mirrors quack's own git-commit author convention
-// (internal/tools.GitCommitAuthorEmail) - a fixed literal, duplicated here
-// rather than needing a Host capability for one constant string.
+// gitCommitAuthorEmail mirrors quack's internal/tools.GitCommitAuthorEmail; duplicated rather than
+// adding a Host capability for one constant.
 const gitCommitAuthorEmail = "agent@quack.local"
 
 // fixContextTimeout bounds pre-dispatch API phase (labels, check runs, annotations).
@@ -32,17 +33,8 @@ type workflowRunPayload struct {
 			Number int `json:"number"`
 		} `json:"pull_requests"`
 	} `json:"workflow_run"`
-	Repository struct {
-		Name  string `json:"name"`
-		Owner struct {
-			Login string `json:"login"`
-		} `json:"owner"`
-		CloneURL      string `json:"clone_url"`
-		DefaultBranch string `json:"default_branch"`
-	} `json:"repository"`
-	Installation struct {
-		ID int64 `json:"id"`
-	} `json:"installation"`
+	Repository   ghRepository   `json:"repository"`
+	Installation ghInstallation `json:"installation"`
 }
 
 // repoInfo: repository/installation identity for fix dispatch.
@@ -51,12 +43,30 @@ type repoInfo struct {
 	InstallationID                       int64
 }
 
-func (p workflowRunPayload) repoInfo() repoInfo {
-	return repoInfo{p.Repository.Owner.Login, p.Repository.Name, p.Repository.CloneURL, p.Repository.DefaultBranch, p.Installation.ID}
+func repoInfoOf(r ghRepository, inst ghInstallation) repoInfo {
+	return repoInfo{r.Owner.Login, r.Name, r.CloneURL, r.DefaultBranch, inst.ID}
 }
 
-func (p pullRequestPayload) repoInfo() repoInfo {
-	return repoInfo{p.Repository.Owner.Login, p.Repository.Name, p.Repository.CloneURL, p.Repository.DefaultBranch, p.Installation.ID}
+// synthetic shapes a non-webhook trigger as an issueCommentPayload so dispatch handles it like a mention.
+func (ri repoInfo) synthetic(number int, login string) issueCommentPayload {
+	p := issueCommentPayload{Action: "created"}
+	p.Issue.Number = number
+	p.Comment.User.Login = login
+	p.Repository.Name, p.Repository.Owner.Login = ri.Name, ri.Owner
+	p.Repository.CloneURL, p.Repository.DefaultBranch = ri.CloneURL, ri.DefaultBranch
+	p.Installation.ID = ri.InstallationID
+	return p
+}
+
+// autoReview is the label-trigger auto-review run on a PR, never a mention.
+func (ri repoInfo) autoReview(number int, title string, rawEvent []byte, eventName string) issueCommentPayload {
+	p := ri.synthetic(number, autoReviewUser)
+	p.Issue.Title = title
+	p.Issue.PullRequest = &struct{}{}
+	p.isLabelTrigger = true
+	p.rawEvent = json.RawMessage(rawEvent)
+	p.eventName = eventName
+	return p
 }
 
 // handleWorkflowRun: CI auto-heal trigger. Not bot-sender-gated (quack's own fix push re-triggers CI).
@@ -90,15 +100,11 @@ func (e *Extension) handleWorkflowRun(w http.ResponseWriter, body []byte) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// autoHeal gates one PR's auto-heal and dispatches the fix run. Order is
-// cheapest-and-safest first: eligibility (label or authorship), per-commit
-// dedup, then the one-attempt guard - state is persisted BEFORE the run so a
-// crash mid-run never refunds it. Every store/API failure fails CLOSED (skip
-// the run): an unbounded loop is worse than a missed heal.
+// autoHeal gates (eligibility, per-commit dedup, one-attempt guard) then dispatches the fix. Every
+// store/API failure fails closed: an unbounded fix loop is worse than a missed heal.
 func (e *Extension) autoHeal(p workflowRunPayload, number int, rawBody []byte) {
-	ri := p.repoInfo()
-	sessionID := fmt.Sprintf("github-%s-%s-%d", ri.Owner, ri.Name, number)
-	chatID := globalChatID(sessionID)
+	ri := repoInfoOf(p.Repository, p.Installation)
+	chatID := globalChatID(issueSessionID(ri.Owner, ri.Name, number))
 	sha := p.WorkflowRun.HeadSHA
 
 	ctx, cancel := context.WithTimeout(context.Background(), fixContextTimeout)
@@ -109,10 +115,9 @@ func (e *Extension) autoHeal(p workflowRunPayload, number int, rawBody []byte) {
 		e.host.Log.Warn("github: auto-heal eligibility check failed; skipping", "repo", ri.Owner+"/"+ri.Name, "pr", number, "err", err)
 		return
 	}
-	eligible := hasLabel(labels, e.labels.Fix)
+	eligible := slices.Contains(labels, e.labels.Fix)
 	if !eligible {
-		// Authorship IS the flag (#656): quack fixes its own CI with no label,
-		// same as it addresses its own review findings (see engageOwnPRReview).
+		// Authorship is the flag: quack fixes its own PR's CI with no label.
 		authored, aerr := e.authoredByQuack(ctx, ri.Owner, ri.Name, number)
 		if aerr != nil {
 			e.host.Log.Warn("github: auto-heal authorship check failed; skipping", "repo", ri.Owner+"/"+ri.Name, "pr", number, "err", aerr)
@@ -124,10 +129,8 @@ func (e *Extension) autoHeal(p workflowRunPayload, number int, rawBody []byte) {
 		return // no quack:fix label and not quack's own PR - never auto-heal
 	}
 
-	// The read below and every SetFixState this call can reach (here and in
-	// beginFix) must be one atomic claim: two workflow_run deliveries for the
-	// same head SHA (CI usually runs several) otherwise both pass GetFixState
-	// before either's write lands, and both post the "attempting a fix" comment.
+	// GetFixState through every SetFixState (here and in beginFix) is one atomic claim, or two
+	// workflow_run deliveries for the same head both pass the read and both dispatch.
 	unlock := e.mergeMu.Lock(chatID)
 	defer unlock()
 
@@ -143,14 +146,8 @@ func (e *Extension) autoHeal(p workflowRunPayload, number int, rawBody []byte) {
 		return
 	}
 
-	// The ONE-attempt guard (Forbidden: no fix→fail→fix) - but ONLY once auto-heal
-	// has already attempted a fix for this PR before (st != nil): on a PR quack
-	// itself authored, EVERY commit is quack's, including the very first one it
-	// opened the PR with, which is not a fix attempt at all. Checking authorship
-	// unconditionally would read that first, ordinary failure as "my own fix
-	// already failed" and never attempt one. Once a fix HAS been dispatched
-	// (st != nil), a fresh failure whose commit is quack's own can only be that
-	// fix's own CI run.
+	// One-attempt guard, only after a prior fix (st != nil): on quack's own PR every commit is quack's,
+	// including the first, so an unconditional authorship check would never attempt a fix at all.
 	var ownCommit bool
 	if st != nil {
 		var cerr error
@@ -180,16 +177,12 @@ func (e *Extension) autoHeal(p workflowRunPayload, number int, rawBody []byte) {
 	e.beginFix(ctx, ri, number, sha, "CI is failing on this pull request.", checksText, rawBody, "workflow_run.completed")
 }
 
-// fixLabelApplied handles quack:fix's "labeled" action: it re-arms auto-heal
-// (clears any prior stop, so a fresh explicit human ask overrides it) and, if
-// CI is CURRENTLY failing on the PR's head, fixes it right away - otherwise
-// the flag just stays armed for the next failure (#655: applying it to a
-// GREEN PR must do nothing, never plan a phantom review).
+// fixLabelApplied re-arms auto-heal (clearing any prior stop) and fixes now only if CI is currently
+// failing; on a green PR it does nothing but stay armed.
 func (e *Extension) fixLabelApplied(p pullRequestPayload, rawBody []byte) {
-	ri := p.repoInfo()
+	ri := repoInfoOf(p.Repository, p.Installation)
 	number := p.Number
-	sessionID := fmt.Sprintf("github-%s-%s-%d", ri.Owner, ri.Name, number)
-	chatID := globalChatID(sessionID)
+	chatID := globalChatID(issueSessionID(ri.Owner, ri.Name, number))
 
 	ctx, cancel := context.WithTimeout(context.Background(), fixContextTimeout)
 	defer cancel()
@@ -215,37 +208,23 @@ func (e *Extension) fixLabelApplied(p pullRequestPayload, rawBody []byte) {
 		renderFailingChecks(checks), rawBody, "pull_request.labeled")
 }
 
-// beginFix persists the attempt BEFORE dispatch (a crash mid-run must never
-// leave the guard unrecorded), then dispatches a fix run on the PR's existing
-// session - the shared tail of both the automatic (workflow_run) and explicit
-// (labeled) fix paths. rawBody/eventName carry the ORIGINATING webhook
-// (workflow_run.completed or pull_request.labeled) into the envelope's
-// <event> block; sha doubles as the "check-runs" input artifact's scope
-// (#1010's ContextRequest.CheckSHA).
+// beginFix persists the attempt before dispatch, so a crash mid-run never leaves the guard unrecorded,
+// then dispatches the fix on the PR's existing session. sha also scopes the "check-runs" artifact.
 func (e *Extension) beginFix(ctx context.Context, ri repoInfo, number int, sha, intro, checksText string, rawBody []byte, eventName string) {
-	sessionID := fmt.Sprintf("github-%s-%s-%d", ri.Owner, ri.Name, number)
-	chatID := globalChatID(sessionID)
+	chatID := globalChatID(issueSessionID(ri.Owner, ri.Name, number))
 	if err := e.store.SetFixState(ctx, FixState{ChatID: chatID, LastSHA: sha}); err != nil {
 		e.host.Log.Error("github: fix-state persist failed; refusing to run without a durable bound",
 			"repo", ri.Owner+"/"+ri.Name, "pr", number, "err", err)
 		return
 	}
 
-	// Continue the PR's existing session under the identity it was written
-	// with - session reuse is the point of this feature (#254).
+	// Continue the PR's existing session under the identity it was written with.
 	login := ""
 	if e.host.ChatUser != nil {
 		login, _ = e.host.ChatUser(chatID)
 	}
-	synthetic := issueCommentPayload{Action: "created"}
-	synthetic.Issue.Number = number
+	synthetic := ri.synthetic(number, login)
 	synthetic.Issue.PullRequest = &struct{}{}
-	synthetic.Comment.User.Login = login
-	synthetic.Repository.Name = ri.Name
-	synthetic.Repository.Owner.Login = ri.Owner
-	synthetic.Repository.CloneURL = ri.CloneURL
-	synthetic.Repository.DefaultBranch = ri.DefaultBranch
-	synthetic.Installation.ID = ri.InstallationID
 	// isLabelTrigger stays false: a fix continues the PR's session, it never resets it.
 	synthetic.rawEvent = json.RawMessage(rawBody)
 	synthetic.eventName = eventName
@@ -255,10 +234,8 @@ func (e *Extension) beginFix(ctx context.Context, ri repoInfo, number int, sha, 
 	e.dispatch(synthetic, fixTask(intro, checksText))
 }
 
-// authoredByQuack reports whether owner/repo#number's PR was opened by quack
-// itself - the "authorship IS the flag" check (#656): PR participation
-// (fixing its own CI, addressing review findings - see engageOwnPRReview)
-// needs no label on a PR quack authored.
+// authoredByQuack reports whether quack opened the PR; on its own PR, fixing CI and addressing
+// review findings need no label.
 func (e *Extension) authoredByQuack(ctx context.Context, owner, repo string, number int) (bool, error) {
 	author, err := e.app.prAuthor(ctx, owner, repo, number)
 	if err != nil {
@@ -271,10 +248,8 @@ func (e *Extension) authoredByQuack(ctx context.Context, owner, repo string, num
 	return author == bot, nil
 }
 
-// commitAuthoredByQuack reports whether a commit was made by quack itself.
-// Used by autoHeal's one-attempt guard: the failing commit's actual author,
-// not remembered state, is the source of truth for "was this CI failure my
-// own fix's fault".
+// commitAuthoredByQuack reports whether quack made the commit: the one-attempt guard trusts the
+// failing commit's real author, not remembered state.
 func (e *Extension) commitAuthoredByQuack(ctx context.Context, owner, repo, sha string) (bool, error) {
 	email, err := e.app.commitAuthorEmail(ctx, owner, repo, sha)
 	if err != nil {
@@ -283,22 +258,8 @@ func (e *Extension) commitAuthoredByQuack(ctx context.Context, owner, repo, sha 
 	return email == gitCommitAuthorEmail, nil
 }
 
-// hasLabel reports whether names includes label.
-func hasLabel(labels []string, label string) bool {
-	for _, l := range labels {
-		if l == label {
-			return true
-		}
-	}
-	return false
-}
-
-// fixTask frames a fix run's internal classification signal (fed to
-// implementationIntent) and the chat-title fallback - never rendered into the
-// envelope itself (beginFix's deliverableHint states the ask directly,
-// #659). The wording stays implement-and-deliver on purpose (fix +
-// commit/branch) so implementationIntent still routes it as an implement run
-// if the hint is ever unset.
+// fixTask is the classification signal and title fallback, never rendered into the envelope. Its
+// implement-and-deliver wording keeps implementationIntent routing it as implement if the hint is unset.
 func fixTask(intro, checksText string) string {
 	var b strings.Builder
 	b.WriteString(intro)
@@ -324,9 +285,8 @@ type failingCheck struct {
 	Annotations []string
 }
 
-// failingChecks fetches the commit's check runs and keeps the failed ones,
-// with their annotations - the checks-API alternative to downloading full log
-// archives (annotations carry the actual error lines for Actions jobs).
+// failingChecks returns the commit's failed check runs with annotations, which carry the actual
+// error lines without downloading log archives.
 func (e *Extension) failingChecks(ctx context.Context, owner, repo, sha string) ([]failingCheck, error) {
 	runs, err := e.app.listCheckRuns(ctx, owner, repo, sha)
 	if err != nil {
@@ -358,10 +318,7 @@ func (e *Extension) failingChecks(ctx context.Context, owner, repo, sha string) 
 	return out, nil
 }
 
-// renderOneCheck renders a single failing check's summary + annotations -
-// shared by renderFailingChecks (all of them, for the orchestrator's
-// classification text) and #664's per-node CI detail (sdk.NamedContext.Detail),
-// which must render exactly one check in isolation.
+// renderOneCheck renders one failing check's summary and annotations.
 func renderOneCheck(c failingCheck) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "- %s (%s)\n", c.Name, c.URL)
@@ -387,10 +344,8 @@ func renderFailingChecks(checks []failingCheck) string {
 	return truncate(b.String(), maxChecksContextRunes)
 }
 
-// ciChecksForNodes converts failingChecks' output into sdk.NamedContext (#664):
-// one entry per failing check, each rendered in ISOLATION (renderOneCheck),
-// never the combined renderFailingChecks text - a node matched to one check
-// must never inherit another's annotations via a shared blob.
+// ciChecksForNodes renders each check in isolation so a node matched to one check never
+// inherits another's annotations.
 func ciChecksForNodes(checks []failingCheck) []sdk.NamedContext {
 	out := make([]sdk.NamedContext, 0, len(checks))
 	for _, c := range checks {
@@ -399,9 +354,8 @@ func ciChecksForNodes(checks []failingCheck) []sdk.NamedContext {
 	return out
 }
 
-// failingChecksText is failingChecks+render with a graceful fallback: if the
-// checks API is unreadable or reports nothing failed yet (checks can lag the
-// workflow_run event), the workflow's own name and URL still ground the task.
+// failingChecksText falls back to the workflow's name and URL when the checks API is unreadable
+// or lags the workflow_run event.
 func (e *Extension) failingChecksText(ctx context.Context, owner, repo, sha, workflowName, workflowURL string) (string, []failingCheck) {
 	checks, err := e.failingChecks(ctx, owner, repo, sha)
 	if err != nil {

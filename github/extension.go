@@ -1,11 +1,10 @@
-// Package github is quack's GitHub App extension: auth, tools, webhook
-// dispatch - ported from quack's former internal/github (design doc
-// .quack/design/sdk-v2-github.md, migration plan step 6).
+// Package github is quack's GitHub App extension: auth, tools, webhook dispatch.
 package github
 
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,10 +32,7 @@ func init() {
 	sdk.Register(extensionName, factory)
 }
 
-// Labels names the label vocabulary quack:plan/implement/merge/etc map to in
-// a specific deployment - the extension's own equivalent of quack's former
-// config.GitHubLabels (that type is deleted from quack; this module now
-// unmarshals its own config).
+// Labels names the label vocabulary quack:plan/implement/merge/etc map to in a deployment.
 type Labels struct {
 	Plan       string `yaml:"plan"`
 	Implement  string `yaml:"implement"`
@@ -62,10 +58,7 @@ var validTriggers = map[string]bool{
 	"ci_fix": true, "explain": true,
 }
 
-// config is this extension's own YAML shape, under extensions.github in
-// quack.yaml - unchanged in shape from quack's former
-// config.GitHubExtensionConfig, just no longer strict-parsed by quack
-// itself (design doc's "Config surface: extensions.github:").
+// config is this extension's YAML shape under extensions.github in quack.yaml.
 type config struct {
 	ClientID           string   `yaml:"client_id"`
 	AppID              int64    `yaml:"app_id"`
@@ -87,11 +80,10 @@ func (c *config) issuer() string {
 	if c.ClientID != "" {
 		return c.ClientID
 	}
-	return fmt.Sprintf("%d", c.AppID)
+	return strconv.FormatInt(c.AppID, 10)
 }
 
-// applyDefaults validates and fills in defaults, mirroring quack's former
-// GitHubExtensionConfig.applyDefaults exactly.
+// applyDefaults validates and fills in defaults.
 func (c *config) applyDefaults(log func(string, ...any)) error {
 	if err := c.validateCredentials(); err != nil {
 		return err
@@ -99,9 +91,8 @@ func (c *config) applyDefaults(log func(string, ...any)) error {
 	return c.applyLabelDefaults(log)
 }
 
-// validateCredentials: the credential exclusivity checks - exactly one of
-// client_id/app_id, exactly one of private_key/private_key_path, and a
-// webhook_secret.
+// validateCredentials: exactly one of client_id/app_id, exactly one of private_key/private_key_path,
+// and a webhook_secret.
 func (c *config) validateCredentials() error {
 	switch {
 	case c.ClientID == "" && c.AppID == 0:
@@ -121,8 +112,7 @@ func (c *config) validateCredentials() error {
 	return nil
 }
 
-// applyLabelDefaults: the non-credential defaults - mention/triggers (with
-// validation), the seven label defaults, and the allowed_users deny log.
+// applyLabelDefaults: the non-credential defaults, trigger validation, and the allowed_users deny log.
 func (c *config) applyLabelDefaults(log func(string, ...any)) error {
 	if c.RunTimeoutMinutes <= 0 {
 		c.RunTimeoutMinutes = 120
@@ -226,12 +216,7 @@ func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
 	return e, nil
 }
 
-// hostClassifier adapts Host.Classify to the IntentClassifier interface
-// intent.go already codes against - Host.Classify didn't exist when that
-// interface was written (quack's former SetIntentClassifier was a
-// post-construction setter carrying a Go model object sdk.Factory's
-// (Host, []byte) signature has no room for); this closes that gap now that
-// the SDK has a single free-text classify call.
+// hostClassifier adapts Host.Classify to IntentClassifier, which tests fake.
 type hostClassifier struct{ host sdk.Host }
 
 func (h hostClassifier) Classify(ctx context.Context, prompt string) (string, error) {
@@ -248,17 +233,14 @@ type Extension struct {
 	triggers           map[string]bool
 	labels             Labels
 	allowedUsers       map[string]bool // lower-cased; empty = deny all human-invoked triggers
-	inflight           sync.Map        // sessionID → time.Time claim; leased dedup for concurrent triggers (#665, #668, #29)
-	mergeMu            keyedMutex      // serializes merge-intent read-verdict-act per session (Risk 2)
+	inflight           sync.Map        // sessionID → time.Time claim; leased dedup for concurrent triggers
+	mergeMu            keyedMutex      // serializes merge-intent read-verdict-act per session
 	pending            sync.Map        // globalChatID → *pendingRun; correlates RunEnded back to its dispatch
 	runTimeout         time.Duration
 	autoArchiveOnMerge bool
 	bg                 sync.WaitGroup // every webhook-spawned goroutine (see spawn); Wait drains them
 
-	// intentClassifier backs the mention-intent classification in intent.go -
-	// wired to Host.Classify in factory when non-nil; nil (degrades to
-	// conversational, intent.go's own documented fallback) when the
-	// deployment's Host has no classify capability configured.
+	// intentClassifier is Host.Classify when the host has one; nil degrades to intent.go's fallbacks.
 	intentClassifier IntentClassifier
 }
 
@@ -300,8 +282,7 @@ func (e *Extension) Start(context.Context) error {
 	return err
 }
 
-// Deliver/GitCredential satisfy sdk.Deliverer/sdk.GitCredentialSource by
-// delegating to App, which does the actual GitHub API work.
+// Deliver/GitCredential satisfy sdk.Deliverer/sdk.GitCredentialSource by delegating to App.
 func (e *Extension) Deliver(ctx context.Context, dc sdk.DeliveryContext) ([]sdk.DeliveryItemOutcome, error) {
 	return e.app.Deliver(ctx, dc)
 }
@@ -310,16 +291,13 @@ func (e *Extension) GitCredential(ctx context.Context, rawURL string) (*sdk.GitC
 	return e.app.GitCredential(ctx, rawURL)
 }
 
-// RegisterRoutes mounts the inbound webhook receiver on public - it verifies
-// its own HMAC signature, same as it always has.
+// RegisterRoutes mounts the inbound webhook receiver on public; it verifies its own HMAC signature.
 func (e *Extension) RegisterRoutes(authed chi.Router, public chi.Router) {
 	public.Post(webhookPath, e.handleWebhook)
 }
 
-// globalChatID mirrors quack's own "ext:<extension>:<localID>" namespacing
-// (sdk.ChatRef.LocalID's documented contract) - built locally so this
-// extension can correlate a RunObserver.RunEnded callback (which arrives
-// with the full namespaced id) back to the sessionID it dispatched.
+// globalChatID mirrors quack's "ext:<extension>:<localID>" namespacing (sdk.ChatRef.LocalID's contract),
+// so RunEnded's namespaced id correlates back to the dispatched sessionID.
 func globalChatID(sessionID string) string {
 	return "ext:" + extensionName + ":" + sessionID
 }

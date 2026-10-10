@@ -1,9 +1,5 @@
-// Package httpx is a vendored copy of quack's internal/httpx (resilient
-// http.RoundTripper): quack-extensions can't import quack's internal
-// packages (the no-quack-imports invariant), and this transport is shared by
-// six OTHER quack packages too, so it isn't a candidate to promote into the
-// SDK for one extension - default to a vendored copy, promote later if a
-// second extension needs the same retry policy.
+// Package httpx is a vendored copy of quack's internal/httpx retrying RoundTripper; extensions can't
+// import quack internals. Promote it into the SDK if a second extension needs it.
 package httpx
 
 import (
@@ -18,9 +14,8 @@ import (
 	"github.com/cenkalti/backoff/v5"
 )
 
-// Bounded, conservative defaults: a dead upstream gives up in ~1s of total
-// backoff, not minutes. Tests shrink baseDelay/maxDelay via NewTransport's
-// params; production always passes zero to take these.
+// Bounded defaults: a dead upstream gives up in ~1s of total backoff, not minutes.
+// Production passes zero delays to take these; tests shrink them.
 const (
 	DefaultMaxAttempts = uint(4)
 	DefaultBaseDelay   = 200 * time.Millisecond
@@ -28,24 +23,13 @@ const (
 )
 
 type transport struct {
-	next        http.RoundTripper
-	maxAttempts uint
-	baseDelay   time.Duration
-	maxDelay    time.Duration
+	next      http.RoundTripper
+	baseDelay time.Duration
+	maxDelay  time.Duration
 }
 
-// NewTransport wraps next (http.DefaultTransport if nil) with a method-aware
-// retry policy:
-//
-//   - GET/HEAD retry on connection errors, timeouts, 429, and 5xx.
-//   - Every other method retries only on errors that prove the request never
-//     reached the server (connection refused, DNS failure) - never on a
-//     mid-flight timeout or a 5xx response, since either could mean the
-//     server already processed it.
-//
-// Retry-After is honoured when present. Attempts are bounded. Pass 0 for
-// baseDelay/maxDelay to take the Default* constants (only tests override
-// these, to avoid waiting out a real backoff).
+// NewTransport wraps next (default if nil) with bounded retries honouring Retry-After: GET/HEAD on any
+// fault, 429 or 5xx; other methods only when the request provably never reached the server.
 func NewTransport(next http.RoundTripper, baseDelay, maxDelay time.Duration) http.RoundTripper {
 	if next == nil {
 		next = http.DefaultTransport
@@ -56,12 +40,7 @@ func NewTransport(next http.RoundTripper, baseDelay, maxDelay time.Duration) htt
 	if maxDelay == 0 {
 		maxDelay = DefaultMaxDelay
 	}
-	return &transport{
-		next:        next,
-		maxAttempts: DefaultMaxAttempts,
-		baseDelay:   baseDelay,
-		maxDelay:    maxDelay,
-	}
+	return &transport{next: next, baseDelay: baseDelay, maxDelay: maxDelay}
 }
 
 func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -117,11 +96,10 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			return resp, &backoff.RetryAfterError{Duration: wait}
 		}
 		return resp, fmt.Errorf("httpx: retryable status %d from %s %s", resp.StatusCode, req.Method, req.URL)
-	}, backoff.WithBackOff(bo), backoff.WithMaxTries(t.maxAttempts))
+	}, backoff.WithBackOff(bo), backoff.WithMaxTries(DefaultMaxAttempts))
 
 	if err != nil && resp != nil {
-		// Retries were exhausted on a status code, not a transport fault -
-		// the last response is a real answer; hand it to the caller as-is.
+		// Retries exhausted on a status code: the last response is a real answer.
 		return resp, nil
 	}
 	return resp, err

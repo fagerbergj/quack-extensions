@@ -1,4 +1,4 @@
-// Snapshot-and-diff session context: fetches full GitHub state, diffs against stored snapshot, injects delta only.
+// Snapshot-and-diff session context: fetch full GitHub state, diff against the stored snapshot, inject the delta.
 package github
 
 import (
@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 )
 
@@ -17,7 +18,7 @@ type snapshotComment struct {
 	Body      string `json:"body"`
 	User      string `json:"user"`
 	CreatedAt string `json:"created_at,omitempty"`
-	// Hidden: minimized comment (TODO: always false, needs GraphQL). Left as a seam.
+	// Hidden: minimized comment. TODO: always false until GraphQL is wired.
 	Hidden bool `json:"hidden,omitempty"`
 }
 
@@ -38,7 +39,7 @@ type snapshotReviewComment struct {
 	Body        string `json:"body"`
 	User        string `json:"user"`
 	InReplyToID int64  `json:"in_reply_to_id,omitempty"`
-	// Resolved: review thread isResolved (GraphQL). TODO: always false; needs GraphQL wiring.
+	// Resolved: review thread isResolved. TODO: always false until GraphQL is wired.
 	Resolved bool `json:"resolved,omitempty"`
 }
 
@@ -62,10 +63,7 @@ type Snapshot struct {
 	HeadRef  string            `json:"head_ref,omitempty"`
 	HeadSHA  string            `json:"head_sha,omitempty"`
 	BaseRef  string            `json:"base_ref,omitempty"`
-	// Fork is true when this PR's head repo differs from its base repo -
-	// carried through to computeGrant, which must never offer
-	// push_commits_to_pr for one (#662). Always false for an issue (IsPR
-	// false).
+	// Fork: the PR's head repo differs from its base; computeGrant must never offer a push for one.
 	Fork           bool                    `json:"fork,omitempty"`
 	Reviews        []snapshotReview        `json:"reviews,omitempty"`
 	ReviewComments []snapshotReviewComment `json:"review_comments,omitempty"`
@@ -73,11 +71,8 @@ type Snapshot struct {
 	Files          []changedFile           `json:"files,omitempty"`
 }
 
-// fetchSnapshot fetches the CURRENT full GitHub state for one issue/PR - the
-// same call shape every dispatch makes, issue or PR, work request or
-// conversational follow-up (#459's "one unified path"). Every sub-fetch past
-// the required title/body/state/labels is best-effort: a failure logs and
-// leaves that slice empty rather than sinking the whole run.
+// fetchSnapshot fetches the current full GitHub state for one issue/PR. Every sub-fetch past the
+// required meta call is best-effort: a failure logs and leaves that slice empty.
 func (e *Extension) fetchSnapshot(ctx context.Context, owner, repo string, number int, isPR bool) (Snapshot, error) {
 	var snap Snapshot
 	snap.IsPR = isPR
@@ -151,12 +146,8 @@ func (e *Extension) fetchSnapshot(ctx context.Context, owner, repo string, numbe
 	return snap, nil
 }
 
-// gitPatchID computes a rebase-stable patch identity for one commit's unified
-// diff, via `git patch-id --stable` reading the diff on stdin - no local
-// clone or repository needed (patch-id parses the diff text itself), which is
-// what lets a snapshot fetch happen at webhook time, before any node clones.
-// "" (no error) for an empty diff (an empty commit, or a merge commit with no
-// diffable content) - there's no patch identity to report.
+// gitPatchID computes a rebase-stable patch identity via `git patch-id --stable` on stdin; no clone
+// needed, so it runs at webhook time. "" (no error) for an empty diff.
 func gitPatchID(ctx context.Context, diff string) (string, error) {
 	if strings.TrimSpace(diff) == "" {
 		return "", nil
@@ -175,9 +166,8 @@ func gitPatchID(ctx context.Context, diff string) (string, error) {
 	return fields[0], nil
 }
 
-// Delta is the semantic difference between two snapshots of the same
-// issue/PR, keyed by stable identity (comment/review id, commit patch-id -
-// never a SHA set-difference or a raw text diff; see diffSnapshots).
+// Delta is the semantic difference between two snapshots, keyed by stable identity
+// (comment/review id, commit patch-id), never a SHA set-difference or raw text diff.
 type Delta struct {
 	TitleChanged        bool
 	OldTitle, NewTitle  string
@@ -191,20 +181,13 @@ type Delta struct {
 	CommentsDeleted     []snapshotComment
 	ReviewsAdded        []snapshotReview
 	ReviewCommentsAdded []snapshotReviewComment
-	// NewCommits are the commits in the new snapshot whose patch-id is not
-	// present anywhere in the old snapshot's commits - genuinely new work,
-	// robust across a rebase or force-push (see diffSnapshots). A commit
-	// whose patch-id could not be computed (fetch/exec failure) is
-	// conservatively treated as new: silently dropping it from review would
-	// be the worse failure mode.
+	// NewCommits: patch-id absent from the old snapshot, so a rebase isn't new work. An uncomputable
+	// patch-id counts as new: silently dropping it from review is the worse failure.
 	NewCommits   []snapshotCommit
 	FilesChanged bool
 }
 
-// Empty reports whether the delta carries nothing worth injecting - the
-// resume case where GitHub looks exactly as it did last dispatch (#459's
-// "resume with an unchanged snapshot injects an empty delta, not the whole
-// thread again").
+// Empty reports whether the delta carries nothing worth injecting.
 func (d Delta) Empty() bool {
 	return !d.TitleChanged && !d.BodyChanged && !d.StateChanged &&
 		len(d.LabelsAdded) == 0 && len(d.LabelsRemoved) == 0 &&
@@ -213,11 +196,8 @@ func (d Delta) Empty() bool {
 		len(d.NewCommits) == 0 && !d.FilesChanged
 }
 
-// diffSnapshots computes the semantic delta from old (the previously stored
-// snapshot) to cur (freshly fetched) - the turn's context (#459 §2).
-// excludeCommentID drops one comment id from the added/edited sets (the
-// triggering comment itself, already quoted verbatim as "their request" -
-// see excludeComment's old role); 0 excludes nothing.
+// diffSnapshots computes the delta from the stored snapshot to the fresh one. excludeCommentID drops the
+// triggering comment (already quoted as "their request") from added/edited; 0 excludes nothing.
 func diffSnapshots(old, cur Snapshot, excludeCommentID int64) Delta {
 	var d Delta
 
@@ -243,30 +223,21 @@ func diffSnapshots(old, cur Snapshot, excludeCommentID int64) Delta {
 
 // labelDelta: the labels present only in cur / only in old, in their list order.
 func labelDelta(oldLabels, curLabels []string) (added, removed []string) {
-	oldSet := map[string]bool{}
-	for _, l := range oldLabels {
-		oldSet[l] = true
-	}
-	curSet := map[string]bool{}
 	for _, l := range curLabels {
-		curSet[l] = true
-	}
-	for _, l := range curLabels {
-		if !oldSet[l] {
+		if !slices.Contains(oldLabels, l) {
 			added = append(added, l)
 		}
 	}
 	for _, l := range oldLabels {
-		if !curSet[l] {
+		if !slices.Contains(curLabels, l) {
 			removed = append(removed, l)
 		}
 	}
 	return added, removed
 }
 
-// commentDelta: comments added/edited/deleted between two snapshots;
-// excludeCommentID drops one id from the added/edited sets (the triggering
-// comment, already quoted), never from deletion detection.
+// commentDelta: comments added/edited/deleted between two snapshots; excludeCommentID drops the
+// triggering comment from added/edited, never from deletion detection.
 func commentDelta(oldComments, curComments []snapshotComment, excludeCommentID int64) (added, edited, deleted []snapshotComment) {
 	oldCommentsMap := make(map[int64]snapshotComment, len(oldComments))
 	for _, c := range oldComments {
@@ -308,27 +279,16 @@ func addedSince[T any](oldItems, curItems []T, id func(T) int64) []T {
 	return out
 }
 
-// newCommitsSince: cur's commits with a patch-id absent from old - keyed on
-// PatchID so a rebase doesn't re-surface unchanged work; a commit whose
-// patch-id couldn't be computed is conservatively treated as new.
+// newCommitsSince: cur's commits with a patch-id absent from old.
 func newCommitsSince(oldCommits, curCommits []snapshotCommit) []snapshotCommit {
 	oldPatchIDs := map[string]bool{}
 	for _, c := range oldCommits {
-		if c.PatchID != "" {
-			oldPatchIDs[c.PatchID] = true
-		}
+		oldPatchIDs[c.PatchID] = true
 	}
-	var out []snapshotCommit
-	for _, c := range curCommits {
-		if c.PatchID == "" || !oldPatchIDs[c.PatchID] {
-			out = append(out, c)
-		}
-	}
-	return out
+	return newCommitsAgainstBaseline(curCommits, oldPatchIDs)
 }
 
-// shortSHA truncates a commit SHA to its conventional 7-char display form;
-// anything shorter is returned as-is.
+// shortSHA truncates a commit SHA to its 7-char display form.
 func shortSHA(sha string) string {
 	if len(sha) <= 7 {
 		return sha
@@ -336,12 +296,8 @@ func shortSHA(sha string) string {
 	return sha[:7]
 }
 
-// newCommitsAgainstBaseline returns the commits whose patch-id is NOT in
-// `reviewed` - the review scope. Deliberately decoupled from diffSnapshots'
-// NewCommits, which advances on EVERY dispatch and would under-scope a review
-// whenever a conversational dispatch landed in between. `reviewed` is the
-// patch-id set from the last DELIVERED review only; an uncomputable patch-id
-// is conservatively treated as new.
+// newCommitsAgainstBaseline returns commits whose patch-id is not in reviewed; an uncomputable
+// patch-id counts as new.
 func newCommitsAgainstBaseline(commits []snapshotCommit, reviewed map[string]bool) []snapshotCommit {
 	out := make([]snapshotCommit, 0, len(commits)) // non-nil even when empty: nil means "no baseline at all" (see reviewScope)
 	for _, c := range commits {
@@ -352,35 +308,14 @@ func newCommitsAgainstBaseline(commits []snapshotCommit, reviewed map[string]boo
 	return out
 }
 
-// marshalPatchIDs/unmarshalPatchIDs are the review baseline's opaque JSON
-// encode/decode (a []string of patch-ids), mirroring marshalSnapshot below.
-func marshalPatchIDs(ids []string) (string, error) {
-	b, err := json.Marshal(ids)
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
+// marshalJSON/unmarshalJSON are the store's opaque encode/decode for snapshots and review baselines.
+func marshalJSON(v any) (string, error) {
+	b, err := json.Marshal(v)
+	return string(b), err
 }
 
-func unmarshalPatchIDs(s string) ([]string, error) {
-	var out []string
-	err := json.Unmarshal([]byte(s), &out)
-	return out, err
-}
-
-// marshalSnapshot/unmarshalSnapshot are the store's opaque JSON
-// encode/decode for a Snapshot - split out so loadGithubContext reads as the
-// fetch→diff→persist sequence the spec describes, not JSON plumbing.
-func marshalSnapshot(s Snapshot) (string, error) {
-	b, err := json.Marshal(s)
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
-}
-
-func unmarshalSnapshot(s string) (Snapshot, error) {
-	var out Snapshot
+func unmarshalJSON[T any](s string) (T, error) {
+	var out T
 	err := json.Unmarshal([]byte(s), &out)
 	return out, err
 }
