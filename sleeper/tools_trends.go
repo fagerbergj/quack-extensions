@@ -3,6 +3,7 @@ package sleeper
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 
@@ -76,7 +77,8 @@ func (e *extension) getTrends(ctx context.Context, a trendsArgs) (trendsResult, 
 		return trendsResult{LeagueID: leagueID, Note: "fewer than two snapshots in range; nothing to diff yet", FetchedAt: nowRFC3339()}, nil
 	}
 	oldSnap, oldOK := firstReadableSnapshot(e.host.DataDir, leagueID, dates)
-	newSnap, newOK := firstReadableSnapshot(e.host.DataDir, leagueID, reversed(dates))
+	slices.Reverse(dates)
+	newSnap, newOK := firstReadableSnapshot(e.host.DataDir, leagueID, dates)
 	if !oldOK || !newOK || oldSnap.Date == newSnap.Date {
 		return trendsResult{LeagueID: leagueID, Note: "fewer than two readable snapshots in range (some were unreadable); nothing to diff yet", FetchedAt: nowRFC3339()}, nil
 	}
@@ -102,9 +104,8 @@ func withinDays(dates []string, days int) []string {
 	return out
 }
 
-// diffSnapshots compares two snapshots player by player; playerIDs, when
-// non-empty, restricts the diff to those ids. Sorted by player_id so
-// identical inputs always produce the same JSON.
+// diffSnapshots diffs two snapshots per player, limited to playerIDs when non-empty; sorted by player_id
+// so identical inputs give identical JSON.
 func diffSnapshots(oldSnap, newSnap snapshot, playerIDs []string, dump map[string]sleepergen.Player) []playerTrend {
 	want := toIDSet(playerIDs)
 	var out []playerTrend

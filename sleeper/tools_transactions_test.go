@@ -47,10 +47,8 @@ func TestGetTransactions(t *testing.T) {
 	}
 }
 
-// TestGetTransactionsLabelsDefensePosition covers the fix: a team-defense
-// add/drop (player_id "BAL") must resolve name "Baltimore Ravens" and
-// position "DEF", the same way sleeper_free_agents labels a DEF entry -
-// not just a bare team code that reads as a league-specific mechanic.
+// TestGetTransactionsLabelsDefensePosition: a DEF move ("BAL") resolves to "Baltimore Ravens" / "DEF",
+// like sleeper_free_agents, not a bare team code.
 func TestGetTransactionsLabelsDefensePosition(t *testing.T) {
 	e := testExtension(t)
 	got, err := e.getTransactions(context.Background(), transactionsArgs{WeeksBack: 2})
@@ -76,9 +74,7 @@ func TestGetTransactionsLabelsDefensePosition(t *testing.T) {
 	}
 }
 
-// TestGetTransactionsPropagatesGenuineError covers the fix: a real fetch
-// failure for one round (a 500, not a 404) must fail the tool, not be
-// swallowed the same way a not-yet-recorded round is.
+// TestGetTransactionsPropagatesGenuineError: a 500 for one round fails the tool; only a 404 round is skipped.
 func TestGetTransactionsPropagatesGenuineError(t *testing.T) {
 	failWeek := 2
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

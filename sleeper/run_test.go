@@ -33,8 +33,7 @@ func TestOriginLabel(t *testing.T) {
 	}
 }
 
-// TestHandleArtifactsReportsRunning pins the fix for the lost Running
-// badge: Dispatch marks a chat running, RunEnded clears it.
+// TestHandleArtifactsReportsRunning: Dispatch marks a chat running, RunEnded clears it.
 func TestHandleArtifactsReportsRunning(t *testing.T) {
 	host := &fakeHost{artifacts: map[string]map[string][]byte{}}
 	e, r := newTestExtension(t, host.sdkHost(), config{})
@@ -77,20 +76,8 @@ func TestRunEndedUnknownChatIsNoop(t *testing.T) {
 	}
 }
 
-func TestJobRunnableMatchesJobWorkflows(t *testing.T) {
-	for _, job := range []string{"lineup", "waivers", "trends", "digest", "retro", "draft", "history", "trade", "trade-finder"} {
-		if !jobRunnable(job) {
-			t.Errorf("jobRunnable(%q) = false, want true (in jobWorkflows)", job)
-		}
-	}
-	if jobRunnable("nonexistent-job") {
-		t.Error(`jobRunnable("nonexistent-job") = true, want false (no jobWorkflows entry)`)
-	}
-}
-
-// TestDispatchTrackedMarksRunningBeforeDispatch pins the #100 regression:
-// a fast Dispatch that completes and fires RunEnded before markRunning
-// would otherwise land must never leave the chatID unmarked afterwards.
+// TestDispatchTrackedMarksRunningBeforeDispatch: a Dispatch that fires RunEnded before returning must
+// not leave the chat marked running.
 func TestDispatchTrackedMarksRunningBeforeDispatch(t *testing.T) {
 	host := &fakeHost{artifacts: map[string]map[string][]byte{}}
 	e, _ := newTestExtension(t, host.sdkHost(), config{})

@@ -11,10 +11,9 @@ import (
 	"github.com/fagerbergj/quack-extensions/sleeper/sleepergen"
 )
 
-// pointsField reassembles a Sleeper whole+decimal points pair (e.g.
-// settings["fpts"], settings["fpts_decimal"]) into one float.
-func pointsField(settings map[string]int, whole, decimal string) float64 {
-	return float64(settings[whole]) + float64(settings[decimal])/100
+// pointsField joins Sleeper's split points pair, e.g. settings["fpts"] and settings["fpts_decimal"].
+func pointsField(settings map[string]int, prefix string) float64 {
+	return float64(settings[prefix]) + float64(settings[prefix+"_decimal"])/100
 }
 
 type playerRef struct {
@@ -94,10 +93,7 @@ func (e *extension) getRoster(ctx context.Context, a rosterArgs) (rosterResult, 
 	if err != nil {
 		return rosterResult{}, err
 	}
-	week, err := weekForSeason(season, state)
-	if err != nil {
-		return rosterResult{}, fmt.Errorf("sleeper_roster: %w", err)
-	}
+	week := state.Week
 	cc := newCallContext(c, week, season, state)
 	sl := e.playerSlate(ctx, &cc, season, state, c, true)
 	res := buildRosterResult(league, r, dump, sl, teamNames(rosters, users))
@@ -105,8 +101,6 @@ func (e *extension) getRoster(ctx context.Context, a rosterArgs) (rosterResult, 
 	return res, nil
 }
 
-// leagueRostersUsers is the three-call combo almost every roster/standings
-// tool needs; collapsing it here keeps each tool's handler small.
 func (e *extension) leagueRostersUsers(ctx context.Context, leagueID string) (*sleepergen.League, []sleepergen.Roster, []sleepergen.LeagueUser, error) {
 	league, err := e.client.League(ctx, leagueID)
 	if err != nil {
@@ -156,15 +150,14 @@ func buildRosterResult(league *sleepergen.League, r sleepergen.Roster, dump map[
 		RosterID: r.RosterId, Team: names[r.RosterId],
 		Starters: starters, Bench: bench, Reserve: reserve, Taxi: taxi,
 		Wins: r.Settings["wins"], Losses: r.Settings["losses"], Ties: r.Settings["ties"],
-		Fpts:      pointsField(r.Settings, "fpts", "fpts_decimal"),
+		Fpts:      pointsField(r.Settings, "fpts"),
 		WaiverPos: r.Settings["waiver_position"],
 		FaabUsed:  r.Settings["waiver_budget_used"],
 		FaabLeft:  league.Settings["waiver_budget"] - r.Settings["waiver_budget_used"],
 	}
 }
 
-// nonBenchSlots strips BN/IR/TAXI entries, leaving the starting-lineup
-// slot names in the order Roster.Starters is indexed against.
+// nonBenchSlots strips BN/IR/TAXI, leaving starter slots in the order Roster.Starters is indexed by.
 func nonBenchSlots(positions []string) []string {
 	var out []string
 	for _, p := range positions {
@@ -176,8 +169,7 @@ func nonBenchSlots(positions []string) []string {
 	return out
 }
 
-// numberedSlots labels a repeated position with a count suffix (RB, RB ->
-// RB1, RB2), matching the lineup artifact's naming; a lone slot keeps its bare code.
+// numberedSlots suffixes repeated positions (RB, RB -> RB1, RB2) like the lineup artifact; a lone slot stays bare.
 func numberedSlots(positions []string) []string {
 	slots := nonBenchSlots(positions)
 	counts := map[string]int{}
@@ -198,12 +190,8 @@ func numberedSlots(positions []string) []string {
 }
 
 func toSet(ids *[]string) map[string]bool {
-	out := map[string]bool{}
 	if ids == nil {
-		return out
+		return nil
 	}
-	for _, id := range *ids {
-		out[id] = true
-	}
-	return out
+	return toIDSet(*ids)
 }

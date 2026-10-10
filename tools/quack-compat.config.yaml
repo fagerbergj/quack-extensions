@@ -56,7 +56,6 @@ extensions:
   sleeper:
     default_user: placeholder
     default_league: "1"
-    season: 2026
     snapshots: daily
     timezone: America/Chicago
   usage:

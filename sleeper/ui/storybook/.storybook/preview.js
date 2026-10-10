@@ -1,8 +1,5 @@
-// kit.css is vendored from quack/frontend/public/assets/ext/v1/kit.css - it's
-// a separate repo, so there's no path to import the real file; the v1
-// contract is frozen-additive, so drift risk is low. Re-copy it here if v1
-// ever changes. page.css is imported from its real served location, so it
-// never drifts from what the extension actually ships.
+// kit.css is vendored from quack/frontend/public/assets/ext/v1/kit.css (separate repo; v1 is
+// frozen-additive). page.css is imported from its served location so it can't drift.
 import './kit.css'
 import '../../static/page.css'
 import { installAvatarFallback } from '../../static/render.js'
@@ -17,13 +14,8 @@ export const globalTypes = {
   },
 }
 
-// Mirrors quack/frontend/.storybook/preview.tsx's withTheme decorator, but
-// stamps data-theme (this page has no Tailwind `dark:` class toggle) - see
-// page.css's :root[data-theme] blocks, which kit.css v1 itself doesn't define.
-// Each story's own render wraps its markup in .qk-page itself (helpers.js's
-// page()), so this decorator only needs to set the theme and pass through -
-// wrapping again here would fight a story-level width decorator (mobile
-// frame) over which element ends up outermost.
+// Like quack/frontend's withTheme decorator but stamps data-theme for page.css's :root[data-theme]
+// blocks. Stories wrap their own .qk-page, so wrapping here would fight the mobile-frame decorator.
 const withTheme = (storyFn, context) => {
   document.documentElement.dataset.theme = context.globals.theme || 'light'
   return storyFn()

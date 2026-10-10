@@ -1,6 +1,5 @@
-// Browser glue for the served Sleeper page: fetches /sleeper/api/*, wires
-// season/stop/talk navigation and job Run buttons, and hands data to the
-// pure renderers in render.js. No build step - native ESM only.
+// Browser glue for the served page: fetches /sleeper/api/*, wires navigation and Run buttons, and hands
+// data to render.js. No build step: native ESM only.
 import * as R from './render.js'
 
 R.installAvatarFallback()
@@ -66,8 +65,7 @@ async function loadRunnableJobs() {
   state.runnableJobs = new Set(resp.runnable || [])
 }
 
-// syncRunningFromServer resumes the Running badge (and polling) for any job
-// the server still reports running - fixes losing it on reload/navigation.
+// syncRunningFromServer resumes the Running badge and polling for jobs the server reports running.
 function syncRunningFromServer() {
   for (const [job, env] of Object.entries(state.artifacts.jobs || {})) {
     if (env.running && !state.running.has(job)) { state.running.add(job); pollFor(job) }
@@ -302,9 +300,8 @@ async function runJob(job, partner, partnerName) {
   pollFor(job)
 }
 
-// True while the compose form (or any open <details>) has state a blind
-// renderMain() would silently wipe - a poll tick must not reset an
-// in-progress give/get selection before the user clicks "Evaluate counter".
+// True while the compose form or any open <details> holds state a blind renderMain() would wipe, so a
+// poll tick can't reset an in-progress give/get selection.
 function mainHasOpenState() {
   const give = document.getElementById('give'), get = document.getElementById('get')
   if (give?.selectedOptions.length || get?.selectedOptions.length) return true

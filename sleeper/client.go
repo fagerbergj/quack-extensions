@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 	"sync"
@@ -14,32 +15,25 @@ import (
 	"github.com/fagerbergj/quack-extensions/sleeper/sleepergen"
 )
 
-// Per-endpoint TTLs (quack-extensions issue #93): state moves fastest,
-// rosters/league settings change rarely, players/projections/stats are
-// bulk fetches worth holding onto longer.
+// Per-endpoint TTLs: state moves fastest; players/projections/stats are bulk fetches worth holding longer.
 const (
 	ttlState       = 5 * time.Minute
 	ttlLeague      = 10 * time.Minute
 	ttlMatchups    = 2 * time.Minute
 	ttlPlayersDump = 24 * time.Hour
 	ttlStatMap     = time.Hour
-	ttlChain       = 24 * time.Hour
 
-	// ttlKickoff: kickoff/venue only move on a flex decision, announced
-	// days ahead; lock state is computed per call from the kickoff itself.
+	// ttlKickoff: kickoff/venue move only on a flex decision announced days ahead; lock state is per call.
 	ttlKickoff = 6 * time.Hour
 
-	// ttlLive covers endpoints a tool wants fresh during an active event
-	// (waivers processing, a live draft, trending heat).
+	// ttlLive is for endpoints wanted fresh during a live event (waivers, a live draft, trending).
 	ttlLive = 2 * time.Minute
 
-	// maxChainSeasons bounds Chain against a malformed or cyclic
-	// previous_league_id chain - no real league runs this deep.
+	// maxChainSeasons bounds Chain against a cyclic previous_league_id chain; no real league runs this deep.
 	maxChainSeasons = 10
 )
 
-// Client is a thin, in-memory-cached wrapper over the generated Sleeper
-// client. Tools (a later slice) are the only intended caller.
+// Client is an in-memory-cached wrapper over the generated Sleeper client.
 type Client struct {
 	gen *sleepergen.ClientWithResponses
 
@@ -55,8 +49,7 @@ type cacheEntry struct {
 	expires time.Time
 }
 
-// NewClient builds a Client against baseURL (https://api.sleeper.app in
-// production, a qa-mock server in tests). httpClient may be nil to use the
+// NewClient builds a Client against baseURL (production, or qa-mock in tests); a nil httpClient uses the
 // generated client's default.
 func NewClient(baseURL string, httpClient *http.Client) (*Client, error) {
 	var opts []sleepergen.ClientOption
@@ -70,8 +63,8 @@ func NewClient(baseURL string, httpClient *http.Client) (*Client, error) {
 	return &Client{gen: gen, cache: map[string]cacheEntry{}}, nil
 }
 
-// cached fetches, or replays a cached, value under key - shared by every
-// method below so each endpoint's caching stays a one-line call.
+// cached replays an unexpired value under key, else fetches and stores it, sweeping expired entries
+// so per-week and per-player keys don't accumulate.
 func cached[T any](c *Client, key string, ttl time.Duration, fetch func() (T, error)) (T, error) {
 	c.mu.Lock()
 	if e, ok := c.cache[key]; ok && time.Now().Before(e.expires) {
@@ -86,7 +79,10 @@ func cached[T any](c *Client, key string, ttl time.Duration, fetch func() (T, er
 		return zero, err
 	}
 	c.mu.Lock()
-	c.cache[key] = cacheEntry{value: v, expires: time.Now().Add(ttl)}
+	now := time.Now()
+	// ponytail: O(n) sweep per insert, fine for hundreds of keys; add an LRU if the key count grows.
+	maps.DeleteFunc(c.cache, func(_ string, e cacheEntry) bool { return now.After(e.expires) })
+	c.cache[key] = cacheEntry{value: v, expires: now.Add(ttl)}
 	c.mu.Unlock()
 	return v, nil
 }
@@ -112,13 +108,11 @@ func (c *Client) League(ctx context.Context, leagueID string) (*sleepergen.Leagu
 	})
 }
 
-// cachedList is cached specialized for the common shape below: a generated
-// call returning a *slice-or-map JSON200 plus the raw response for error
-// reporting. Collapses what would otherwise be five near-identical methods.
+// cachedList is cached for generated calls returning a *slice-or-map JSON200 plus the raw response.
 func cachedList[T any](c *Client, key string, ttl time.Duration, fetch func() (*T, *http.Response, []byte, error)) (T, error) {
 	return cached(c, key, ttl, func() (T, error) {
 		var zero T
-		json, resp, body, err := fetch() //nolint:bodyclose // resp is ClientWithResponses' post-parse HTTPResponse; the body is already read and closed
+		json, resp, body, err := fetch() //nolint:bodyclose // ClientWithResponses already read and closed the body
 		if err != nil {
 			return zero, err
 		}
@@ -130,7 +124,7 @@ func cachedList[T any](c *Client, key string, ttl time.Duration, fetch func() (*
 	})
 }
 
-//nolint:dupl // each generated ...WithResponse call differs only by type and method name; not worth a reflection-based dispatcher for 4 read-only calls
+//nolint:dupl // each generated ...WithResponse call differs only by type and method name
 func (c *Client) Rosters(ctx context.Context, leagueID string) ([]sleepergen.Roster, error) {
 	return cachedList(c, "rosters:"+leagueID, ttlLeague, func() (*[]sleepergen.Roster, *http.Response, []byte, error) {
 		resp, err := c.gen.GetLeagueRostersWithResponse(ctx, leagueID)
@@ -164,7 +158,7 @@ func (c *Client) Matchups(ctx context.Context, leagueID string, week int) ([]sle
 	})
 }
 
-// WeekProjections/WeekStats share Sleeper's stat-map shape and hour TTL.
+// WeekProjections and WeekStats share Sleeper's stat-map shape and hour TTL.
 //
 //nolint:dupl // see Rosters
 func (c *Client) WeekProjections(ctx context.Context, season string, week int) (map[string]sleepergen.StatMap, error) {
@@ -190,9 +184,8 @@ func (c *Client) WeekStats(ctx context.Context, season string, week int) (map[st
 	})
 }
 
-// PlayersDump fetches (or replays) the full player map and rebuilds the
-// name index used by ResolvePlayer every call, so the index never lags
-// behind a dump that was refetched after its 24h TTL expired.
+// PlayersDump returns the full player map and rebuilds ResolvePlayer's index every call, so the index
+// never lags a dump refetched after its TTL.
 func (c *Client) PlayersDump(ctx context.Context) (map[string]sleepergen.Player, error) {
 	out, err := cachedList(c, "players", ttlPlayersDump, func() (*map[string]sleepergen.Player, *http.Response, []byte, error) {
 		resp, err := c.gen.GetAllPlayersWithResponse(ctx)
@@ -210,40 +203,27 @@ func (c *Client) PlayersDump(ctx context.Context) (map[string]sleepergen.Player,
 	return out, nil
 }
 
-// ResolvePlayer looks a free-text name up in the index PlayersDump last
-// built - call PlayersDump first in the same request path. Matching is
-// exact on lowercased "first last", last name, or a DEF's team code.
+// ResolvePlayer matches a name exactly (lowercased "first last", last name, or DEF team code) in the index
+// PlayersDump last built; call PlayersDump first.
 func (c *Client) ResolvePlayer(name string) []string {
 	c.namesMu.RLock()
 	defer c.namesMu.RUnlock()
 	return c.names[strings.ToLower(strings.TrimSpace(name))]
 }
 
-// Chain walks previous_league_id back up to seasonsBack (0 = all); false
-// errors the whole walk on any broken hop, true stops there and returns the reachable prefix.
-func (c *Client) Chain(ctx context.Context, leagueID string, seasonsBack int, stopOnUnreachable bool) ([]sleepergen.League, error) {
+// Chain walks previous_league_id back up to seasonsBack (0 = all), newest first, stopping at the first
+// unreachable hop; callers want whatever history is reachable.
+func (c *Client) Chain(ctx context.Context, leagueID string, seasonsBack int) []sleepergen.League {
 	limit := maxChainSeasons
 	if seasonsBack > 0 && seasonsBack < limit {
 		limit = seasonsBack
 	}
-	if stopOnUnreachable {
-		return c.walkChain(ctx, leagueID, limit, true)
-	}
-	return cached(c, "chain:"+leagueID, ttlChain, func() ([]sleepergen.League, error) {
-		return c.walkChain(ctx, leagueID, limit, false)
-	})
-}
-
-func (c *Client) walkChain(ctx context.Context, leagueID string, limit int, stopOnUnreachable bool) ([]sleepergen.League, error) {
 	var out []sleepergen.League
 	id := leagueID
 	for i := 0; i < limit && id != ""; i++ {
 		league, err := c.League(ctx, id)
 		if err != nil {
-			if stopOnUnreachable {
-				break
-			}
-			return nil, err
+			break
 		}
 		out = append(out, *league)
 		if league.PreviousLeagueId == nil {
@@ -251,7 +231,7 @@ func (c *Client) walkChain(ctx context.Context, leagueID string, limit int, stop
 		}
 		id = *league.PreviousLeagueId
 	}
-	return out, nil
+	return out
 }
 
 //nolint:dupl // each single-value cached lookup differs only by type and endpoint
@@ -346,7 +326,9 @@ func (c *Client) TrendingPlayers(ctx context.Context, kind sleepergen.GetTrendin
 }
 
 // Player is the cheaper single-lookup alternative to PlayersDump.
-func (c *Client) Player(ctx context.Context, playerID string) (*sleepergen.Player, error) { //nolint:dupl // each single-value cached lookup differs only by type and endpoint
+//
+//nolint:dupl // each single-value cached lookup differs only by type and endpoint
+func (c *Client) Player(ctx context.Context, playerID string) (*sleepergen.Player, error) {
 	return cached(c, "player:"+playerID, ttlStatMap, func() (*sleepergen.Player, error) {
 		resp, err := c.gen.GetPlayerWithResponse(ctx, playerID)
 		if err != nil {
@@ -404,13 +386,12 @@ func (c *Client) PlayerSeasonStats(ctx context.Context, playerID, season string)
 	})
 }
 
-// PlayerGameLog adds the `grouping=week` query param the generated
-// aggregate call omits, and decodes the per-week array it returns.
+// PlayerGameLog adds the grouping=week param the generated call omits and decodes the per-week result.
 func (c *Client) PlayerGameLog(ctx context.Context, playerID, season string) ([]sleepergen.PlayerStatEntry, error) {
 	out, err := cached(c, "player_game_log:"+playerID+":"+season, ttlStatMap, func() ([]sleepergen.PlayerStatEntry, error) {
 		return c.fetchPlayerGameLog(ctx, playerID, season)
 	})
-	if err != nil && errors.Is(err, ErrNotFound) {
+	if errors.Is(err, ErrNotFound) {
 		return nil, nil
 	}
 	return out, err
@@ -468,13 +449,12 @@ func (c *Client) SeasonStats(ctx context.Context, season string) (map[string]sle
 	})
 }
 
-// ErrNotFound wraps every "not found" response (a real 404, or Sleeper's
-// HTTP-200-plus-literal-null body), so callers can tell it apart from a
-// genuine fetch failure with errors.Is.
+// ErrNotFound wraps a real 404 or Sleeper's HTTP-200 literal-null body, so callers can tell it from a
+// genuine fetch failure.
 var ErrNotFound = errors.New("sleeper: not found")
 
-// okJSON errors on a nil JSON200 or a literal "null" body (Sleeper's 200
-// response for e.g. an unknown username) - never a cacheable zero value.
+// okJSON errors on a nil JSON200 or a literal "null" body (Sleeper's 200 for e.g. an unknown username),
+// so a zero value is never cached.
 func okJSON[T any](json *T, resp *http.Response, body []byte) (*T, error) {
 	isNullBody := strings.TrimSpace(string(body)) == "null"
 	if json != nil && !isNullBody {
@@ -484,18 +464,13 @@ func okJSON[T any](json *T, resp *http.Response, body []byte) (*T, error) {
 	if resp != nil {
 		status, code = resp.Status, resp.StatusCode
 	}
-	// A real 404 or Sleeper's HTTP-200-plus-literal-null body both mean
-	// not-found; any other non-200 is a genuine failure, not ErrNotFound,
-	// so a caller (e.g. sleeper_transactions) can tell them apart.
 	if code == http.StatusNotFound || isNullBody {
 		return nil, fmt.Errorf("%w (status %s): %s", ErrNotFound, status, string(body))
 	}
 	return nil, fmt.Errorf("sleeper: unexpected response (status %s): %s", status, string(body))
 }
 
-// buildNameIndex indexes a players dump by lowercased "first last", last
-// name alone, and (for DEF units, whose player_id already equals a team
-// code) that code - the three shapes a tool's free-text name arg may use.
+// buildNameIndex indexes by lowercased "first last", last name, and a DEF unit's team code (its player_id).
 func buildNameIndex(players map[string]sleepergen.Player) map[string][]string {
 	idx := map[string][]string{}
 	add := func(key, id string) {

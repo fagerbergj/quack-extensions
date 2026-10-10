@@ -66,8 +66,8 @@ func (e *extension) getStandings(ctx context.Context, a standingsArgs) (standing
 		rows[i] = standingsRow{
 			RosterID: r.RosterId, Team: names[r.RosterId],
 			Wins: r.Settings["wins"], Losses: r.Settings["losses"], Ties: r.Settings["ties"],
-			Fpts:      pointsField(r.Settings, "fpts", "fpts_decimal"),
-			FptsAgnst: pointsField(r.Settings, "fpts_against", "fpts_against_decimal"),
+			Fpts:      pointsField(r.Settings, "fpts"),
+			FptsAgnst: pointsField(r.Settings, "fpts_against"),
 		}
 	}
 	sort.SliceStable(rows, func(i, j int) bool {

@@ -1,5 +1,4 @@
-// Shared plumbing every sleeper_* tool needs: resolving user/league/week
-// from args or config defaults, and naming players/teams from cached data.
+// Shared tool plumbing: resolving user/league/week from args or config, and naming players/teams.
 package sleeper
 
 import (
@@ -23,8 +22,8 @@ type clock struct {
 	tzNote string
 }
 
-// loadZone accepts only region-style IANA names (or UTC): abbreviations like
-// EST load as fixed offsets and are an hour off during DST.
+// loadZone accepts only region-style IANA names (or UTC): EST and friends load as fixed offsets, an
+// hour off during DST.
 func loadZone(name string) (*time.Location, error) {
 	if name != "UTC" && !strings.Contains(name, "/") {
 		return nil, fmt.Errorf("%q is not a region-style IANA zone name like America/Chicago", name)
@@ -32,8 +31,8 @@ func loadZone(name string) (*time.Location, error) {
 	return time.LoadLocation(name)
 }
 
-// newClock picks the display zone: the `tz` override, else the configured
-// timezone, else the host's, else the process zone. A bad override falls back with a tz_note.
+// newClock picks the display zone: the `tz` override, else configured, else host, else process zone.
+// A bad override falls back with a tz_note.
 func (e *extension) newClock(tz string) clock {
 	c := clock{now: time.Now(), loc: time.Local}
 	if e.loc != nil {
@@ -52,8 +51,7 @@ func (e *extension) newClock(tz string) clock {
 
 func (c clock) local(t time.Time) string { return t.In(c.loc).Format(localLayout) }
 
-// callContext heads every week-scoped result: which week it covers,
-// relative to the live NFL week, and when (UTC and the user's zone) it was read.
+// callContext heads every week-scoped result: the week covered versus the live week, and when it was read.
 type callContext struct {
 	Week           int    `json:"week"`
 	CurrentWeek    int    `json:"current_week,omitempty"`
@@ -88,8 +86,7 @@ func (cc *callContext) addWeekNote(note string) {
 	cc.WeekNote = note
 }
 
-// nowRFC3339 stamps a tool result's fetched_at - the time this tool call
-// read the (possibly cached) upstream data, so a judge can tell staleness.
+// nowRFC3339 stamps fetched_at so a judge can tell how stale the (possibly cached) data is.
 func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
 
 // resolveLeagueID falls back to the extension's configured default league.
@@ -114,39 +111,24 @@ func (e *extension) resolveUserIdentifier(arg string) (string, error) {
 	return "", fmt.Errorf("user is required (no default_user configured)")
 }
 
-// season returns the configured season, or the live one from /state/nfl.
+// season returns the live season from /state/nfl.
 func (e *extension) season(ctx context.Context) (string, *sleepergen.NflState, error) {
 	state, err := e.client.State(ctx)
 	if err != nil {
 		return "", nil, fmt.Errorf("sleeper: state: %w", err)
 	}
-	if e.cfg.Season > 0 {
-		return fmt.Sprintf("%d", e.cfg.Season), state, nil
-	}
 	return state.Season, state, nil
 }
 
-// resolveWeek returns arg if positive, else the live current week - but
-// only when season is that live season; a pinned past/future season has no
-// borrowable "current week", so it must be given explicitly.
-func resolveWeek(arg int, season string, state *sleepergen.NflState) (int, error) {
+// resolveWeek returns arg if positive, else the live week.
+func resolveWeek(arg int, state *sleepergen.NflState) int {
 	if arg > 0 {
-		return arg, nil
+		return arg
 	}
-	return weekForSeason(season, state)
+	return state.Week
 }
 
-// weekForSeason is resolveWeek's no-arg-given core, reused by tools with no
-// week argument of their own (roster byes, free agents/player projections).
-func weekForSeason(season string, state *sleepergen.NflState) (int, error) {
-	if season != state.Season {
-		return 0, fmt.Errorf("season %s is not the live NFL season (%s); week must be given explicitly", season, state.Season)
-	}
-	return state.Week, nil
-}
-
-// resolveRosterID returns rosterID if set, else the roster owned by user
-// (falling back to default_user).
+// resolveRosterID returns rosterID if set, else the roster owned by user (default_user if empty).
 func (e *extension) resolveRosterID(rosterID int, user string, rosters []sleepergen.Roster, users []sleepergen.LeagueUser) (int, error) {
 	if rosterID != 0 {
 		return rosterID, nil
@@ -162,8 +144,7 @@ func (e *extension) resolveRosterID(rosterID int, user string, rosters []sleeper
 	return id, nil
 }
 
-// rosterIDForUser finds the roster a user_id (or, failing that, a
-// display/team name) owns in a league's roster list.
+// rosterIDForUser finds the roster owned by a user_id, else by a display or team name.
 func rosterIDForUser(rosters []sleepergen.Roster, users []sleepergen.LeagueUser, userOrName string) (int, bool) {
 	for _, r := range rosters {
 		if r.OwnerId != nil && *r.OwnerId == userOrName {
@@ -184,8 +165,7 @@ func rosterIDForUser(rosters []sleepergen.Roster, users []sleepergen.LeagueUser,
 	return 0, false
 }
 
-// teamName prefers the league metadata team_name a user set, falling back
-// to their Sleeper display name.
+// teamName prefers the user's league team_name over their display name.
 func teamName(u sleepergen.LeagueUser) string {
 	if u.Metadata != nil {
 		if n, ok := (*u.Metadata)["team_name"]; ok {
@@ -197,14 +177,12 @@ func teamName(u sleepergen.LeagueUser) string {
 	return ownerName(u)
 }
 
-// ownerName trims a Sleeper display name - some carry trailing spaces
-// ("Brown Tuddies Likely "), and every render surface must agree.
+// ownerName trims a display name: some carry trailing spaces, and every surface must agree.
 func ownerName(u sleepergen.LeagueUser) string {
 	return strings.TrimSpace(u.DisplayName)
 }
 
-// teamNames maps roster_id -> team name for a league, joining rosters (for
-// owner_id) with league users (for team_name/display_name).
+// teamNames maps roster_id to team name, joining rosters' owner_id to league users.
 func teamNames(rosters []sleepergen.Roster, users []sleepergen.LeagueUser) map[int]string {
 	byUser := make(map[string]string, len(users))
 	for _, u := range users {
@@ -223,7 +201,6 @@ func teamNames(rosters []sleepergen.Roster, users []sleepergen.LeagueUser) map[i
 	return out
 }
 
-// playerName resolves a player_id to a display name via the dump.
 func playerName(dump map[string]sleepergen.Player, playerID string) string {
 	p, ok := dump[playerID]
 	if !ok {
@@ -232,13 +209,11 @@ func playerName(dump map[string]sleepergen.Player, playerID string) string {
 	return playerNameOf(p)
 }
 
-// playerPosition resolves a player_id's position via the dump - "DEF" for a
-// team-defense id (e.g. "CAR"), same as sleeper_free_agents.
+// playerPosition is "" for an unknown player and "DEF" for a team-defense id like "CAR".
 func playerPosition(dump map[string]sleepergen.Player, playerID string) string {
 	return strVal(dump[playerID].Position)
 }
 
-// rosterFor finds a league's roster by roster_id.
 func rosterFor(rosters []sleepergen.Roster, rosterID int) (sleepergen.Roster, bool) {
 	for _, r := range rosters {
 		if r.RosterId == rosterID {
@@ -248,8 +223,7 @@ func rosterFor(rosters []sleepergen.Roster, rosterID int) (sleepergen.Roster, bo
 	return sleepergen.Roster{}, false
 }
 
-// sortedByProjection ranks player ids by their pts_ppr projection,
-// highest first - the one scoring figure every Sleeper projection carries.
+// sortedByProjection ranks ids by pts_ppr projection, the one figure every Sleeper projection carries.
 func sortedByProjection(ids []string, proj map[string]sleepergen.StatMap) []string {
 	out := append([]string(nil), ids...)
 	sort.SliceStable(out, func(i, j int) bool {

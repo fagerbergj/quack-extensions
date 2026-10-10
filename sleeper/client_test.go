@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // mockServer replays testdata/get fixtures the same way cmd/qa-mock does,
@@ -117,9 +118,8 @@ func TestClientLeagueNotFound(t *testing.T) {
 	}
 }
 
-// TestOkJSONTreatsNullBodyAsNotFound covers the fix for the bug where
-// Sleeper's HTTP 200 + literal "null" body (its answer for an unknown
-// username) decoded to a zero-valued struct with no error.
+// TestOkJSONTreatsNullBodyAsNotFound: Sleeper's 200 + literal "null" (an unknown username) is ErrNotFound,
+// not a zero-valued struct.
 func TestOkJSONTreatsNullBodyAsNotFound(t *testing.T) {
 	var zero string
 	if _, err := okJSON(&zero, &http.Response{Status: "200 OK"}, []byte("null")); err == nil {
@@ -138,9 +138,8 @@ func TestOkJSONPassesThroughRealValue(t *testing.T) {
 	}
 }
 
-// TestOkJSONDistinguishesNotFoundFromOtherErrors covers the fix: only a
-// real 404 (or the null-body quirk) is ErrNotFound; a 500 is a genuine
-// failure a caller like sleeper_transactions must not silently skip.
+// TestOkJSONDistinguishesNotFoundFromOtherErrors: only a 404 or null body is ErrNotFound; a 500 is a
+// genuine failure callers must not skip.
 func TestOkJSONDistinguishesNotFoundFromOtherErrors(t *testing.T) {
 	var zero string
 	_, err := okJSON[string](nil, &http.Response{Status: "404 Not Found", StatusCode: 404}, []byte("not found"))
@@ -194,33 +193,10 @@ func TestResolvePlayer(t *testing.T) {
 	}
 }
 
-// TestChainErrorsOnBrokenLink covers the bug this fixed: previous_league_id
-// being set is Sleeper's promise that league exists, so a fetch failure
-// mid-walk must surface as an error, not a silently truncated chain that
-// then gets cached for 24h as if it were the whole history.
-func TestChainErrorsOnBrokenLink(t *testing.T) {
+// TestChainStopsOnUnreachable: a broken hop stops the walk and returns the reachable prefix.
+func TestChainStopsOnUnreachable(t *testing.T) {
 	c := newTestClient(t)
-	ctx := context.Background()
-	if _, err := c.Chain(ctx, testLeague, 0, false); err == nil {
-		t.Fatal("expected Chain to error when an older league in the walk has no fixture")
-	}
-	// The failed walk must not have cached a partial result.
-	c.mu.Lock()
-	_, cached := c.cache["chain:"+testLeague]
-	c.mu.Unlock()
-	if cached {
-		t.Error("a failed Chain walk must not populate the cache")
-	}
-}
-
-// TestChainStopsOnUnreachableWhenRequested covers the mode sleeper_history
-// uses: a broken hop stops the walk and returns the reachable prefix.
-func TestChainStopsOnUnreachableWhenRequested(t *testing.T) {
-	c := newTestClient(t)
-	got, err := c.Chain(context.Background(), testLeague, 0, true)
-	if err != nil {
-		t.Fatalf("Chain(stopOnUnreachable): %v", err)
-	}
+	got := c.Chain(context.Background(), testLeague, 0)
 	if len(got) != 2 {
 		t.Fatalf("chain = %d leagues, want 2 (testLeague, pastLeague)", len(got))
 	}
@@ -232,19 +208,14 @@ func TestChainStopsOnUnreachableWhenRequested(t *testing.T) {
 // TestChainSeasonsBackCaps proves the limit is honored before any walking.
 func TestChainSeasonsBackCaps(t *testing.T) {
 	c := newTestClient(t)
-	got, err := c.Chain(context.Background(), testLeague, 1, true)
-	if err != nil {
-		t.Fatalf("Chain: %v", err)
-	}
+	got := c.Chain(context.Background(), testLeague, 1)
 	if len(got) != 1 || got[0].LeagueId != testLeague {
 		t.Errorf("chain = %v, want just [testLeague]", got)
 	}
 }
 
-// TestPlayersDumpCoversReferencedIDs is a fixture-integrity regression test:
-// the players dump was once trimmed independently of what other fixtures
-// cite, so a roster/matchup/draft/transaction player_id could resolve
-// nothing. Every id those fixtures reference must have a dump entry.
+// TestPlayersDumpCoversReferencedIDs: every player_id the roster/matchup/draft/transaction fixtures cite
+// must have a dump entry.
 func TestPlayersDumpCoversReferencedIDs(t *testing.T) {
 	c := newTestClient(t)
 	ctx := context.Background()
@@ -259,8 +230,7 @@ func TestPlayersDumpCoversReferencedIDs(t *testing.T) {
 	}
 }
 
-// referencedPlayerIDs collects every player_id cited by the roster,
-// matchup, draft-pick, and transaction fixtures for both leagues.
+// referencedPlayerIDs collects every player_id those fixtures cite for both leagues.
 func referencedPlayerIDs(t *testing.T) []string {
 	t.Helper()
 	ids := map[string]bool{}
@@ -336,5 +306,21 @@ func mustUnmarshalFixture(t *testing.T, url string, dst any) {
 	data := readFixture(t, url)
 	if err := json.Unmarshal(data, dst); err != nil {
 		t.Fatalf("unmarshal fixture for %s: %v", url, err)
+	}
+}
+
+func TestCachedDropsExpiredEntriesOnInsert(t *testing.T) {
+	c := newTestClient(t)
+	c.mu.Lock()
+	c.cache["stale"] = cacheEntry{value: struct{}{}, expires: time.Now().Add(-time.Minute)}
+	c.mu.Unlock()
+	if _, err := c.State(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	_, stale := c.cache["stale"]
+	c.mu.Unlock()
+	if stale {
+		t.Error("expired entry survived a cache insert")
 	}
 }

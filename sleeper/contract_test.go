@@ -15,9 +15,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// fixtureCase pairs a recorded request with the generated type its 200
-// response must decode into, and (for shape != "") the openapi.yaml schema
-// whose required fields every instance in the payload must carry.
+// fixtureCase pairs a recorded request with the generated type its 200 decodes into and, when shape is
+// set, the openapi.yaml schema whose required fields every instance must carry.
 type fixtureCase struct {
 	name   string
 	url    string
@@ -26,8 +25,7 @@ type fixtureCase struct {
 	shape  string // "object" | "array" | "map" - how instances sit in the payload
 }
 
-// fixtureKey must match cmd/qa-mock's key function exactly - both compute
-// the fixture filename from the same GET request shape.
+// fixtureKey must match cmd/qa-mock's key function exactly.
 func fixtureKey(rawURL string) (string, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -96,12 +94,8 @@ func fixtureCases() []fixtureCase {
 	}
 }
 
-// TestFixturesMatchGeneratedTypes decodes every recorded fixture with
-// unknown fields disallowed - an extra or renamed field fails here instead
-// of prod silently rejecting or dropping it - and, for cases naming a
-// schema, verifies every field openapi.yaml marks required is present, so a
-// dropped required field fails too (unknown-fields alone can't catch that:
-// a missing field just decodes as a zero value).
+// TestFixturesMatchGeneratedTypes decodes every fixture with unknown fields disallowed and checks
+// openapi.yaml's required fields are present, since a missing field just decodes as zero.
 func TestFixturesMatchGeneratedTypes(t *testing.T) {
 	required := loadRequiredFields(t)
 	for _, tc := range fixtureCases() {
@@ -131,8 +125,7 @@ func readFixture(t *testing.T, rawURL string) []byte {
 	return data
 }
 
-// openAPISchemas is the sliver of openapi.yaml's shape this test needs:
-// each schema's own required-field list.
+// openAPISchemas is each openapi.yaml schema's required-field list.
 type openAPISchemas struct {
 	Components struct {
 		Schemas map[string]struct {
@@ -141,8 +134,7 @@ type openAPISchemas struct {
 	} `yaml:"components"`
 }
 
-// loadRequiredFields reads required-field lists from openapi.yaml itself
-// (not a hardcoded copy), so the spec stays the single source of truth.
+// loadRequiredFields reads required fields from openapi.yaml itself so the spec stays the source of truth.
 func loadRequiredFields(t *testing.T) map[string][]string {
 	t.Helper()
 	data, err := os.ReadFile("openapi.yaml")
@@ -160,10 +152,8 @@ func loadRequiredFields(t *testing.T) map[string][]string {
 	return out
 }
 
-// checkRequiredFields asserts every field in required is a present key on
-// every JSON object instance raw contains, per shape ("object": raw itself;
-// "array": each element; "map": each value) - independent of the generated
-// Go type, so a required field silently zeroing out can't hide behind it.
+// checkRequiredFields asserts every required field is present on each object in raw, per shape
+// (object, array elements, or map values), independent of the generated Go type.
 func checkRequiredFields(t *testing.T, raw []byte, schema, shape string, required []string) {
 	t.Helper()
 	missing, err := missingRequiredFields(raw, schema, shape, required)
@@ -175,10 +165,7 @@ func checkRequiredFields(t *testing.T, raw []byte, schema, shape string, require
 	}
 }
 
-// missingRequiredFields is checkRequiredFields' pure core: no *testing.T,
-// so the mutation test below can assert on its return value directly
-// instead of needing a subtest whose expected failure would still fail
-// the overall test run.
+// missingRequiredFields is checkRequiredFields without *testing.T, so the mutation test can assert on it.
 func missingRequiredFields(raw []byte, schema, shape string, required []string) ([]string, error) {
 	if schema == "" || len(required) == 0 {
 		return nil, nil
@@ -230,8 +217,7 @@ func jsonInstances(raw []byte, shape string) ([]map[string]any, error) {
 	}
 }
 
-// TestAllFixturesCovered catches an orphaned recording no case exercises -
-// otherwise a stale fixture rots un-decoded and drift goes unnoticed.
+// TestAllFixturesCovered catches a recorded fixture no case decodes, which would rot unnoticed.
 func TestAllFixturesCovered(t *testing.T) {
 	want := map[string]bool{}
 	for _, tc := range fixtureCases() {
@@ -252,9 +238,8 @@ func TestAllFixturesCovered(t *testing.T) {
 	}
 }
 
-// TestMutationDroppedRequiredFieldFails proves checkRequiredFields actually
-// catches a dropped field: DisallowUnknownFields alone would not (a missing
-// field just decodes to its zero value).
+// TestMutationDroppedRequiredFieldFails proves checkRequiredFields catches a dropped field, which
+// DisallowUnknownFields alone would not.
 func TestMutationDroppedRequiredFieldFails(t *testing.T) {
 	data := readFixture(t, "/v1/state/nfl")
 	var obj map[string]any

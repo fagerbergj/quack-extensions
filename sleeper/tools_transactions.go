@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 
 	adkagent "google.golang.org/adk/v2/agent"
@@ -18,8 +19,7 @@ type transactionsArgs struct {
 	WeeksBack int    `json:"weeks_back,omitempty"`
 }
 
-// moveEntry is one player added or dropped in a transaction, with the
-// roster it moved to/from so a multi-team trade stays attributable.
+// moveEntry is one player added or dropped, with its roster so a multi-team trade stays attributable.
 type moveEntry struct {
 	PlayerID string `json:"player_id"`
 	Name     string `json:"name"`
@@ -80,14 +80,11 @@ func (e *extension) getTransactions(ctx context.Context, a transactionsArgs) (tr
 	if err != nil {
 		return transactionsResult{}, fmt.Errorf("sleeper_transactions: %w", err)
 	}
-	season, state, err := e.season(ctx)
+	_, state, err := e.season(ctx)
 	if err != nil {
 		return transactionsResult{}, err
 	}
-	currentWeek, err := weekForSeason(season, state)
-	if err != nil {
-		return transactionsResult{}, fmt.Errorf("sleeper_transactions: %w", err)
-	}
+	currentWeek := state.Week
 	names := teamNames(rosters, users)
 	var out []transactionEntry
 	for week := currentWeek - weeksBack + 1; week <= currentWeek; week++ {
@@ -196,10 +193,7 @@ func (e *extension) getFreeAgents(ctx context.Context, a freeAgentsArgs) (freeAg
 	if err != nil {
 		return freeAgentsResult{}, err
 	}
-	week, err := weekForSeason(season, state)
-	if err != nil {
-		return freeAgentsResult{}, fmt.Errorf("sleeper_free_agents: %w", err)
-	}
+	week := state.Week
 	proj, err := e.client.WeekProjections(ctx, season, week)
 	if err != nil {
 		return freeAgentsResult{}, fmt.Errorf("sleeper_free_agents: projections: %w", err)
@@ -268,13 +262,5 @@ func matchesPosition(p sleepergen.Player, position string) bool {
 	if p.Position != nil && *p.Position == position {
 		return true
 	}
-	if p.FantasyPositions == nil {
-		return false
-	}
-	for _, fp := range *p.FantasyPositions {
-		if fp == position {
-			return true
-		}
-	}
-	return false
+	return p.FantasyPositions != nil && slices.Contains(*p.FantasyPositions, position)
 }

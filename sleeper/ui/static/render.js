@@ -1,10 +1,5 @@
-// Pure rendering functions for the Sleeper extension UI: string-in,
-// HTML-string-out, no DOM globals and no fetch. Shared by the served page
-// (main.js) and every Storybook story so a card renders identically in
-// both. Verdict/percentage semantics and markup mirror the approved
-// prototype (sleeper-ui-ref/sleeper-ui.html); data comes from the
-// /sleeper/api/season and /sleeper/api/artifacts JSON shapes instead of an
-// inlined fixture object.
+// Pure renderers (string in, HTML string out, no DOM or fetch) shared by main.js and every Storybook
+// story, so a card renders identically in both.
 
 export const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 export const num = (n, d = 1) => Number(n ?? 0).toFixed(d)
@@ -13,14 +8,12 @@ export const num = (n, d = 1) => Number(n ?? 0).toFixed(d)
 // value, so callers must check this instead of `p.adp` directly.
 export const hasADP = adp => adp != null && adp < 999
 
-// Agent-written link fields (e.g. a trends item's news URL) are the only
-// untrusted href source; the serve path never schema-validates artifacts,
-// so esc() alone would still let a javascript: URL through onclick.
+// Agent-written links are the only untrusted href source and artifacts are never schema-validated on
+// serve, so esc() alone would let a javascript: URL through.
 export const isSafeHref = url => /^https?:\/\//i.test(String(url ?? ''))
 
-// Coerces an agent-written "numeric" field to a real number (or '' if it
-// isn't one) - the schemas type these as numbers but nothing on the serve
-// path enforces it, so a string value would otherwise pass esc()-free.
+// Coerces an agent-written "numeric" field to a number (or ''): nothing on the serve path enforces
+// the schema's number type.
 export const int = n => (n != null && Number.isFinite(Number(n)) ? Number(n) : '')
 
 // Renders markdown [text](url) as a real <a> (http/https only); everything
@@ -135,15 +128,11 @@ export function avatarHTML(player, sm) {
   const initials = (player?.name || '?').split(' ').map(w => w[0]).slice(0, 2).join('')
   if (!player?.id) return `<span class="${cls} av--i">${esc(initials)}</span>`
   const url = esc(avatarUrl(player.id))
-  // No inline onerror (player names are agent-written, untrusted): a
-  // delegated capture-phase 'error' listener (installOwnAvatarFallback,
-  // wired once by main.js/preview.js) does the swap via data attributes.
+  // No inline onerror (names are agent-written): installAvatarFallback's delegated listener does the swap.
   return `<img class="${cls}" src="${url}" alt="" loading="lazy" data-avatar-fallback="${esc(initials)}" data-avatar-class="${esc(cls)} av--i">`
 }
 
-// Installs the delegated image-fallback listener once; both the served
-// page (main.js) and Storybook (preview.js) call this so avatarHTML's
-// data attributes have no inline handler to carry out the swap.
+// Installs the delegated image-fallback listener once; main.js and preview.js both call it.
 export function installAvatarFallback(root = document) {
   root.addEventListener('error', e => {
     const img = e.target
@@ -172,8 +161,7 @@ export function jobHead(meta) {
   return `<div class="sl-sec__head"><div class="sl-sec__title"><h2>${esc(meta.title)}</h2>${chips}</div><div class="sl-sec__meta">${m}</div></div>`
 }
 
-// emptyNoun is the fixed, job-general noun for the "not run yet" copy - the
-// heading (jobHead) already carries the week/stop, so this must not repeat it.
+// emptyNoun is the job-general noun for the "not run yet" copy; jobHead already carries the week/stop.
 const emptyNoun = {
   lineup: 'start / sit', waivers: 'waivers', trade: 'trade talks',
   digest: 'preview', trends: 'trends and news', retro: 'hindsight',
@@ -369,17 +357,14 @@ function tradeFinder(finder, runnable = true) {
 }
 
 function talkPartnerSelect(partners) {
-  // A <select> always reports its first option as selected; a blank
-  // leading option is what makes "no team chosen yet" representable, so
-  // runJob's "Pick a team to trade with." guard can actually fire.
+  // A <select> always reports its first option selected; the blank lead option lets runJob's
+  // "Pick a team to trade with." guard fire.
   const opts = (partners || []).map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')
   return `<select id="talk-partner" class="sl-select" aria-label="Team to trade with"><option value="">Pick a team…</option>${opts}</select>`
 }
 
-// talks: [{partner, found, example, status, data}]; talkIdx selects which
-// one the dropdown shows. partners: every other team's name, for the "New
-// talk" select - runJob reads it when a click carries no data-partner.
-// finder: the trade-finder job's own artifactEnvelope, for the suggestions CTA.
+// talks: [{partner, found, example, status, data}], talkIdx picks the shown one; partners feeds the
+// "New talk" select; finder is the trade-finder envelope for the suggestions CTA.
 export function renderTrade(state, talks, talkIdx, partners, finder) {
   const partnerCount = finder?.data?.suggestions?.length || 0
   const chips = partnerCount ? [`<span class="qk-chip">${partnerCount} partner${partnerCount === 1 ? '' : 's'}</span>`] : []
@@ -600,9 +585,7 @@ export function renderYears(seasons, currentSeason) {
   return `<nav class="sl-years" aria-label="Seasons">${seasons.map(s => `<button class="sl-year" data-season="${esc(s.season)}" aria-pressed="${s.season === currentSeason}">${esc(s.season)}<small>${int(s.wins)}-${int(s.losses)}</small></button>`).join('')}</nav>`
 }
 
-// items: [{job, label, agent, running, disabled}] - the kebab menu's list
-// body, pulled out of main.js's renderMenu so it (and the whole menu) can
-// be storied without live app state.
+// items: [{job, label, agent, running, disabled}]; the kebab menu's list body, split out so it can be storied.
 export function renderMenuList(heading, items) {
   const rows = items.map(i => `<li><button data-run="${esc(i.job)}" ${i.disabled || i.running ? 'disabled' : ''}${i.title ? ` title="${esc(i.title)}"` : ''}>${esc(i.label)}<span>${esc(i.agent || '')}</span></button></li>`).join('')
   return `<li class="hd">${esc(heading)}</li>${rows}`

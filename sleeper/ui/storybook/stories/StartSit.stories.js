@@ -10,9 +10,7 @@ export const Default = { render: () => page(renderLineup(envelope)) }
 export const Dark = { ...Default, globals: { theme: 'dark' } }
 export const MobileViewport390 = { render: () => mobileFrame(renderLineup(envelope)) }
 
-// Backward compatibility: an artifact written before floor/ceiling, replaces,
-// plan and watch existed - the card must still render (no h2h ranges/win
-// chance/IN badges/plan chip/watch strip, since that data is simply absent).
+// An artifact without floor/ceiling, replaces, plan or watch must still render, minus those extras.
 const stripNew = row => { const { floor, ceiling, replaces, ...rest } = row; return rest }
 const legacyData = {
   ...lineup,
@@ -25,8 +23,8 @@ const legacyData = {
 const legacyEnvelope = { ...envelope, data: legacyData }
 export const Legacy = { render: () => page(renderLineup(legacyEnvelope)) }
 
-// Regression coverage: sleeper_matchup returns opponent slots unnumbered
-// (RB, RB...), which used to clobber the second same-position entry in a plain {slot: player} map.
+// sleeper_matchup returns opponent slots unnumbered (RB, RB...); a plain {slot: player} map would drop
+// the second.
 const unnumberedSlot = s => s.replace(/\d+$/, '')
 const realOpponentData = { ...lineup, opponent_starters: (lineup.opponent_starters || []).map(o => ({ ...o, slot: unnumberedSlot(o.slot) })) }
 const realOpponentEnvelope = { ...envelope, data: realOpponentData }

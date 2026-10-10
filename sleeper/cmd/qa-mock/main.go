@@ -1,5 +1,4 @@
-// Command qa-mock is a fake api.sleeper.app for QA: replays recorded
-// fixtures so the sleeper client can be tested without live credentials.
+// Command qa-mock is a fake api.sleeper.app that replays recorded fixtures for QA and tests.
 package main
 
 import (
@@ -29,8 +28,6 @@ func main() {
 	log.Fatal(http.ListenAndServe(*addr, s))
 }
 
-// newServer is split out from main so it's testable without starting a
-// real listener.
 func newServer(fixtures string, record bool) (*server, error) {
 	if err := os.MkdirAll(fixtures, 0o755); err != nil {
 		return nil, err
@@ -38,17 +35,14 @@ func newServer(fixtures string, record bool) (*server, error) {
 	return &server{dir: fixtures, record: record, http: &http.Client{Timeout: 15 * time.Second}}, nil
 }
 
-// server replays fixtures keyed by request path+query, same convention as
-// github/cmd/qa-mock - a smaller lever than modeling every endpoint.
+// server replays fixtures keyed by request path+query, like github/cmd/qa-mock.
 type server struct {
 	dir    string
 	record bool
 	http   *http.Client
 }
 
-// fixtureKey mirrors github/cmd/qa-mock's key function exactly: the sleeper
-// client's cache and this mock must agree on the same request shape to hit
-// the same file.
+// fixtureKey mirrors github/cmd/qa-mock's key function exactly; recorded fixture names depend on it.
 func fixtureKey(r *http.Request) string {
 	key := r.Method + "_" + r.URL.Path
 	if r.URL.RawQuery != "" {

@@ -11,9 +11,7 @@ export const Default = { render: () => page(renderDigest(envelope, MY_TEAM), '52
 export const Dark = { ...Default, globals: { theme: 'dark' } }
 export const MobileViewport390 = { render: () => mobileFrame(renderDigest(envelope, MY_TEAM)) }
 
-// Regression pin: prod once showed the wrong game highlighted because the
-// renderer trusted the artifact's own `mine` flag. Here every game's `mine`
-// is deliberately wrong (or absent); the page must still highlight
-// Substation Supremacy's game by matching /api/season's own team name.
+// Every game's `mine` flag is deliberately wrong or absent; the page must still highlight Substation
+// Supremacy's game by matching /api/season's team name.
 const wrongMineData = { ...digest, games: digest.games.map(g => ({ ...g, mine: g.home !== MY_TEAM && g.away !== MY_TEAM })) }
 export const IgnoresArtifactMineFlag = { render: () => page(renderDigest({ ...envelope, data: wrongMineData }, MY_TEAM), '52rem') }

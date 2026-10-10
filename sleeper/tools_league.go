@@ -209,10 +209,7 @@ func (e *extension) getSchedule(ctx context.Context, a scheduleArgs) (scheduleRe
 	if err != nil {
 		return scheduleResult{}, err
 	}
-	week, err := resolveWeek(a.Week, season, state)
-	if err != nil {
-		return scheduleResult{}, fmt.Errorf("sleeper_schedule: %w", err)
-	}
+	week := resolveWeek(a.Week, state)
 	sl, err := e.weekSlate(ctx, season, week, c)
 	if err != nil {
 		return scheduleResult{}, fmt.Errorf("sleeper_schedule: %w", err)

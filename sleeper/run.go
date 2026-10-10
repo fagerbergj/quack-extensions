@@ -1,6 +1,7 @@
 package sleeper
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 
@@ -36,8 +37,7 @@ func (e *extension) RunEnded(chatID string, outcome sdk.RunOutcome) {
 	e.observeRun(chatID, outcome)
 }
 
-// jobTitles names the sidebar chip's job word for week-stop jobs only -
-// draft/review/trade/season-notes each have their own fixed Label form.
+// jobTitles is the sidebar chip's job word for week-stop jobs; other stops use a fixed label.
 var jobTitles = map[string]string{
 	"lineup":       "Lineup",
 	"waivers":      "Waivers",
@@ -47,8 +47,7 @@ var jobTitles = map[string]string{
 	"trade-finder": "Trade finder",
 }
 
-// originLabel is the sidebar chip text for a dispatched job: a week job
-// gets "<Title> · week N", draft/review/trade get their own fixed forms.
+// originLabel is the sidebar chip text: "<Title> · week N" for a week job, else a fixed form.
 func originLabel(stop, job, partnerName string) string {
 	switch {
 	case job == "trade":
@@ -62,8 +61,7 @@ func originLabel(stop, job, partnerName string) string {
 	}
 }
 
-// leagueBadge is one best-effort League() call; any failure leaves it ""
-// rather than blocking the dispatch it's decorating.
+// leagueBadge is best-effort: a failure leaves it "" rather than blocking the dispatch.
 func (e *extension) leagueBadge(ctx context.Context, leagueID string) string {
 	lg, err := e.client.League(ctx, leagueID)
 	if err != nil {
@@ -74,7 +72,7 @@ func (e *extension) leagueBadge(ctx context.Context, leagueID string) string {
 
 func chatLabels(leagueID, leagueName, job string) map[string][]sdk.LabelValue {
 	return map[string][]sdk.LabelValue{
-		"league": {{Value: leagueID, Display: firstNonEmpty(leagueName, leagueID)}},
+		"league": {{Value: leagueID, Display: cmp.Or(leagueName, leagueID)}},
 		"job":    {{Value: job}},
 	}
 }
@@ -99,9 +97,8 @@ func (e *extension) jobOrigin(ctx context.Context, leagueID, stop, job, label st
 
 func globalChatID(localID string) string { return "ext:sleeper:" + localID }
 
-// dispatchTracked marks chatID running before calling Dispatch, clearing it
-// again on a synchronous error - Dispatch can complete (and fire RunEnded)
-// before a mark placed after it would land, leaving a phantom Running badge.
+// dispatchTracked marks running before Dispatch: a run can end (firing RunEnded) before a later mark
+// would land, leaving a phantom Running badge.
 func (e *extension) dispatchTracked(ctx context.Context, req sdk.DispatchRequest, chatID string) error {
 	e.markRunning(chatID)
 	if err := e.host.Dispatch(ctx, req); err != nil {
@@ -111,15 +108,14 @@ func (e *extension) dispatchTracked(ctx context.Context, req sdk.DispatchRequest
 	return nil
 }
 
-// dispatchSeasonNotes: only trends writes notes, into their own chat id
-// separate from the per-week trends chat - a trends run dispatches twice.
+// dispatchSeasonNotes: a trends run also dispatches season notes into their own chat.
 func (e *extension) dispatchSeasonNotes(ctx context.Context, leagueID string) {
 	localID := leagueID + ":season-notes"
 	origin := e.jobOrigin(ctx, leagueID, "", "season-notes", "Season notes")
 	err := e.dispatchTracked(ctx, sdk.DispatchRequest{
 		Chat: sdk.ChatRef{LocalID: localID, User: e.cfg.DefaultUser, Title: "Sleeper season notes", Origin: origin},
 		Ask:  sdk.Ask{Message: fmt.Sprintf("Update the running season notes for league %s from this week's trends findings.", leagueID)},
-		// Fixed shape: bound to skip the planner LLM call; quack's workflow catalog owns it.
+		// Bound to a workflow to skip the planner LLM call.
 		Run: sdk.RunConfig{ReadOnly: true, Workflow: "sleeper-season-notes"},
 	}, globalChatID(localID))
 	if err != nil && e.host.Log != nil {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 
 	adkagent "google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
@@ -13,8 +14,7 @@ import (
 	"github.com/fagerbergj/quack-extensions/sleeper/sleepergen"
 )
 
-// maxGameLogWeeks caps sleeper_player's game_log - a floor/ceiling read
-// only needs recent usage, not a full season back-catalog.
+// maxGameLogWeeks caps game_log: a floor/ceiling read needs recent usage, not the whole season.
 const maxGameLogWeeks = 5
 
 type playerArgs struct {
@@ -39,8 +39,7 @@ type playerResult struct {
 	gameInfo
 }
 
-// gameLogWeek is one of this season's completed weeks for a player -
-// floor/ceiling reads snap share and volume trend from this, not a season average.
+// gameLogWeek is one completed week; floor/ceiling reads snap share and volume trend from it.
 type gameLogWeek struct {
 	Week    int     `json:"week"`
 	Opp     string  `json:"opp,omitempty"`
@@ -74,10 +73,7 @@ func (e *extension) getPlayer(ctx context.Context, a playerArgs) (playerResult, 
 	if err != nil {
 		return playerResult{}, err
 	}
-	week, err := weekForSeason(season, state)
-	if err != nil {
-		return playerResult{}, fmt.Errorf("sleeper_player: %w", err)
-	}
+	week := state.Week
 	proj, err := e.client.WeekProjections(ctx, season, week)
 	if err != nil {
 		return playerResult{}, fmt.Errorf("sleeper_player: projections: %w", err)
@@ -103,8 +99,7 @@ func (e *extension) getPlayer(ctx context.Context, a playerArgs) (playerResult, 
 	return res, nil
 }
 
-// buildGameLog keeps weeks strictly before currentWeek (the in-progress
-// week's stats aren't final), newest first, capped at maxGameLogWeeks.
+// buildGameLog keeps weeks before currentWeek (whose stats aren't final), newest first, capped.
 func buildGameLog(entries []sleepergen.PlayerStatEntry, currentWeek int) []gameLogWeek {
 	var out []gameLogWeek
 	for _, e := range entries {
@@ -131,8 +126,7 @@ func gameLogWeekFrom(week int, e sleepergen.PlayerStatEntry) gameLogWeek {
 	}
 }
 
-// snapPct is off_snp/tm_off_snp as a whole percent, nil when tm_off_snp is
-// missing or 0 - a share of zero team snaps isn't a real percentage.
+// snapPct is off_snp/tm_off_snp as a whole percent, nil when tm_off_snp is missing or 0.
 func snapPct(stats map[string]float32) *int {
 	tm := stats["tm_off_snp"]
 	if tm <= 0 {
@@ -142,8 +136,7 @@ func snapPct(stats map[string]float32) *int {
 	return &pct
 }
 
-// resolvePlayer looks a player up by id (the cheaper single-player
-// endpoint) or by free-text name (via the dump's name index).
+// resolvePlayer looks a player up by id (cheap single lookup) or by name (the dump's index).
 func (e *extension) resolvePlayer(ctx context.Context, playerID, name string) (sleepergen.Player, error) {
 	if playerID != "" {
 		p, err := e.client.Player(ctx, playerID)
@@ -170,9 +163,8 @@ func playerNameOf(p sleepergen.Player) string {
 	if p.FullName != nil && *p.FullName != "" {
 		return *p.FullName
 	}
-	first, last := strVal(p.FirstName), strVal(p.LastName)
-	if first != "" || last != "" {
-		return first + " " + last
+	if full := strings.TrimSpace(strVal(p.FirstName) + " " + strVal(p.LastName)); full != "" {
+		return full
 	}
 	if p.Position != nil && *p.Position == "DEF" {
 		return strVal(p.Team)

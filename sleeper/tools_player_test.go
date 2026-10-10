@@ -126,3 +126,19 @@ func TestSnapPct(t *testing.T) {
 }
 
 func intPtr(i int) *int { return &i }
+
+// TestPlayerName pins the one label both the tools and the UI's recent moves use.
+func TestPlayerName(t *testing.T) {
+	s := func(v string) *string { return &v }
+	dump := map[string]sleepergen.Player{
+		"full":  {PlayerId: "full", FullName: s("Josh Allen"), FirstName: s("x")},
+		"first": {PlayerId: "first", FirstName: s("Josh")},
+		"def":   {PlayerId: "def", Position: s("DEF"), Team: s("BAL")},
+		"bare":  {PlayerId: "bare"},
+	}
+	for id, want := range map[string]string{"full": "Josh Allen", "first": "Josh", "def": "BAL", "bare": "bare", "missing": "missing"} {
+		if got := playerName(dump, id); got != want {
+			t.Errorf("playerName(%q) = %q, want %q", id, got, want)
+		}
+	}
+}

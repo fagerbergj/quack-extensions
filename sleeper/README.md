@@ -19,8 +19,7 @@ step) on the authed router at `GET /sleeper/`, plus four JSON routes:
 - `GET /sleeper/api/artifacts?league_id=&stop=` - every job artifact for that stop
   (`draft`, a week number, or `review`), season notes, and per-partner trade talks, each read
   via `Host.ReadArtifact` by its `ext:sleeper:<league>:<stop>:<job>` chat id. Until a job has
-  run, its card is `found: false`; behind `extensions.sleeper.fixture: true` a miss instead
-  serves the reference example JSON under `sleeper/ui/fixtures/`, marked `example: true`.
+  run, its card is `found: false`.
 - `POST /sleeper/api/jobs` `{league_id, stop, job, args}` - calls `Host.Dispatch` with that same
   chat id (a repeat call appends a turn) and returns the chat link.
 

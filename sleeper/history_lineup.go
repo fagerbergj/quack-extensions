@@ -1,8 +1,7 @@
-// bestLineupPoints fills strict-position slots with top scorers, then
-// solves the leftover flex slots as a max-weight bipartite assignment.
 package sleeper
 
 import (
+	"slices"
 	"sort"
 
 	"github.com/fagerbergj/quack-extensions/sleeper/sleepergen"
@@ -15,23 +14,18 @@ var flexKindEligible = map[string][]string{
 	"SUPER_FLEX": {"QB", "RB", "WR", "TE"},
 }
 
-// lineupAssignment is bestLineup's work: the total, and which player (if
-// any) fills each of nonBenchSlots(rosterPositions)'s slots, same order.
+// lineupAssignment is the total and the player ("" if none) filling each nonBenchSlots slot, same order.
 type lineupAssignment struct {
 	total  float32
 	bySlot []string
 }
 
-func bestLineupPoints(rosterPositions []string, playerIDs []string, points map[string]float32, dump map[string]sleepergen.Player) float32 {
-	return bestLineup(rosterPositions, playerIDs, points, dump).total
-}
-
-// bestLineup fills strict slots with the top scorer in slot order, then
-// solves every flex slot jointly as one exact max-weight assignment.
+// bestLineup fills strict slots with the top scorer in slot order, then solves every flex slot jointly
+// as one exact max-weight assignment.
 func bestLineup(rosterPositions []string, playerIDs []string, points map[string]float32, dump map[string]sleepergen.Player) lineupAssignment {
 	slots := nonBenchSlots(rosterPositions)
-	// Seed every candidate as flex-eligible leftover first - a position with
-	// no strict slot (e.g. TE in a QB/RB/WR/FLEX league) must still reach the flex solver.
+	// Seed every candidate as leftover: a position with no strict slot (TE in a QB/RB/WR/FLEX league)
+	// must still reach the flex solver.
 	leftover := map[string][]string{}
 	for pos, ids := range groupByPosition(playerIDs, dump) {
 		leftover[pos] = sortedByPoints(ids, points)
@@ -72,8 +66,7 @@ type flexCandidate struct {
 	pos string
 }
 
-// assignFlexSlots solves every flex slot as one joint assignment and
-// returns which candidate (if any, "" if unfilled) fills each slotKinds index.
+// assignFlexSlots returns the candidate ("" if unfilled) for each slotKinds index.
 func assignFlexSlots(slotKinds []string, leftover map[string][]string, points map[string]float32) (float32, []string) {
 	if len(slotKinds) == 0 {
 		return 0, nil
@@ -93,8 +86,8 @@ func assignFlexSlots(slotKinds []string, leftover map[string][]string, points ma
 	return maxWeightAssignment(slotKinds, candidates, points)
 }
 
-// maxWeightAssignment bitmask-DPs the best assignment of distinct
-// candidates to slotKinds, memoizing the choice per state to backtrack it.
+// maxWeightAssignment bitmask-DPs the best assignment of distinct candidates to slotKinds, memoizing the
+// choice per state to backtrack it.
 func maxWeightAssignment(slotKinds []string, candidates []flexCandidate, points map[string]float32) (float32, []string) {
 	memo := map[uint64]float32{}
 	choice := map[uint64]int{}
@@ -134,14 +127,7 @@ func maxWeightAssignment(slotKinds []string, candidates []flexCandidate, points 
 	return total, assignment
 }
 
-func flexEligible(kind, pos string) bool {
-	for _, p := range flexKindEligible[kind] {
-		if p == pos {
-			return true
-		}
-	}
-	return false
-}
+func flexEligible(kind, pos string) bool { return slices.Contains(flexKindEligible[kind], pos) }
 
 func sortedByPoints(ids []string, points map[string]float32) []string {
 	out := append([]string(nil), ids...)
@@ -152,10 +138,7 @@ func sortedByPoints(ids []string, points map[string]float32) []string {
 func groupByPosition(playerIDs []string, dump map[string]sleepergen.Player) map[string][]string {
 	out := map[string][]string{}
 	for _, id := range playerIDs {
-		pos := ""
-		if p, ok := dump[id]; ok && p.Position != nil {
-			pos = *p.Position
-		}
+		pos := playerPosition(dump, id)
 		out[pos] = append(out[pos], id)
 	}
 	return out

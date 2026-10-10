@@ -6,8 +6,7 @@ import (
 	"github.com/fagerbergj/quack-extensions/sleeper/sleepergen"
 )
 
-// TestTeamNameTrims pins the fix for trailing-space Sleeper names: every
-// render surface routes through teamName/ownerName.
+// TestTeamNameTrims: Sleeper names can carry trailing spaces; every surface goes through teamName/ownerName.
 func TestTeamNameTrims(t *testing.T) {
 	meta := map[string]string{"team_name": "Brown Tuddies Likely "}
 	u := sleepergen.LeagueUser{DisplayName: "raw display ", Metadata: &meta}

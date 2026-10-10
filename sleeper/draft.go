@@ -1,5 +1,4 @@
-// sleeper_draft: draft state, the order, every pick so far with ADP, who's
-// on the clock (snake math), and best available by position.
+// sleeper_draft: draft state, order, picks with ADP, who's on the clock, and best available by position.
 package sleeper
 
 import (
@@ -23,13 +22,11 @@ const noADPSentinel = 999
 // offensePositions bounds best-available grouping to draftable skill spots.
 var offensePositions = []string{"QB", "RB", "WR", "TE", "K", "DEF"}
 
-// bestAvailablePerPosition caps how many names sleeper_draft lists per
-// position - enough for a tier read without flooding the result.
+// bestAvailablePerPosition is enough names for a tier read without flooding the result.
 const bestAvailablePerPosition = 5
 
-// adpDeltaThreshold: pick_no - adp at or beyond this many picks is a value
-// pick ("value") or a reach ("reach") - the same 8-pick band
-// sleeper/ui/static/render.js's renderDraftBoard uses for its fell/reach classes.
+// adpDeltaThreshold: |pick_no - adp| at or past this is "value" or "reach"; render.js's renderDraftBoard
+// uses the same band for its fell/reach classes.
 const adpDeltaThreshold = 8
 
 type draftArgs struct {
@@ -54,9 +51,8 @@ type draftPick struct {
 	Position string  `json:"position"`
 	ADP      float32 `json:"adp,omitempty"`
 	NoADP    bool    `json:"no_adp,omitempty"`
-	// ADPDelta/ADPVerdict are the tool's own call, not the agent's - pick_no
-	// minus adp, and "value"/"reach"/"fair" against adpDeltaThreshold. Never
-	// recompute these from ADP by hand; sign errors invert steal and reach.
+	// ADPDelta/ADPVerdict are computed here so the agent never recomputes them; a sign error inverts
+	// steal and reach.
 	ADPDelta   *float32 `json:"adp_delta,omitempty"`
 	ADPVerdict string   `json:"adp_verdict,omitempty"`
 }
@@ -126,8 +122,7 @@ func (e *extension) getDraft(ctx context.Context, a draftArgs) (draftResult, err
 	return result, nil
 }
 
-// draftRounds falls back to the league's starting-slot count (excluding
-// BN/IR/TAXI) when a draft's own settings.rounds is unset.
+// draftRounds falls back to the league's starter-slot count when settings.rounds is unset.
 func (e *extension) draftRounds(ctx context.Context, d *sleepergen.Draft) int {
 	if r := d.Settings["rounds"]; r > 0 {
 		return r
@@ -139,8 +134,7 @@ func (e *extension) draftRounds(ctx context.Context, d *sleepergen.Draft) int {
 	return len(nonBenchSlots(league.RosterPositions))
 }
 
-// resolveDraftID picks a draft directly, or the league's own draft when
-// only league_id is given - also returning the league id for team names.
+// resolveDraftID returns draft_id as given, else the league's draft; the league id feeds team names.
 func (e *extension) resolveDraftID(ctx context.Context, draftID, leagueID string) (string, string, error) {
 	if draftID != "" {
 		return draftID, leagueID, nil
@@ -163,8 +157,7 @@ func (e *extension) resolveDraftID(ctx context.Context, draftID, leagueID string
 	return pickDraft(drafts, league.Season).DraftId, leagueID, nil
 }
 
-// pickDraft prefers the draft matching season (a league can carry more than
-// one, e.g. after a re-draft); else the latest by start_time.
+// pickDraft prefers the draft matching season (a re-draft leaves several), else the latest start_time.
 func pickDraft(drafts []sleepergen.Draft, season string) sleepergen.Draft {
 	for _, d := range drafts {
 		if d.Season == season {
@@ -173,18 +166,11 @@ func pickDraft(drafts []sleepergen.Draft, season string) sleepergen.Draft {
 	}
 	best := drafts[0]
 	for _, d := range drafts[1:] {
-		if draftStartTime(d) > draftStartTime(best) {
+		if intVal(d.StartTime) > intVal(best.StartTime) {
 			best = d
 		}
 	}
 	return best
-}
-
-func draftStartTime(d sleepergen.Draft) int {
-	if d.StartTime == nil {
-		return 0
-	}
-	return *d.StartTime
 }
 
 func (e *extension) rostersAndUsers(ctx context.Context, leagueID string) ([]sleepergen.Roster, []sleepergen.LeagueUser, error) {
@@ -202,8 +188,7 @@ func (e *extension) rostersAndUsers(ctx context.Context, leagueID string) ([]sle
 	return rosters, users, nil
 }
 
-// draftProjections reuses the current week's projections for ADP/value -
-// Sleeper carries the same season-long adp_dd_ppr figure on every week.
+// draftProjections reads the current week's projections: every week carries the season-long adp_dd_ppr.
 func (e *extension) draftProjections(ctx context.Context, season string) (map[string]sleepergen.StatMap, error) {
 	state, err := e.client.State(ctx)
 	if err != nil {
@@ -251,9 +236,7 @@ func draftPicksOut(picks []sleepergen.DraftPick, names map[int]string, proj map[
 	return out
 }
 
-// adpDeltaAndVerdict computes how many picks a player fell past (positive)
-// or was reached ahead of (negative) their ADP, and the verdict that
-// follows from adpDeltaThreshold. Nil/"" when there's no real ADP to compare.
+// adpDeltaAndVerdict: delta is picks fallen past ADP (negative = reached); nil/"" without a real ADP.
 func adpDeltaAndVerdict(pickNo int, adp float32, noADP bool) (*float32, string) {
 	if noADP || adp <= 0 {
 		return nil, ""
@@ -289,8 +272,7 @@ func pickPosition(p sleepergen.DraftPick) string {
 	return (*p.Metadata)["position"]
 }
 
-// onClock computes the next pick from snake-draft math; nil unless the
-// draft is actively drafting and picks remain.
+// onClock computes the next pick from snake-draft math; nil unless drafting with picks left.
 func onClock(d *sleepergen.Draft, rounds, picksMade int, names map[int]string) *draftSlot {
 	if d.Status != "drafting" || d.SlotToRosterId == nil {
 		return nil
