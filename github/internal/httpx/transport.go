@@ -69,14 +69,9 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			pending = nil
 		}
 
-		attempt := req
-		if req.GetBody != nil {
-			body, gerr := req.GetBody()
-			if gerr != nil {
-				return nil, backoff.Permanent(gerr)
-			}
-			attempt = req.Clone(req.Context())
-			attempt.Body = body
+		attempt, gerr := rewound(req)
+		if gerr != nil {
+			return nil, backoff.Permanent(gerr)
 		}
 
 		resp, rerr := t.next.RoundTrip(attempt)
@@ -103,6 +98,20 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return resp, nil
 	}
 	return resp, err
+}
+
+// rewound returns req with a fresh body for one more attempt.
+func rewound(req *http.Request) (*http.Request, error) {
+	if req.GetBody == nil {
+		return req, nil
+	}
+	body, err := req.GetBody()
+	if err != nil {
+		return nil, err
+	}
+	attempt := req.Clone(req.Context())
+	attempt.Body = body
+	return attempt, nil
 }
 
 // isProvenUnsent reports whether err proves the request never reached the
