@@ -1,6 +1,7 @@
 package sleeper
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"math"
@@ -13,9 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// fakeHost builds a minimal sdk.Host recording ReadArtifact/Dispatch calls,
-// so a test can assert on the exact chat id and turn-append behavior
-// without a real quack server.
+// fakeHost records ReadArtifact/Dispatch calls so tests can assert on chat ids and turn appends.
 type fakeHost struct {
 	artifacts   map[string]map[string][]byte // chatID -> name -> data
 	dispatched  []sdk.DispatchRequest
@@ -46,7 +45,7 @@ func (h *fakeHost) sdkHost() sdk.Host {
 
 func newTestExtension(t *testing.T, host sdk.Host, cfg config) (*extension, *chi.Mux) {
 	t.Helper()
-	cfg.DefaultUser = firstNonEmpty(cfg.DefaultUser, testUser)
+	cfg.DefaultUser = cmp.Or(cfg.DefaultUser, testUser)
 	e := &extension{host: host, cfg: cfg, client: newTestClient(t)}
 	r := chi.NewRouter()
 	e.RegisterRoutes(r, chi.NewRouter())
@@ -102,9 +101,8 @@ func TestHandleSeasonsUnknownLeague(t *testing.T) {
 	}
 }
 
-// TestHandleSeasonsUpstreamFailureIsBadGateway pins the 404-vs-502 split:
-// a genuine upstream 5xx (unlike Sleeper's real 404 or null-body
-// not-found) must not read as "unknown league".
+// TestHandleSeasonsUpstreamFailureIsBadGateway: an upstream 5xx, unlike a 404 or null body, must not read
+// as "unknown league".
 func TestHandleSeasonsUpstreamFailureIsBadGateway(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
@@ -284,9 +282,8 @@ func TestHandleArtifactsFixtureFallback(t *testing.T) {
 	}
 }
 
-// TestHandleArtifactsRealTradeTalkDiscovery exercises readTradeTalks'
-// actual discovery path (candidate chat ids built from real league
-// members), not just the fixture fallback TestHandleArtifactsFixtureFallback covers.
+// TestHandleArtifactsRealTradeTalkDiscovery exercises readTradeTalks' discovery over real league members,
+// not the fixture fallback.
 func TestHandleArtifactsRealTradeTalkDiscovery(t *testing.T) {
 	const riceCookerOwnerID = "740613226189987840" // pirates5 / "Rice Cooker" in testLeague's fixture users
 	chatID := "ext:sleeper:" + testLeague + ":trade:" + riceCookerOwnerID
@@ -309,9 +306,8 @@ func TestHandleArtifactsRealTradeTalkDiscovery(t *testing.T) {
 	}
 }
 
-// TestHandleArtifactsRunningFirstTalkSurfaces pins the #100 follow-up: a
-// partner chat with no artifact yet still shows Running, or the badge and
-// polling never start for a first talk.
+// TestHandleArtifactsRunningFirstTalkSurfaces: a partner chat with no artifact yet still shows Running,
+// or a first talk never starts polling.
 func TestHandleArtifactsRunningFirstTalkSurfaces(t *testing.T) {
 	const riceCookerOwnerID = "740613226189987840"
 	chatID := "ext:sleeper:" + testLeague + ":trade:" + riceCookerOwnerID
@@ -434,7 +430,7 @@ func TestHandleJobsDispatchesChatIDAndAppendsTurn(t *testing.T) {
 // TestHandleJobsEveryMappedJobBindsItsWorkflow pins jobWorkflows exactly:
 // every job id quack has an agent for names its bound shape, none guess via the planner.
 func TestHandleJobsEveryMappedJobBindsItsWorkflow(t *testing.T) {
-	// Literal expectations, not jobWorkflows itself: the shape names are quack config keys (PR #1501).
+	// Literal expectations, not jobWorkflows itself: the names are quack config keys.
 	want := map[string]string{
 		"lineup": "sleeper-lineup", "waivers": "sleeper-waivers", "trends": "sleeper-trends",
 		"digest": "sleeper-digest", "retro": "sleeper-retro", "draft": "sleeper-draft",
@@ -446,7 +442,7 @@ func TestHandleJobsEveryMappedJobBindsItsWorkflow(t *testing.T) {
 	stopFor := map[string]string{"draft": "draft", "history": "review"}
 	for job, want := range want {
 		t.Run(job, func(t *testing.T) {
-			stop := firstNonEmpty(stopFor[job], "2")
+			stop := cmp.Or(stopFor[job], "2")
 			body := `{"league_id":"` + testLeague + `","stop":"` + stop + `","job":"` + job + `"}`
 			if job == "trade" {
 				body = `{"league_id":"` + testLeague + `","stop":"2","job":"trade","args":{"partner":"740613226189987840"}}`
@@ -468,8 +464,7 @@ func TestHandleJobsEveryMappedJobBindsItsWorkflow(t *testing.T) {
 	}
 }
 
-// TestHandleJobsTradeDispatchCarriesArgs: the trade job's dispatch must
-// still carry partner/partner_name/give/get in the message now that it's bound.
+// TestHandleJobsTradeDispatchCarriesArgs: the trade dispatch message carries partner/partner_name/give/get.
 func TestHandleJobsTradeDispatchCarriesArgs(t *testing.T) {
 	const riceCookerOwnerID = "740613226189987840"
 	host := &fakeHost{artifacts: map[string]map[string][]byte{}}
@@ -545,8 +540,7 @@ func TestHandleRunnableJobsMatchesJobWorkflows(t *testing.T) {
 	}
 }
 
-// These two pin localIDFor's trade-branch directly: handleJobs' 409 gate
-// now short-circuits trade before HTTP ever reaches it.
+// These pin localIDFor's trade branch directly: handleJobs' 409 gate short-circuits trade before HTTP does.
 func TestLocalIDForTradeRequiresPartner(t *testing.T) {
 	_, _, err := localIDFor(jobRequest{LeagueID: testLeague, Stop: "2", Job: "trade"})
 	if err == nil {
@@ -643,9 +637,8 @@ func TestHandleJobsBadInput(t *testing.T) {
 	}
 }
 
-// TestUIServesUnderQuackMount mounts the extension the way quack's router
-// does (internal/server/router.go: r.Mount("/"+name, combined), which chi
-// does not strip) - the page and its assets must still resolve under it.
+// TestUIServesUnderQuackMount mounts like quack's router (r.Mount("/"+name, ...), which chi does not
+// strip); the page and assets must still resolve.
 func TestUIServesUnderQuackMount(t *testing.T) {
 	e := &extension{host: sdk.Host{}, cfg: config{Fixture: true, DefaultUser: testUser, DefaultLeague: testLeague}, client: newTestClient(t)}
 	combined := chi.NewRouter()
@@ -689,9 +682,7 @@ func TestUIServesUnderQuackMount(t *testing.T) {
 	}
 }
 
-// TestHandleArtifactsNonJSONArtifact reproduces the QA-rig bug: a job
-// artifact that is markdown (an agent didn't emit JSON) must still 200,
-// marked invalid with the raw text, never an empty body.
+// TestHandleArtifactsNonJSONArtifact: a markdown artifact still 200s, marked invalid with the raw text.
 func TestHandleArtifactsNonJSONArtifact(t *testing.T) {
 	wantChatID := "ext:sleeper:" + testLeague + ":2:lineup"
 	const md = "# Lineup\n\nStart Josh Allen.\n"
@@ -723,9 +714,7 @@ func TestHandleArtifactsNonJSONArtifact(t *testing.T) {
 	}
 }
 
-// TestHandleArtifactsFencedJSONArtifact pins the agents-fence-JSON
-// tolerance: a ```json ... ``` block around otherwise-valid JSON parses as
-// Data, not Invalid.
+// TestHandleArtifactsFencedJSONArtifact: a ```json fence around valid JSON parses as Data, not Invalid.
 func TestHandleArtifactsFencedJSONArtifact(t *testing.T) {
 	wantChatID := "ext:sleeper:" + testLeague + ":2:lineup"
 	fenced := "```json\n{\"week\":2}\n```"
@@ -758,9 +747,17 @@ func TestHandleArtifactsFencedJSONArtifact(t *testing.T) {
 	}
 }
 
-// TestWriteJSONEncodeFailureIsNot200 pins writeJSON's fix: an unencodable
-// value (here, NaN - json.Marshal rejects non-finite floats) must 500 with
-// an error body, never silently ship the empty 200 the bug report found.
+func TestCapTextKeepsRuneBoundary(t *testing.T) {
+	if got := capText([]byte("aé"), 2); got != "a" {
+		t.Errorf("capText split a rune: %q", got)
+	}
+	if got := capText([]byte("ab"), 5); got != "ab" {
+		t.Errorf("capText under max = %q, want ab", got)
+	}
+}
+
+// TestWriteJSONEncodeFailureIsNot200: an unencodable value (NaN) must 500 with an error body, not an
+// empty 200.
 func TestWriteJSONEncodeFailureIsNot200(t *testing.T) {
 	e := &extension{}
 	rec := httptest.NewRecorder()

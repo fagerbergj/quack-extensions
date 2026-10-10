@@ -1,8 +1,5 @@
-// Builds Storybook, then loads every story at 390/1280 x light/dark with
-// Playwright, failing on a console error or horizontal overflow - no
-// screenshots taken. Mirrors quack/frontend's own render-check discipline
-// (see its src/render-check.browser.test.tsx) but as a standalone script,
-// since this package has no test runner of its own.
+// Builds Storybook and loads every story at 390/1280 x light/dark in Playwright, failing on a console
+// error or horizontal overflow. Standalone because this package has no test runner.
 import { execFileSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { readFile, stat } from 'node:fs/promises'

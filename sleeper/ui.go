@@ -2,6 +2,7 @@ package sleeper
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"embed"
 	"encoding/json"
@@ -9,10 +10,13 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/fagerbergj/quack-extensions/sdk"
 	"github.com/fagerbergj/quack-extensions/sleeper/sleepergen"
@@ -44,8 +48,7 @@ func (e *extension) ArtifactSchemas() map[string]json.RawMessage {
 
 var fixtureBytes = loadFixtures()
 
-// fixtureJobNames enumerates every artifact name a fixture file exists for -
-// the job ids plus the two non-job artifacts (season-notes, trade).
+// fixtureJobNames is every artifact name with a fixture: the job ids plus season-notes and trade.
 var fixtureJobNames = []string{"lineup", "waivers", "trade", "trade-finder", "digest", "trends", "retro", "draft", "history", "season-notes"}
 
 func loadFixtures() map[string]json.RawMessage {
@@ -59,8 +62,6 @@ func loadFixtures() map[string]json.RawMessage {
 	return out
 }
 
-// mountUI wires the extension's served page and JSON API onto the authed
-// router; called from sleeper.go's RegisterRoutes.
 func (e *extension) mountUI(authed chi.Router) {
 	authed.Get("/api/seasons", e.handleSeasons)
 	authed.Get("/api/season", e.handleSeason)
@@ -70,8 +71,7 @@ func (e *extension) mountUI(authed chi.Router) {
 
 	static, err := fs.Sub(uiStaticFS, "ui/static")
 	if err != nil {
-		// The embedded FS is compiled into the binary; a broken Sub here is a
-		// build-time bug (a renamed/missing directory), never a runtime state.
+		// A broken Sub on an embedded FS is a build-time bug (renamed directory), never runtime state.
 		panic("sleeper: embedded UI assets missing: " + err.Error())
 	}
 	// chi's r.Mount("/"+name, combined) in quack's router does not strip the
@@ -88,9 +88,7 @@ func (e *extension) mountUI(authed chi.Router) {
 	}))
 }
 
-// writeJSON encodes to a buffer before writing the response, so a value
-// json.Encoder can't marshal never reaches the client as an empty 200 (the
-// prior bug: an encode error after headers were already sent goes unnoticed).
+// writeJSON encodes to a buffer first so an unmarshalable value becomes a 500, not an empty 200.
 func (e *extension) writeJSON(w http.ResponseWriter, v any) {
 	e.writeJSONStatus(w, http.StatusOK, v)
 }
@@ -121,8 +119,7 @@ func (e *extension) logError(msg string, args ...any) {
 	slog.Error(msg, args...)
 }
 
-// writeLeagueErr honors client.go's typed ErrNotFound (a real 404 or
-// Sleeper's HTTP-200-null-body) as 404; anything else is an upstream failure (502).
+// writeLeagueErr maps ErrNotFound to 404; anything else is an upstream failure (502).
 func (e *extension) writeLeagueErr(w http.ResponseWriter, err error) {
 	if errors.Is(err, ErrNotFound) {
 		e.writeErr(w, http.StatusNotFound, "unknown league")
@@ -131,16 +128,7 @@ func (e *extension) writeLeagueErr(w http.ResponseWriter, err error) {
 	e.writeErr(w, http.StatusBadGateway, err.Error())
 }
 
-func firstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
-}
-
-// resolveUserID looks cfg.DefaultUser (a username or user_id) up once per
-// request; ok is false when no default user is configured or Sleeper
-// doesn't recognize it, and every "me"-scoped field degrades to absent.
+// resolveUserID resolves cfg.DefaultUser (username or user_id); !ok makes every "me"-scoped field absent.
 func (e *extension) resolveUserID(ctx context.Context) (string, bool) {
 	if e.cfg.DefaultUser == "" {
 		return "", false
@@ -150,10 +138,6 @@ func (e *extension) resolveUserID(ctx context.Context) (string, bool) {
 		return "", false
 	}
 	return u.UserId, true
-}
-
-func rosterPoints(r sleepergen.Roster, prefix string) float64 {
-	return float64(r.Settings[prefix]) + float64(r.Settings[prefix+"_decimal"])/100
 }
 
 func intSetting(m map[string]int, key string, def int) int {
@@ -194,8 +178,7 @@ func waiverTypeLabel(wt int) string {
 	return "Rolling waivers"
 }
 
-// recordString shows ties only when non-zero, so a team's record reads the
-// same everywhere it's formatted (the season API and every sleeper_* tool).
+// recordString shows ties only when non-zero, so every surface formats a record the same way.
 func recordString(wins, losses, ties int) string {
 	if ties != 0 {
 		return fmt.Sprintf("%d-%d-%d", wins, losses, ties)
@@ -232,15 +215,6 @@ func rosterByOwner(rosters []sleepergen.Roster, userID string) *sleepergen.Roste
 	return nil
 }
 
-func rosterByID(rosters []sleepergen.Roster, id int) *sleepergen.Roster {
-	for i := range rosters {
-		if rosters[i].RosterId == id {
-			return &rosters[i]
-		}
-	}
-	return nil
-}
-
 type standingRow struct {
 	ID     string  `json:"id"` // the owner's Sleeper user_id - stable, unlike team name
 	Team   string  `json:"team"`
@@ -263,7 +237,7 @@ func standingRowFor(ro sleepergen.Roster, usersByOwner map[string]sleepergen.Lea
 	return standingRow{
 		ID: id, Team: teamName(u), Owner: ownerName(u),
 		Wins: ro.Settings["wins"], Losses: ro.Settings["losses"], Ties: ro.Settings["ties"],
-		PF: rosterPoints(ro, "fpts"), PA: rosterPoints(ro, "fpts_against"),
+		PF: pointsField(ro.Settings, "fpts"), PA: pointsField(ro.Settings, "fpts_against"),
 		Mine: myRoster != nil && ro.RosterId == myRoster.RosterId,
 	}
 }
@@ -289,27 +263,7 @@ type opponentInfo struct {
 	Losses int    `json:"losses"`
 }
 
-func matchupIDFor(matchups []sleepergen.Matchup, rosterID int) *int {
-	for _, m := range matchups {
-		if m.RosterId == rosterID {
-			return m.MatchupId
-		}
-	}
-	return nil
-}
-
-func opponentRosterID(matchups []sleepergen.Matchup, myRosterID, matchupID int) (int, bool) {
-	for _, m := range matchups {
-		if m.RosterId != myRosterID && m.MatchupId != nil && *m.MatchupId == matchupID {
-			return m.RosterId, true
-		}
-	}
-	return 0, false
-}
-
-// findOpponent is nil whenever there's no "me" perspective, this league
-// isn't the live NFL season, or the current week has no matchup pairing yet
-// (e.g. before week 1 locks).
+// findOpponent is nil with no "me", a non-live season, or no pairing yet this week (e.g. before week 1 locks).
 func (e *extension) findOpponent(ctx context.Context, c *Client, league *sleepergen.League, rosters []sleepergen.Roster, usersByOwner map[string]sleepergen.LeagueUser, myRoster *sleepergen.Roster) *opponentInfo {
 	if myRoster == nil {
 		return nil
@@ -322,16 +276,16 @@ func (e *extension) findOpponent(ctx context.Context, c *Client, league *sleeper
 	if err != nil {
 		return nil
 	}
-	myMatchupID := matchupIDFor(matchups, myRoster.RosterId)
-	if myMatchupID == nil {
-		return nil
-	}
-	oppRosterID, ok := opponentRosterID(matchups, myRoster.RosterId, *myMatchupID)
+	mine, ok := findMatchup(matchups, myRoster.RosterId)
 	if !ok {
 		return nil
 	}
-	oppRoster := rosterByID(rosters, oppRosterID)
-	if oppRoster == nil || oppRoster.OwnerId == nil {
+	opp, ok := opponent(matchups, mine)
+	if !ok {
+		return nil
+	}
+	oppRoster, ok := rosterFor(rosters, opp.RosterId)
+	if !ok || oppRoster.OwnerId == nil {
 		return nil
 	}
 	u := usersByOwner[*oppRoster.OwnerId]
@@ -408,8 +362,7 @@ func moveRowFor(tx sleepergen.Transaction, week int, players map[string]sleeperg
 	}
 }
 
-// buildMoves is best-effort: any upstream failure (transactions, players
-// dump) yields an empty list rather than failing the whole season response.
+// buildMoves is best-effort: an upstream failure yields no moves rather than failing the season response.
 func (e *extension) buildMoves(ctx context.Context, c *Client, leagueID string, week int, rosters []sleepergen.Roster, users []sleepergen.LeagueUser) []moveRow {
 	if week < 1 {
 		week = 1
@@ -455,11 +408,10 @@ type seasonResponse struct {
 	PlayoffLine  int           `json:"playoff_line"`
 }
 
-// handleSeason serves GET /sleeper/api/season?league_id= - one season's live
-// league/me/opponent/standings/moves, never from job artifacts (see handleArtifacts).
+// handleSeason serves GET /sleeper/api/season?league_id=: live league/me/opponent/standings/moves, never artifacts.
 func (e *extension) handleSeason(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	leagueID := firstNonEmpty(r.URL.Query().Get("league_id"), e.cfg.DefaultLeague)
+	leagueID := cmp.Or(r.URL.Query().Get("league_id"), e.cfg.DefaultLeague)
 	if leagueID == "" {
 		e.writeErr(w, http.StatusBadRequest, "league_id is required")
 		return
@@ -539,44 +491,29 @@ func (e *extension) seasonSummaryFor(ctx context.Context, c *Client, lg sleeperg
 	return out
 }
 
-// reverseLeagues returns the chain oldest-first (Client.Chain walks
-// newest-first via previous_league_id); the approved design wants the
-// seasons row chronological with the current season last.
-func reverseLeagues(chain []sleepergen.League) []sleepergen.League {
-	out := make([]sleepergen.League, len(chain))
-	for i, lg := range chain {
-		out[len(chain)-1-i] = lg
-	}
-	return out
-}
-
-// handleSeasons serves GET /sleeper/api/seasons?league_id= - the season
-// chain, oldest first, each with this league's own record for the default user.
+// handleSeasons serves GET /sleeper/api/seasons?league_id=: the season chain, oldest first, with the default
+// user's record in each. Chain walks newest-first, so it is iterated backwards.
 func (e *extension) handleSeasons(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	leagueID := firstNonEmpty(r.URL.Query().Get("league_id"), e.cfg.DefaultLeague)
+	leagueID := cmp.Or(r.URL.Query().Get("league_id"), e.cfg.DefaultLeague)
 	if leagueID == "" {
 		e.writeErr(w, http.StatusBadRequest, "league_id is required")
 		return
 	}
 	c := e.client
-	// A direct League() fetch first: Chain(stopOnUnreachable: true) below
-	// swallows every failure into an empty result, which would otherwise
-	// make a genuinely unknown league indistinguishable from an upstream 5xx.
+	// Chain swallows failures, so fetch League first to tell an unknown league from a 5xx.
 	if _, err := c.League(ctx, leagueID); err != nil {
 		e.writeLeagueErr(w, err)
 		return
 	}
-	// stopOnUnreachable: a UI wants whatever history is reachable, not
-	// all-or-nothing (the history job, Chain's other caller, wants the opposite).
-	chain, err := c.Chain(ctx, leagueID, 0, true)
-	if err != nil || len(chain) == 0 {
+	chain := c.Chain(ctx, leagueID, 0)
+	if len(chain) == 0 {
 		e.writeErr(w, http.StatusNotFound, "unknown league")
 		return
 	}
 	resp := seasonsResponse{CurrentSeason: chain[0].Season}
 	userID, haveUser := e.resolveUserID(ctx)
-	for _, lg := range reverseLeagues(chain) {
+	for _, lg := range slices.Backward(chain) {
 		resp.Seasons = append(resp.Seasons, e.seasonSummaryFor(ctx, c, lg, userID, haveUser))
 	}
 	e.writeJSON(w, resp)
@@ -587,18 +524,16 @@ type artifactEnvelope struct {
 	Example bool            `json:"example"`
 	Running bool            `json:"running"`
 	Data    json.RawMessage `json:"data,omitempty"`
-	// Invalid marks an artifact whose bytes aren't JSON (an agent wrote
-	// markdown/prose); Text carries the raw content instead, and Data is omitted.
+	// Invalid marks a non-JSON artifact (agent wrote prose); Text carries the raw content and Data is omitted.
 	Invalid bool   `json:"invalid,omitempty"`
 	Text    string `json:"text,omitempty"`
 }
 
-// maxInvalidTextBytes caps the raw text an invalid artifact returns to the
-// UI - an agent runaway shouldn't balloon the response.
+// maxInvalidTextBytes caps an invalid artifact's raw text so an agent runaway can't balloon the response.
 const maxInvalidTextBytes = 64 * 1024
 
-// readArtifact tries the real chat first (a non-JSON hit comes back Invalid
-// with the raw text); behind cfg.Fixture, a miss falls back to the reference example JSON, marked Example.
+// readArtifact tries the real chat first (non-JSON comes back Invalid); with cfg.Fixture a miss serves the
+// reference example, marked Example.
 func (e *extension) readArtifact(chatID, name string) artifactEnvelope {
 	if e.host.ReadArtifact != nil {
 		if data, ok := e.host.ReadArtifact(chatID, e.cfg.DefaultUser, name); ok {
@@ -616,9 +551,7 @@ func (e *extension) readArtifact(chatID, name string) artifactEnvelope {
 	return artifactEnvelope{Found: false}
 }
 
-// parseArtifactJSON accepts raw JSON as-is, or the same bytes with a single
-// leading/trailing ``` or ```json fence stripped - agents often fence JSON
-// output like any other code block.
+// parseArtifactJSON accepts raw JSON, or JSON in one ``` / ```json fence since agents often fence output.
 func parseArtifactJSON(data []byte) (json.RawMessage, bool) {
 	if json.Valid(data) {
 		return json.RawMessage(data), true
@@ -640,21 +573,24 @@ func stripCodeFence(data []byte) ([]byte, bool) {
 	return []byte(strings.TrimSpace(s)), true
 }
 
+// capText truncates at a rune boundary so the capped text stays valid UTF-8.
 func capText(data []byte, max int) string {
 	if len(data) <= max {
 		return string(data)
+	}
+	for max > 0 && !utf8.RuneStart(data[max]) {
+		max--
 	}
 	return string(data[:max])
 }
 
 type tradeTalkEnvelope struct {
 	Partner   string `json:"partner"`    // display team name
-	PartnerID string `json:"partner_id"` // owner's Sleeper user_id - what the chat id and dispatch actually key on
+	PartnerID string `json:"partner_id"` // owner's Sleeper user_id; the chat id and dispatch key on it
 	artifactEnvelope
 }
 
-// teamRef is one other league member: ID is the owner's Sleeper user_id -
-// stable across a team rename, unlike the display name a chat id used to embed.
+// teamRef is one other league member; ID is the owner's user_id, stable across a team rename.
 type teamRef struct {
 	ID   string
 	Name string
@@ -676,8 +612,7 @@ func (e *extension) otherTeams(ctx context.Context, leagueID string) []teamRef {
 	return out
 }
 
-// readTradeTalks tries every other team as a candidate trade partner (the
-// SDK has no chat-listing call, so this is the only way to discover chats).
+// readTradeTalks probes every other team as a trade partner; the SDK has no chat-listing call.
 func (e *extension) readTradeTalks(ctx context.Context, leagueID string) []tradeTalkEnvelope {
 	var out []tradeTalkEnvelope
 	for _, t := range e.otherTeams(ctx, leagueID) {
@@ -702,9 +637,7 @@ func (e *extension) readTradeTalks(ctx context.Context, leagueID string) []trade
 	return out
 }
 
-// fixturePartner reads the fixture's own partner_id (a real user_id from
-// the recorded league) rather than standing in the display name for it -
-// keeping fixture-mode talks discoverable the same way real ones are.
+// fixturePartner reads the fixture's own partner_id so fixture talks key on a user_id like real ones.
 func fixturePartner(fx json.RawMessage) (name, id string) {
 	var v struct {
 		Partner   string `json:"partner"`
@@ -714,9 +647,7 @@ func fixturePartner(fx json.RawMessage) (name, id string) {
 	return v.Partner, v.PartnerID
 }
 
-// jobsForStop is the closed vocabulary of artifact-backed jobs each stop
-// type reads/dispatches; talksAllowed marks the one stop type (a week) that
-// also has per-partner trade talks.
+// jobsForStop is the closed set of artifact-backed jobs per stop; only week stops allow trade talks.
 func jobsForStop(stop string) (jobs []string, talksAllowed bool, err error) {
 	switch stop {
 	case "draft":
@@ -739,12 +670,11 @@ type artifactsResponse struct {
 	SeasonNotes *artifactEnvelope           `json:"season_notes"`
 }
 
-// handleArtifacts serves GET /sleeper/api/artifacts?league_id=&stop= - every
-// job artifact for that stop, season notes, and (week stops only) trade
-// talks, each read via Host.ReadArtifact by its chat id.
+// handleArtifacts serves GET /sleeper/api/artifacts?league_id=&stop=: the stop's job artifacts, season notes,
+// and (week stops) trade talks.
 func (e *extension) handleArtifacts(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	leagueID := firstNonEmpty(r.URL.Query().Get("league_id"), e.cfg.DefaultLeague)
+	leagueID := cmp.Or(r.URL.Query().Get("league_id"), e.cfg.DefaultLeague)
 	stop := r.URL.Query().Get("stop")
 	if leagueID == "" || stop == "" {
 		e.writeErr(w, http.StatusBadRequest, "league_id and stop are required")
@@ -773,9 +703,7 @@ func (e *extension) handleArtifacts(w http.ResponseWriter, r *http.Request) {
 	e.writeJSON(w, out)
 }
 
-// jobWorkflows maps a job id to its bound workflow-catalog shape name (quack
-// config, PR #1501). A job with no agent yet is absent, so it keeps the
-// planner path (Workflow == "") until one exists.
+// jobWorkflows maps a job id to its workflow; a job with no agent yet is absent and not runnable.
 var jobWorkflows = map[string]string{
 	"lineup":       "sleeper-lineup",
 	"waivers":      "sleeper-waivers",
@@ -804,12 +732,7 @@ func jobIsValid(job string, jobs []string, talksAllowed bool) bool {
 	if job == "trade" {
 		return talksAllowed
 	}
-	for _, j := range jobs {
-		if j == job {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(jobs, job)
 }
 
 func localIDFor(req jobRequest) (localID, title string, err error) {
@@ -818,17 +741,14 @@ func localIDFor(req jobRequest) (localID, title string, err error) {
 		if partner == "" {
 			return "", "", fmt.Errorf("args.partner is required for the trade job")
 		}
-		// partner is the stable id the chat id keys on; partner_name (when the
-		// UI has it) is display-only, for a readable chat title.
-		name := firstNonEmpty(req.Args["partner_name"], partner)
+		// partner is the stable chat-id key; partner_name is display-only.
+		name := cmp.Or(req.Args["partner_name"], partner)
 		return fmt.Sprintf("%s:trade:%s", req.LeagueID, partner), fmt.Sprintf("Sleeper trade talk with %s", name), nil
 	}
 	return fmt.Sprintf("%s:%s:%s", req.LeagueID, req.Stop, req.Job), fmt.Sprintf("Sleeper %s, %s", req.Job, req.Stop), nil
 }
 
-// formatArgs appends every args key/value to the dispatched message (sorted
-// for a deterministic message) - e.g. the trade job's partner/give/get, so
-// the analyst sees the counterparty and offer, not just a chat id.
+// formatArgs renders non-empty args, sorted, so the analyst sees e.g. a trade's partner/give/get.
 func formatArgs(args map[string]string) string {
 	keys := make([]string, 0, len(args))
 	for k := range args {
@@ -847,8 +767,7 @@ func formatArgs(args map[string]string) string {
 	return " " + strings.Join(parts, "; ") + "."
 }
 
-// jobRunnable is the only kind of job handleJobs will dispatch - an unbound
-// job left the planner guessing what "digest" even means.
+// jobRunnable gates dispatch: an unbound job would leave the planner guessing.
 func jobRunnable(job string) bool {
 	_, ok := jobWorkflows[job]
 	return ok
@@ -858,27 +777,20 @@ type runnableJobsResponse struct {
 	Runnable []string `json:"runnable"`
 }
 
-// handleRunnableJobs serves GET /sleeper/api/jobs - the jobWorkflows keys,
-// so the UI can disable a Run action with no agent bound yet.
+// handleRunnableJobs serves GET /sleeper/api/jobs so the UI can disable Run for an unbound job.
 func (e *extension) handleRunnableJobs(w http.ResponseWriter, r *http.Request) {
-	jobs := make([]string, 0, len(jobWorkflows))
-	for job := range jobWorkflows {
-		jobs = append(jobs, job)
-	}
-	sort.Strings(jobs)
-	e.writeJSON(w, runnableJobsResponse{Runnable: jobs})
+	e.writeJSON(w, runnableJobsResponse{Runnable: slices.Sorted(maps.Keys(jobWorkflows))})
 }
 
-// handleJobs serves POST /sleeper/api/jobs {league_id, stop, job, args} -
-// dispatches (or appends a turn to) the chat convention handleArtifacts
-// reads back from, and returns its chat link.
+// handleJobs serves POST /sleeper/api/jobs {league_id, stop, job, args}: dispatches to (or appends a turn on)
+// the chat handleArtifacts reads, and returns its link.
 func (e *extension) handleJobs(w http.ResponseWriter, r *http.Request) {
 	var req jobRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		e.writeErr(w, http.StatusBadRequest, "bad JSON body")
 		return
 	}
-	req.LeagueID = firstNonEmpty(req.LeagueID, e.cfg.DefaultLeague)
+	req.LeagueID = cmp.Or(req.LeagueID, e.cfg.DefaultLeague)
 	if req.LeagueID == "" || req.Stop == "" || req.Job == "" {
 		e.writeErr(w, http.StatusBadRequest, "league_id, stop, and job are required")
 		return
@@ -892,9 +804,7 @@ func (e *extension) handleJobs(w http.ResponseWriter, r *http.Request) {
 		e.writeErr(w, http.StatusBadRequest, fmt.Sprintf("job %q is not valid for stop %q", req.Job, req.Stop))
 		return
 	}
-	// Drift guard: every jobIsValid accepts today has a jobWorkflows entry, so this
-	// 409 is unreachable over HTTP. It only fires if a job is added to jobsForStop
-	// but forgotten in jobWorkflows - catching that at request time, not in the planner.
+	// Drift guard: unreachable today; fires if jobsForStop gains a job jobWorkflows lacks.
 	if !jobRunnable(req.Job) {
 		e.writeErr(w, http.StatusConflict, fmt.Sprintf("no agent is bound for the %s job yet", req.Job))
 		return
@@ -911,7 +821,7 @@ func (e *extension) handleJobs(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	partnerName := ""
 	if req.Job == "trade" {
-		partnerName = firstNonEmpty(req.Args["partner_name"], req.Args["partner"])
+		partnerName = cmp.Or(req.Args["partner_name"], req.Args["partner"])
 	}
 	origin := e.jobOrigin(ctx, req.LeagueID, req.Stop, req.Job, originLabel(req.Stop, req.Job, partnerName))
 	message := fmt.Sprintf("Run the %s job for league %s, stop %s.%s", req.Job, req.LeagueID, req.Stop, formatArgs(req.Args))

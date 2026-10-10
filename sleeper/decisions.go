@@ -1,6 +1,7 @@
 package sleeper
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -260,9 +261,8 @@ func lineupRequests(join rowJoiner, keys decisionKeys, a lineupArtifact) []sdk.D
 	return out
 }
 
-// waiverRequests asks waiver_pickup for every recommended add (true) and
-// every add the scout checked and passed on (false), and waiver_priority per
-// ranked add once two or more are ranked; ranks never reach the state.
+// waiverRequests asks waiver_pickup per recommended (true) and passed-on (false) add, and waiver_priority
+// per ranked add once two are ranked; ranks never reach the state.
 func waiverRequests(join rowJoiner, keys decisionKeys, a waiversArtifact, dropRow func(string) *playerRow) []sdk.DecideRequest {
 	var out []sdk.DecideRequest
 	var ranked []waiverCandidate
@@ -379,9 +379,8 @@ func (e *extension) dropRow(ctx context.Context, join rowJoiner) func(string) *p
 
 type rowJoiner func(artPlayer) playerRow
 
-// joiner fills keys.Season (and keys.Week when 0: the artifact's week, else the live week) and returns
-// a row builder joining opponent and recent points best-effort. A chat's stop wins over the artifact's
-// week, which an agent run before Sleeper's week flips writes as the live week.
+// joiner sets keys.Season and keys.Week (chat stop, else artifact week, else live week, since a run before
+// Sleeper's week flip writes the old week) and returns a best-effort opponent/recent-points row builder.
 func (e *extension) joiner(ctx context.Context, keys *decisionKeys, week int) rowJoiner {
 	ctx, cancel := context.WithTimeout(ctx, decideTimeout)
 	defer cancel()
@@ -393,7 +392,7 @@ func (e *extension) joiner(ctx context.Context, keys *decisionKeys, week int) ro
 		return base
 	}
 	keys.Season = season
-	keys.Week = firstNonZero(keys.Week, week, state.Week)
+	keys.Week = cmp.Or(keys.Week, week, state.Week)
 	var sl slate
 	if state.SeasonType == "regular" && season == state.Season && keys.Week == state.Week {
 		sl, _ = e.weekSlate(ctx, season, keys.Week, e.newClock(""))
@@ -420,15 +419,6 @@ func (e *extension) joiner(ctx context.Context, keys *decisionKeys, week int) ro
 		}
 		return r
 	}
-}
-
-func firstNonZero(vs ...int) int {
-	for _, v := range vs {
-		if v != 0 {
-			return v
-		}
-	}
-	return 0
 }
 
 func (e *extension) ask(ctx context.Context, req sdk.DecideRequest) {

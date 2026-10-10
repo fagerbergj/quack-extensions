@@ -1,9 +1,5 @@
-// Renders every card with a hostile payload in place of every numeric-typed
-// artifact field (fixture values only - Host.ReadArtifact bytes are never
-// schema-validated on the serve path, so a string in a number field is a
-// real, reachable case) and asserts the payload never survives unescaped
-// into the HTML output. Node-only, no browser: render.js is pure string-in/
-// string-out, so this needs no DOM.
+// Renders every card with a hostile payload in each numeric-typed field (artifacts are never
+// schema-validated on serve) and asserts it never survives unescaped. Node-only: render.js is pure.
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import * as R from '../static/render.js'
@@ -34,9 +30,7 @@ const invalidEnvelope = text => ({ job: 'x', title: 'x', agent: 'x', found: true
 async function checks() {
   const out = []
 
-  // Invalid-artifact state: raw agent text lands in a <pre> via esc(), the
-  // only escaping path for state.text - covered once via renderLineup (the
-  // plain job-card shape) and once via renderTrade (the per-talk shape).
+  // Invalid-artifact raw text lands in a <pre> via esc(); covered via both the job-card and per-talk shapes.
   out.push(['renderLineup (invalid)', R.renderLineup(invalidEnvelope(PAYLOAD))])
   out.push(['renderTrade (invalid)', R.renderTrade(doneEnvelope(null), [{ partner: 'x', partner_id: '1', found: true, example: false, invalid: true, text: PAYLOAD }], 0, [{ id: '1', name: 'Team' }])])
 
@@ -54,10 +48,8 @@ async function checks() {
   const tradeFinder = poisonNumbers(await loadFixture('trade-finder'))
   out.push(['renderTrade (finder)', R.renderTrade(doneEnvelope(null), talks, 0, partners, doneEnvelope(tradeFinder))])
 
-  // mdText() parses markdown [text](url) out of agent-written prose fields
-  // (why/note/text/summary); each hostile link shape below must come out
-  // either as a real safe <a> (label escaped) or as fully escaped literal
-  // text - never a live javascript: href, a broken-out <script>, or a raw tag.
+  // mdText() parses [text](url) out of agent prose; each hostile link must become a safe <a> or escaped
+  // text, never a live javascript: href or raw tag.
   const mdCases = [
     '[click me](javascript:alert(1))',
     '[<img src=x onerror=alert(1)>](https://example.com)',

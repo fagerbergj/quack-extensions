@@ -291,7 +291,7 @@ func withInjury(dump map[string]sleepergen.Player, id, status string) map[string
 	return out
 }
 
-// TestBestByProjectionSlots pins the bug report's shape: a benched WR
+// TestBestByProjectionSlots: a benched WR
 // (Williams) projected higher than the started WR2 (Vele) must win WR2, not just FLEX.
 func TestBestByProjectionSlots(t *testing.T) {
 	dump := playerDumpAt("QB1", "QB", "WRSTART1", "WR", "VELE", "WR", "WILLIAMS", "WR", "FLEXRB", "RB")

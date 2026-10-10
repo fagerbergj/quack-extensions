@@ -1,5 +1,4 @@
-// The daily snapshot ticker (sdk.Starter) and the on-disk format
-// sleeper_trends diffs; fetches only, per sleeper.go's Start.
+// The daily snapshot ticker and the on-disk format sleeper_trends diffs.
 package sleeper
 
 import (
@@ -14,7 +13,6 @@ import (
 	"github.com/fagerbergj/quack-extensions/sleeper/sleepergen"
 )
 
-// snapshotTickInterval: once a day, per the extension's config contract.
 const snapshotTickInterval = 24 * time.Hour
 
 // playerSnapshot is the sliver of a player's state trends diffs day to day.
@@ -40,8 +38,7 @@ func snapshotPath(dataDir, leagueID, date string) string {
 	return filepath.Join(snapshotDir(dataDir, leagueID), date+".json")
 }
 
-// runSnapshotTicker fetches immediately, then every snapshotTickInterval.
-// Errors are logged, never fatal - a missed day just leaves a gap in trends.
+// runSnapshotTicker fetches now, then daily; errors are logged, since a missed day only gaps trends.
 func (e *extension) runSnapshotTicker(ctx context.Context) {
 	e.snapshotOnce(ctx)
 	ticker := time.NewTicker(snapshotTickInterval)
@@ -56,8 +53,7 @@ func (e *extension) runSnapshotTicker(ctx context.Context) {
 	}
 }
 
-// snapshotOnce writes today's snapshot for the configured default league -
-// "configured leagues" in the issue is one league until config grows a list.
+// snapshotOnce writes today's snapshot for the default league.
 func (e *extension) snapshotOnce(ctx context.Context) {
 	leagueID := e.cfg.DefaultLeague
 	if leagueID == "" {
@@ -129,8 +125,7 @@ func playerSnapshots(rosteredIDs map[string]bool, dump map[string]sleepergen.Pla
 	return out
 }
 
-// writeSnapshot writes via a temp file + rename so a reader (or a crash
-// mid-write) never sees a partial file at the final path.
+// writeSnapshot writes via temp file + rename so a reader or crash never sees a partial file.
 func writeSnapshot(dataDir, leagueID string, snap snapshot) error {
 	dir := snapshotDir(dataDir, leagueID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -171,8 +166,7 @@ func readSnapshot(dataDir, leagueID, date string) (snapshot, error) {
 	return snap, nil
 }
 
-// firstReadableSnapshot tries dates in order and returns the first one that
-// reads cleanly - a corrupt or half-written file is skipped, not fatal.
+// firstReadableSnapshot returns the first date that reads cleanly; a corrupt file is skipped.
 func firstReadableSnapshot(dataDir, leagueID string, dates []string) (snapshot, bool) {
 	for _, d := range dates {
 		if snap, err := readSnapshot(dataDir, leagueID, d); err == nil {
@@ -180,16 +174,6 @@ func firstReadableSnapshot(dataDir, leagueID string, dates []string) (snapshot, 
 		}
 	}
 	return snapshot{}, false
-}
-
-// reversed returns a new slice with dates in the opposite order, leaving
-// the input untouched.
-func reversed(dates []string) []string {
-	out := make([]string, len(dates))
-	for i, d := range dates {
-		out[len(dates)-1-i] = d
-	}
-	return out
 }
 
 // snapshotDates lists a league's stored snapshot dates, oldest first.

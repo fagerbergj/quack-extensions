@@ -8,9 +8,8 @@ export function page(html, maxWidth = '48rem') {
   return el
 }
 
-// The MobileViewport390 story variant: a fixed-width frame so the layout
-// previews at phone width even when Storybook's own canvas is wider.
-// render-check additionally resizes the real viewport for every story.
+// A fixed-width frame so a story previews at phone width even in a wider canvas; render-check also
+// resizes the real viewport.
 export function mobileFrame(html) {
   const outer = document.createElement('div')
   outer.className = 'qk-page'

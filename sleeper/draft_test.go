@@ -86,8 +86,7 @@ func TestOnClockNilWhenNotDrafting(t *testing.T) {
 	}
 }
 
-// TestOnClockFallsBackToRosterSizeWhenRoundsUnset covers the fix: a
-// missing settings.rounds must not silently make picksMade >= teams*0 always true.
+// TestOnClockFallsBackToRosterSizeWhenRoundsUnset: unset settings.rounds must not make every draft look done.
 func TestOnClockFallsBackToRosterSizeWhenRoundsUnset(t *testing.T) {
 	names := map[int]string{1: "a", 2: "b"}
 	slotToRoster := map[string]int{"1": 1, "2": 2}
@@ -105,9 +104,7 @@ func TestOnClockFallsBackToRosterSizeWhenRoundsUnset(t *testing.T) {
 	}
 }
 
-// TestPickDraftPrefersSeasonMatch covers a league carrying two drafts
-// (e.g. after a re-draft): the one matching the league's season wins,
-// regardless of start_time.
+// TestPickDraftPrefersSeasonMatch: with two drafts, the season match wins regardless of start_time.
 func TestPickDraftPrefersSeasonMatch(t *testing.T) {
 	old := int(1000)
 	newer := int(2000)
@@ -136,9 +133,8 @@ func TestPickDraftFallsBackToLatestStartTime(t *testing.T) {
 	}
 }
 
-// TestDraftRoundsFallsBackToStartingSlotCount drives e.draftRounds against
-// the real fixture: no settings.rounds falls back to the starting-slot
-// count (roster_positions minus BN/IR/TAXI), not the full 14-slot roster.
+// TestDraftRoundsFallsBackToStartingSlotCount: no settings.rounds falls back to the starter-slot count,
+// not the full 14-slot roster.
 func TestDraftRoundsFallsBackToStartingSlotCount(t *testing.T) {
 	e := testExtension(t)
 	league, err := e.client.League(context.Background(), testLeague)
@@ -159,8 +155,7 @@ func TestDraftRoundsFallsBackToStartingSlotCount(t *testing.T) {
 	}
 }
 
-// TestADPDeltaAndVerdict covers the fix: the tool, not the agent, computes
-// pick_no - adp and the value/reach verdict, using real prod-grader shapes.
+// TestADPDeltaAndVerdict checks pick_no - adp and the value/reach verdict on real prod-grader shapes.
 func TestADPDeltaAndVerdict(t *testing.T) {
 	cases := []struct {
 		name        string

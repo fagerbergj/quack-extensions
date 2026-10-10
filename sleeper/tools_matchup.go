@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 
 	adkagent "google.golang.org/adk/v2/agent"
@@ -13,8 +14,7 @@ import (
 	"github.com/fagerbergj/quack-extensions/sleeper/sleepergen"
 )
 
-// maxFreeAgentHits caps sleeper_matchup's free_agent_hits list - a retro
-// only needs the headline misses, not every waiver-wire what-if.
+// maxFreeAgentHits caps free_agent_hits: a retro needs the headline misses, not every what-if.
 const maxFreeAgentHits = 5
 
 type matchupArgs struct {
@@ -34,8 +34,7 @@ type lineupSlot struct {
 	gameInfo
 }
 
-// benchPlayer is a rostered non-starter from a completed week's matchup -
-// only known once the week is over, so lineupSlot's shape doesn't fit.
+// benchPlayer is a rostered non-starter from a completed week's matchup.
 type benchPlayer struct {
 	Name       string  `json:"name"`
 	Pos        string  `json:"pos"`
@@ -44,15 +43,14 @@ type benchPlayer struct {
 	gameInfo
 }
 
-// beatenStarter names the started player a free-agent hit outscored.
+// beatenStarter names the started player a free-agent hit outscored or a swap replaces.
 type beatenStarter struct {
 	Slot   string  `json:"slot"`
 	Name   string  `json:"name"`
 	Points float32 `json:"points"`
 }
 
-// freeAgentHit is an unrostered player who outscored the weakest starter
-// they were legally eligible to replace that week.
+// freeAgentHit is an unrostered player who outscored the weakest starter they could legally replace.
 type freeAgentHit struct {
 	Name   string        `json:"name"`
 	Pos    string        `json:"pos"`
@@ -61,8 +59,7 @@ type freeAgentHit struct {
 	Over   beatenStarter `json:"over"`
 }
 
-// bestLineupSlot is one slot of a past week's best-by-actual-points
-// lineup, labeled to match the lineup artifact's numbered slots.
+// bestLineupSlot is one slot of a past week's best-by-actual-points lineup, labeled like the lineup artifact.
 type bestLineupSlot struct {
 	Slot   string  `json:"slot"`
 	Name   string  `json:"name"`
@@ -70,8 +67,7 @@ type bestLineupSlot struct {
 	Points float32 `json:"points"`
 }
 
-// bestByProjectionSlot is one slot of a current/future week's
-// best-by-projection lineup - the same shape, but no result exists yet.
+// bestByProjectionSlot is one slot of a current/future week's best-by-projection lineup.
 type bestByProjectionSlot struct {
 	Slot       string  `json:"slot"`
 	Name       string  `json:"name"`
@@ -86,19 +82,12 @@ type swapPlayer struct {
 	Points float32 `json:"points"`
 }
 
-// swapOut is the started player a swap's in-player is paired against.
-type swapOut struct {
-	Slot   string  `json:"slot"`
-	Name   string  `json:"name"`
-	Points float32 `json:"points"`
-}
-
-// swap is one real lineup change: a best_lineup player paired with the
-// started player whose slot they could legally fill - not a same-slot-label comparison, which false-positives on a reordered RB1/RB2.
+// swap pairs a best_lineup player with a started player whose slot they could legally fill; matching by
+// slot label instead would false-positive on a reordered RB1/RB2.
 type swap struct {
-	In    swapPlayer `json:"in"`
-	Out   swapOut    `json:"out"`
-	Swing float32    `json:"swing"`
+	In    swapPlayer    `json:"in"`
+	Out   beatenStarter `json:"out"`
+	Swing float32       `json:"swing"`
 }
 
 type side struct {
@@ -193,8 +182,6 @@ func (e *extension) getMatchup(ctx context.Context, a matchupArgs) (matchupResul
 	return result, nil
 }
 
-// weekIsComplete reports whether a week's scoring is final: strictly
-// before the live current week, or the season itself has finished.
 // addWeekFields: a finished week gets the retro fields, a live week the projection baseline.
 func (e *extension) addWeekFields(ctx context.Context, me *side, league *sleepergen.League, state *sleepergen.NflState, season string, week int, mine sleepergen.Matchup, matchups []sleepergen.Matchup, dump map[string]sleepergen.Player, proj map[string]sleepergen.StatMap, sl slate) error {
 	if !weekIsComplete(week, league, state) {
@@ -209,12 +196,12 @@ func (e *extension) addWeekFields(ctx context.Context, me *side, league *sleeper
 	return nil
 }
 
+// weekIsComplete: scoring is final before the live week, or once the season is complete.
 func weekIsComplete(week int, league *sleepergen.League, state *sleepergen.NflState) bool {
 	return league.Status == "complete" || week < state.Week
 }
 
-// addRetroFields fills in the bench/best-lineup/free-agent data a retro
-// needs, which only exists once a week's scoring is final.
+// addRetroFields fills the bench/best-lineup/free-agent data that exists only once scoring is final.
 func addRetroFields(me *side, league *sleepergen.League, mine sleepergen.Matchup, matchups []sleepergen.Matchup, dump map[string]sleepergen.Player, proj map[string]sleepergen.StatMap, stats map[string]sleepergen.StatMap, sl slate) {
 	me.Bench = benchPlayers(mine, dump, proj, sl)
 	assignment := bestLineup(league.RosterPositions, mine.Players, mine.PlayersPoints, dump)
@@ -226,8 +213,8 @@ func addRetroFields(me *side, league *sleepergen.League, mine sleepergen.Matchup
 	me.FreeAgentHits = freeAgentHits(me.Starters, matchups, dump, stats)
 }
 
-// buildSwaps pairs each best_lineup player who didn't start with the
-// weakest eligible started player, highest in-points paired first; empty when both lineups are the same set of players.
+// buildSwaps pairs each best_lineup player who didn't start with the weakest eligible starter,
+// highest in-points first; empty when both lineups hold the same players.
 func buildSwaps(starters []lineupSlot, assignment lineupAssignment, points map[string]float32, dump map[string]sleepergen.Player) []swap {
 	startedSet := make(map[string]bool, len(starters))
 	for _, s := range starters {
@@ -242,22 +229,20 @@ func buildSwaps(starters []lineupSlot, assignment lineupAssignment, points map[s
 	return pairSwaps(inPlayers(assignment, startedSet, points, dump), outPlayers(starters, bestSet))
 }
 
-// inPlayers is every best_lineup player absent from the started lineup,
-// highest points first (the pairing order buildSwaps promises).
+// inPlayers is every best_lineup player who didn't start, highest points first.
 func inPlayers(assignment lineupAssignment, startedSet map[string]bool, points map[string]float32, dump map[string]sleepergen.Player) []swapPlayer {
 	var out []swapPlayer
 	for _, pid := range assignment.bySlot {
 		if pid == "" || startedSet[pid] {
 			continue
 		}
-		out = append(out, swapPlayer{Name: playerName(dump, pid), Pos: positionOf(dump, pid), Points: points[pid]})
+		out = append(out, swapPlayer{Name: playerName(dump, pid), Pos: playerPosition(dump, pid), Points: points[pid]})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Points > out[j].Points })
 	return out
 }
 
-// outPlayers is every started player absent from best_lineup - the slots
-// an in-player might legally have filled instead.
+// outPlayers is every started player absent from best_lineup.
 func outPlayers(starters []lineupSlot, bestSet map[string]bool) []lineupSlot {
 	var out []lineupSlot
 	for _, s := range starters {
@@ -268,8 +253,7 @@ func outPlayers(starters []lineupSlot, bestSet map[string]bool) []lineupSlot {
 	return out
 }
 
-// pairSwaps greedily pairs each in-player (already highest-points-first)
-// with its lowest-scoring still-unpaired eligible out-player.
+// pairSwaps greedily pairs each in-player with its lowest-scoring unpaired eligible out-player.
 func pairSwaps(ins []swapPlayer, outs []lineupSlot) []swap {
 	used := make([]bool, len(outs))
 	var swaps []swap
@@ -280,13 +264,12 @@ func pairSwaps(ins []swapPlayer, outs []lineupSlot) []swap {
 		}
 		used[idx] = true
 		out := outs[idx]
-		swaps = append(swaps, swap{In: in, Out: swapOut{Slot: out.Slot, Name: out.Name, Points: out.Points}, Swing: round2(in.Points - out.Points)})
+		swaps = append(swaps, swap{In: in, Out: beatenStarter{Slot: out.Slot, Name: out.Name, Points: out.Points}, Swing: round2(in.Points - out.Points)})
 	}
 	return swaps
 }
 
-// weakestEligibleOut finds the lowest-scoring unused out slot pos could
-// legally fill, or -1 when none is left.
+// weakestEligibleOut is the lowest-scoring unused out slot pos could legally fill, or -1.
 func weakestEligibleOut(pos string, outs []lineupSlot, used []bool) int {
 	best := -1
 	for i, o := range outs {
@@ -300,8 +283,7 @@ func weakestEligibleOut(pos string, outs []lineupSlot, used []bool) int {
 	return best
 }
 
-// bestLineupSlots labels a bestLineup assignment with the lineup
-// artifact's numbered slots, dropping any slot the roster couldn't fill.
+// bestLineupSlots labels an assignment with numbered slots, dropping slots the roster couldn't fill.
 func bestLineupSlots(rosterPositions []string, a lineupAssignment, points map[string]float32, dump map[string]sleepergen.Player) []bestLineupSlot {
 	labels := numberedSlots(rosterPositions)
 	out := make([]bestLineupSlot, 0, len(a.bySlot))
@@ -309,13 +291,12 @@ func bestLineupSlots(rosterPositions []string, a lineupAssignment, points map[st
 		if pid == "" {
 			continue
 		}
-		out = append(out, bestLineupSlot{Slot: labels[i], Name: playerName(dump, pid), Pos: positionOf(dump, pid), Points: points[pid]})
+		out = append(out, bestLineupSlot{Slot: labels[i], Name: playerName(dump, pid), Pos: playerPosition(dump, pid), Points: points[pid]})
 	}
 	return out
 }
 
-// bestByProjectionSlots is the current/future week's projected best
-// lineup, weighted by projections, with Out/IR/Doubtful players excluded.
+// bestByProjectionSlots is the projected best lineup with Out/IR/Doubtful players excluded.
 func bestByProjectionSlots(rosterPositions []string, playerIDs []string, proj map[string]sleepergen.StatMap, dump map[string]sleepergen.Player) []bestByProjectionSlot {
 	eligible := excludeInjured(playerIDs, dump)
 	points := projectionPoints(eligible, proj)
@@ -326,22 +307,13 @@ func bestByProjectionSlots(rosterPositions []string, playerIDs []string, proj ma
 		if pid == "" {
 			continue
 		}
-		out = append(out, bestByProjectionSlot{Slot: labels[i], Name: playerName(dump, pid), Pos: positionOf(dump, pid), Projection: points[pid]})
+		out = append(out, bestByProjectionSlot{Slot: labels[i], Name: playerName(dump, pid), Pos: playerPosition(dump, pid), Projection: points[pid]})
 	}
 	return out
 }
 
-// excludeInjured drops Out/IR/Doubtful players from a projection-based
-// lineup's candidates - a projection can't be started if it can't play.
 func excludeInjured(playerIDs []string, dump map[string]sleepergen.Player) []string {
-	out := make([]string, 0, len(playerIDs))
-	for _, id := range playerIDs {
-		if excludedInjuryStatus(dump[id].InjuryStatus) {
-			continue
-		}
-		out = append(out, id)
-	}
-	return out
+	return slices.DeleteFunc(slices.Clone(playerIDs), func(id string) bool { return excludedInjuryStatus(dump[id].InjuryStatus) })
 }
 
 func excludedInjuryStatus(status *string) bool {
@@ -363,22 +335,12 @@ func projectionPoints(playerIDs []string, proj map[string]sleepergen.StatMap) ma
 	return out
 }
 
-// positionOf resolves a player_id's position from the dump, "" if unknown.
-func positionOf(dump map[string]sleepergen.Player, pid string) string {
-	if p, ok := dump[pid]; ok && p.Position != nil {
-		return *p.Position
-	}
-	return ""
-}
-
-// round2 rounds to 2dp - the precision a retro's dollar-and-cents scoring
-// figures render at, avoiding float32 sum noise like 132.05999.
+// round2 rounds to the 2dp a retro renders, hiding float32 sum noise like 132.05999.
 func round2(v float32) float32 {
 	return float32(math.Round(float64(v)*100) / 100)
 }
 
-// benchPlayers lists every rostered non-starter from a matchup: m.Players
-// minus m.Starters, skipping the "0" empty-slot placeholder id.
+// benchPlayers is m.Players minus m.Starters, skipping the "0" empty-slot placeholder.
 func benchPlayers(m sleepergen.Matchup, dump map[string]sleepergen.Player, proj map[string]sleepergen.StatMap, sl slate) []benchPlayer {
 	started := make(map[string]bool, len(m.Starters))
 	for _, pid := range m.Starters {
@@ -390,19 +352,17 @@ func benchPlayers(m sleepergen.Matchup, dump map[string]sleepergen.Player, proj 
 			continue
 		}
 		out = append(out, benchPlayer{
-			Name: playerName(dump, pid), Pos: positionOf(dump, pid),
+			Name: playerName(dump, pid), Pos: playerPosition(dump, pid),
 			Points: m.PlayersPoints[pid], Projection: proj[pid]["pts_ppr"], gameInfo: sl.gameFor(dump, pid),
 		})
 	}
 	return out
 }
 
-// fantasyPosition excludes non-fantasy positions (OL, LS...) Sleeper's
-// stats dump also carries, which never fill a roster slot.
+// fantasyPosition excludes positions (OL, LS...) the stats dump carries but no roster slot takes.
 var fantasyPosition = map[string]bool{"QB": true, "RB": true, "WR": true, "TE": true, "K": true, "DEF": true}
 
-// freeAgentHits finds unrostered players who outscored the weakest starter
-// they were legally eligible to replace that week, worst-miss first.
+// freeAgentHits lists free-agent hits, worst miss first.
 func freeAgentHits(starters []lineupSlot, matchups []sleepergen.Matchup, dump map[string]sleepergen.Player, stats map[string]sleepergen.StatMap) []freeAgentHit {
 	rostered := rosteredPlayers(matchups)
 	var hits []freeAgentHit
@@ -431,8 +391,7 @@ func freeAgentHits(starters []lineupSlot, matchups []sleepergen.Matchup, dump ma
 	return hits
 }
 
-// rosteredPlayers unions every roster's Players for the week - a free
-// agent must be absent from all of them, not just the user's own roster.
+// rosteredPlayers unions every roster's Players: a free agent is absent from all of them.
 func rosteredPlayers(matchups []sleepergen.Matchup) map[string]bool {
 	out := map[string]bool{}
 	for _, m := range matchups {
@@ -445,8 +404,7 @@ func rosteredPlayers(matchups []sleepergen.Matchup) map[string]bool {
 	return out
 }
 
-// weakestEligibleStarter is the lowest-scoring starter in a slot a player
-// at pos could legally have filled - the one that hit actually beat.
+// weakestEligibleStarter is the lowest-scoring starter in a slot pos could legally have filled.
 func weakestEligibleStarter(starters []lineupSlot, pos string) (lineupSlot, bool) {
 	var weakest lineupSlot
 	found := false
@@ -461,8 +419,7 @@ func weakestEligibleStarter(starters []lineupSlot, pos string) (lineupSlot, bool
 	return weakest, found
 }
 
-// sortFreeAgentHits orders by swing descending; a full-value tiebreak
-// keeps the result deterministic despite stats map's random iteration.
+// sortFreeAgentHits orders by swing descending; the full tiebreak keeps map-iteration order out of the result.
 func sortFreeAgentHits(hits []freeAgentHit) {
 	sort.SliceStable(hits, func(i, j int) bool {
 		si, sj := hits[i].Points-hits[i].Over.Points, hits[j].Points-hits[j].Over.Points

@@ -164,8 +164,7 @@ func TestGetTrendsOverTwoSyntheticSnapshots(t *testing.T) {
 	}
 }
 
-// TestGetTrendsSkipsUnreadableSnapshotWithNote covers the fix: a corrupt
-// snapshot file must not fail the whole tool call.
+// TestGetTrendsSkipsUnreadableSnapshotWithNote: a corrupt snapshot must not fail the tool call.
 func TestGetTrendsSkipsUnreadableSnapshotWithNote(t *testing.T) {
 	dataDir := t.TempDir()
 	e := &extension{client: newTestClient(t), host: sdk.Host{DataDir: dataDir}, cfg: config{DefaultLeague: testLeague}}

@@ -10,8 +10,8 @@ import (
 	"github.com/fagerbergj/quack-extensions/sleeper/sleepergen"
 )
 
-// TestGetHistoryKnownValues pins derived numbers independently checked
-// against the raw fixtures: Barkley drafted RB3 finished RB14, 88.5% 2025 efficiency, 1 close loss (<10pt margin).
+// TestGetHistoryKnownValues pins numbers checked by hand against the fixtures: Barkley drafted RB3
+// finished RB14, 88.5% 2025 efficiency, 1 close loss.
 func TestGetHistoryKnownValues(t *testing.T) {
 	e := testExtension(t)
 	got, err := e.getHistory(context.Background(), historyArgs{})
@@ -104,11 +104,11 @@ func TestBestLineupPointsFlexPicksHighestRemaining(t *testing.T) {
 	}
 	ids := []string{"rb1", "rb2", "rb3", "wr1", "wr2", "wr3", "te1"}
 	positions := []string{"RB", "RB", "WR", "WR", "TE", "FLEX", "BN"}
-	got := bestLineupPoints(positions, ids, points, dump)
+	got := bestLineup(positions, ids, points, dump).total
 	// RB1+RB2 (35) + WR1+WR2 (28) + TE1 (5) + FLEX best remaining (RB3=12 > WR3=8) = 80
 	want := float32(80)
 	if got != want {
-		t.Errorf("bestLineupPoints = %v, want %v", got, want)
+		t.Errorf("bestLineup total = %v, want %v", got, want)
 	}
 }
 
@@ -119,10 +119,10 @@ func TestBestLineupPointsFlexReachesPositionWithNoStrictSlot(t *testing.T) {
 	points := map[string]float32{"qb1": 20, "rb1": 15, "wr1": 18, "te1": 40}
 	ids := []string{"qb1", "rb1", "wr1", "te1"}
 	positions := []string{"QB", "RB", "WR", "FLEX", "BN"}
-	got := bestLineupPoints(positions, ids, points, dump)
+	got := bestLineup(positions, ids, points, dump).total
 	want := float32(93) // 20 + 15 + 18 + FLEX picks te1 (40), not 0
 	if got != want {
-		t.Errorf("bestLineupPoints = %v, want %v", got, want)
+		t.Errorf("bestLineup total = %v, want %v", got, want)
 	}
 }
 
@@ -133,31 +133,29 @@ func TestBestLineupPointsAllFlexLineup(t *testing.T) {
 	points := map[string]float32{"rb1": 12, "wr1": 9}
 	ids := []string{"rb1", "wr1"}
 	positions := []string{"FLEX", "FLEX", "BN"}
-	got := bestLineupPoints(positions, ids, points, dump)
+	got := bestLineup(positions, ids, points, dump).total
 	want := float32(21) // rb1 + wr1, not 0
 	if got != want {
-		t.Errorf("bestLineupPoints = %v, want %v", got, want)
+		t.Errorf("bestLineup total = %v, want %v", got, want)
 	}
 }
 
-// TestBestLineupPointsCrossingFlexKindsIsExact is quack's counterexample:
-// narrowest-first greedy scores 94 (RB2 loses its only slot to a WR that
-// REC_FLEX could have taken instead); the exact assignment scores 96.
+// TestBestLineupPointsCrossingFlexKindsIsExact: narrowest-first greedy scores 94 (RB2 loses its slot to a
+// WR REC_FLEX could take); the exact assignment scores 96.
 func TestBestLineupPointsCrossingFlexKindsIsExact(t *testing.T) {
 	dump := playerDumpAt("qb1", "QB", "wr1", "WR", "wr2", "WR", "te1", "TE", "rb1", "RB")
 	points := map[string]float32{"qb1": 33, "wr1": 20, "wr2": 5, "te1": 36, "rb1": 2}
 	ids := []string{"qb1", "wr1", "wr2", "te1", "rb1"}
 	positions := []string{"TE", "WRRB_FLEX", "REC_FLEX", "REC_FLEX", "SUPER_FLEX"}
-	got := bestLineupPoints(positions, ids, points, dump)
+	got := bestLineup(positions, ids, points, dump).total
 	want := float32(96)
 	if got != want {
-		t.Errorf("bestLineupPoints = %v, want %v (every player has a home: TE->TE, QB->SUPER_FLEX, RB->WRRB_FLEX, both WRs->REC_FLEX)", got, want)
+		t.Errorf("bestLineup total = %v, want %v (every player has a home: TE->TE, QB->SUPER_FLEX, RB->WRRB_FLEX, both WRs->REC_FLEX)", got, want)
 	}
 }
 
-// TestBestLineupPointsMatchesBruteForce enumerates small random rosters
-// (up to 5 flex-eligible players, up to 3 flex slots across kinds) and
-// checks the DP solver against brute-force enumeration of every assignment.
+// TestBestLineupPointsMatchesBruteForce checks the DP solver against brute force on small random rosters
+// (up to 5 flex-eligible players, 3 flex slots).
 func TestBestLineupPointsMatchesBruteForce(t *testing.T) {
 	rng := rand.New(rand.NewSource(42))
 	positions := []string{"QB", "RB", "WR", "TE"}
@@ -180,10 +178,10 @@ func TestBestLineupPointsMatchesBruteForce(t *testing.T) {
 		for i := 0; i < slotCount; i++ {
 			slotPositions = append(slotPositions, kinds[rng.Intn(len(kinds))])
 		}
-		got := bestLineupPoints(slotPositions, ids, points, dump)
+		got := bestLineup(slotPositions, ids, points, dump).total
 		want := bruteForceFlexAssignment(slotPositions, ids, dumpArgs, points)
 		if got != want {
-			t.Fatalf("trial %d: slots=%v ids=%v points=%v: bestLineupPoints = %v, want %v (brute force)", trial, slotPositions, ids, points, got, want)
+			t.Fatalf("trial %d: slots=%v ids=%v points=%v: bestLineup total = %v, want %v (brute force)", trial, slotPositions, ids, points, got, want)
 		}
 		if msg := assignmentProblem(slotPositions, bestLineup(slotPositions, ids, points, dump), points, dump); msg != "" {
 			t.Fatalf("trial %d: slots=%v ids=%v points=%v: %s", trial, slotPositions, ids, points, msg)

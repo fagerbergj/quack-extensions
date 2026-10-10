@@ -1,7 +1,5 @@
-// Validates every sleeper/ui/fixtures/*.json against its matching
-// sleeper/ui/schemas/*.json with ajv (draft 2020-12) - the schemas exist to
-// keep render.js's field access honest, so they must actually be checked
-// somewhere instead of only documenting an assumed shape.
+// Validates every ui/fixtures/*.json against its ui/schemas/*.json with ajv (draft 2020-12), so the
+// schemas render.js relies on are actually checked.
 import { readFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
 // ajv's default export only understands draft-07/2019-09; the schemas here
@@ -13,9 +11,8 @@ const SCHEMAS_DIR = path.join(ROOT, 'schemas')
 const FIXTURES_DIR = path.join(ROOT, 'fixtures')
 
 async function main() {
-  // strict:false first (ajv's sub-flags default true otherwise), then only
-  // strictSchema back on - catches a misspelled keyword/$ref without
-  // rejecting the nullable unions (type: ["integer","null"]) these schemas rely on.
+  // strict:false then strictSchema back on: catches misspelled keywords/$refs without rejecting the
+  // nullable unions (type: ["integer","null"]) these schemas use.
   const ajv = new Ajv2020({ strict: false, strictSchema: true })
   const schemaNames = (await readdir(SCHEMAS_DIR)).filter(f => f.endsWith('.json'))
   const fixtureNames = (await readdir(FIXTURES_DIR)).filter(f => f.endsWith('.json'))

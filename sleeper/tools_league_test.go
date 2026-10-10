@@ -153,8 +153,7 @@ func fmtBoolPtr(b *bool) string {
 	return fmt.Sprint(*b)
 }
 
-// TestResolveWeekRequiresExplicitWeekForPinnedSeason covers the fix: a
-// config season that isn't the live NFL season has no borrowable "current week".
+// TestResolveWeekRequiresExplicitWeekForPinnedSeason: a non-live config season has no current week to borrow.
 func TestResolveWeekRequiresExplicitWeekForPinnedSeason(t *testing.T) {
 	state := &sleepergen.NflState{Season: "2026", Week: 2}
 	if _, err := resolveWeek(0, "2025", state); err == nil {

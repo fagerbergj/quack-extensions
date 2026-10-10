@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 
 	adkagent "google.golang.org/adk/v2/agent"
@@ -18,8 +19,7 @@ type transactionsArgs struct {
 	WeeksBack int    `json:"weeks_back,omitempty"`
 }
 
-// moveEntry is one player added or dropped in a transaction, with the
-// roster it moved to/from so a multi-team trade stays attributable.
+// moveEntry is one player added or dropped, with its roster so a multi-team trade stays attributable.
 type moveEntry struct {
 	PlayerID string `json:"player_id"`
 	Name     string `json:"name"`
@@ -268,13 +268,5 @@ func matchesPosition(p sleepergen.Player, position string) bool {
 	if p.Position != nil && *p.Position == position {
 		return true
 	}
-	if p.FantasyPositions == nil {
-		return false
-	}
-	for _, fp := range *p.FantasyPositions {
-		if fp == position {
-			return true
-		}
-	}
-	return false
+	return p.FantasyPositions != nil && slices.Contains(*p.FantasyPositions, position)
 }

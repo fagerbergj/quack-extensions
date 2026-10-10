@@ -10,9 +10,7 @@ export const Default = { render: () => page(renderWaivers(envelope)) }
 export const Dark = { ...Default, globals: { theme: 'dark' } }
 export const MobileViewport390 = { render: () => mobileFrame(renderWaivers(envelope)) }
 
-// Backward compatibility: an artifact written before waiver_type/
-// my_priority/teams/also_checked existed - no sub line, no "how claims run"
-// fold, no "also checked" fold, but the numbered claim rows still render.
+// An artifact without waiver_type/my_priority/teams/also_checked still renders its numbered claim rows.
 const { waiver_type, my_priority, teams, also_checked, ...legacyData } = waivers
 const legacyEnvelope = { ...envelope, data: legacyData }
 export const Legacy = { render: () => page(renderWaivers(legacyEnvelope)) }

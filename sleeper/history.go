@@ -1,5 +1,4 @@
-// sleeper_history: per season, a draft report card, lineup efficiency,
-// weekly hindsight, and the bracket outcome, computed from recorded data.
+// sleeper_history: per season, a draft report card, lineup efficiency, weekly hindsight, and the champion.
 package sleeper
 
 import (
@@ -17,12 +16,10 @@ import (
 // closeLossMargin: a loss decided by fewer than this many points is "close".
 const closeLossMargin = 10.0
 
-// reachStealThreshold: a positional finish 5+ spots off the drafted-as
-// rank is worth calling a reach or a steal; smaller gaps are just variance.
+// reachStealThreshold: a positional finish this far off the drafted-as rank is a reach or steal, not variance.
 const reachStealThreshold = 5
 
-// maxHistoryWeeks bounds the per-week hindsight loop; a real season never
-// runs past week 18, and a missing fixture/week just gets skipped.
+// maxHistoryWeeks bounds the hindsight loop; no season runs past week 18.
 const maxHistoryWeeks = 18
 
 type historyArgs struct {
@@ -93,10 +90,7 @@ func (e *extension) getHistory(ctx context.Context, a historyArgs) (historyResul
 	if err != nil {
 		return historyResult{}, err
 	}
-	chain, err := e.client.Chain(ctx, leagueID, a.SeasonsBack, true)
-	if err != nil {
-		return historyResult{}, fmt.Errorf("sleeper_history: %w", err)
-	}
+	chain := e.client.Chain(ctx, leagueID, a.SeasonsBack)
 	if len(chain) == 0 {
 		return historyResult{}, fmt.Errorf("sleeper_history: no league found for %s", leagueID)
 	}
@@ -117,8 +111,7 @@ func (e *extension) seasonHistoryFor(ctx context.Context, league sleepergen.Leag
 	if err != nil {
 		return seasonHistory{}, fmt.Errorf("rosters: %w", err)
 	}
-	// rosterIDForUser resolves by owner_id without user names, so a missing
-	// fixture here degrades to "roster N" display names, not a hard failure.
+	// rosterIDForUser can match owner_id without users, so a failure here only degrades names to "roster N".
 	users, _ := e.client.LeagueUsers(ctx, league.LeagueId)
 	myRosterID, ok := rosterIDForUser(rosters, users, uid)
 	if !ok {
@@ -149,11 +142,11 @@ func (e *extension) seasonHistoryFor(ctx context.Context, league sleepergen.Leag
 }
 
 func lineupEfficiency(settings map[string]int) float64 {
-	ppts := pointsField(settings, "ppts", "ppts_decimal")
+	ppts := pointsField(settings, "ppts")
 	if ppts == 0 {
 		return 0
 	}
-	fpts := pointsField(settings, "fpts", "fpts_decimal")
+	fpts := pointsField(settings, "fpts")
 	return roundTo1(fpts / ppts * 100)
 }
 
@@ -175,12 +168,10 @@ func (e *extension) champion(ctx context.Context, leagueID string, rosters []sle
 	return "", nil
 }
 
-// weeklyHindsight walks every week with matchup data; a missing week
-// (a fixture gap, or the season hasn't reached it yet) is skipped, not an error.
+// weeklyHindsight walks every week with matchup data; a missing week is skipped, not an error.
 func (e *extension) weeklyHindsight(ctx context.Context, league sleepergen.League, myRosterID int, dump map[string]sleepergen.Player) ([]weekHindsight, int) {
 	lastWeek := maxHistoryWeeks
-	// An in-progress season's current week isn't final yet (still accruing
-	// points), so hindsight only covers weeks strictly before it.
+	// An in-progress season's current week is still accruing points, so stop before it.
 	if league.Status != "complete" {
 		if state, err := e.client.State(ctx); err == nil && state.Week-1 < lastWeek {
 			lastWeek = state.Week - 1
@@ -219,33 +210,26 @@ func weekResult(mine, opp float32) (result string, close bool) {
 	default:
 		result = "T"
 	}
-	margin := mine - opp
-	if margin < 0 {
-		margin = -margin
-	}
-	close = result == "L" && margin < closeLossMargin
-	return result, close
+	return result, mine < opp && opp-mine < closeLossMargin
 }
 
 func hindsightFor(week int, rosterPositions []string, m sleepergen.Matchup, dump map[string]sleepergen.Player) weekHindsight {
-	best := bestLineupPoints(rosterPositions, m.Players, m.PlayersPoints, dump)
+	best := bestLineup(rosterPositions, m.Players, m.PlayersPoints, dump).total
 	return weekHindsight{
 		Week: week, Started: m.Points, BestPossible: best, PointsLeft: best - m.Points,
 	}
 }
 
-// draftReportCard grades the owner's own picks: drafted-as-rank vs
-// finish-rank, both ranked within position among that season's picks.
+// draftReportCard grades the owner's picks: drafted-as rank vs finish rank, both within position.
 func (e *extension) draftReportCard(ctx context.Context, league sleepergen.League, myRosterID int) ([]draftReportCardEntry, error) {
 	if league.DraftId == nil {
-		return nil, nil // no recorded draft for this season
+		return nil, nil
 	}
 	picks, err := e.client.DraftPicks(ctx, *league.DraftId)
 	if err != nil {
 		return nil, fmt.Errorf("draft picks: %w", err)
 	}
-	// A season still in progress (league.Status != "complete") has no
-	// season-total stats yet, so positional finish isn't knowable.
+	// An in-progress season has no season-total stats, so finish rank isn't knowable.
 	if league.Status != "complete" {
 		return nil, nil
 	}
@@ -285,15 +269,19 @@ func reachOrSteal(draftedAsRank, finishRank int) string {
 	}
 }
 
-// positionalDraftRank ranks every pick within its position by pick_no.
-func positionalDraftRank(picks []sleepergen.DraftPick) map[string]int {
+func picksByPosition(picks []sleepergen.DraftPick) map[string][]sleepergen.DraftPick {
 	byPos := map[string][]sleepergen.DraftPick{}
 	for _, p := range picks {
 		pos := pickPosition(p)
 		byPos[pos] = append(byPos[pos], p)
 	}
+	return byPos
+}
+
+// positionalDraftRank ranks every pick within its position by pick_no.
+func positionalDraftRank(picks []sleepergen.DraftPick) map[string]int {
 	out := map[string]int{}
-	for _, group := range byPos {
+	for _, group := range picksByPosition(picks) {
 		sort.Slice(group, func(i, j int) bool { return group[i].PickNo < group[j].PickNo })
 		for i, p := range group {
 			out[p.PlayerId] = i + 1
@@ -302,16 +290,10 @@ func positionalDraftRank(picks []sleepergen.DraftPick) map[string]int {
 	return out
 }
 
-// positionalFinishRank ranks every drafted player within its position by
-// season pts_ppr, highest first.
+// positionalFinishRank ranks every drafted player within its position by season pts_ppr, highest first.
 func positionalFinishRank(picks []sleepergen.DraftPick, stats map[string]sleepergen.StatMap) map[string]int {
-	byPos := map[string][]sleepergen.DraftPick{}
-	for _, p := range picks {
-		pos := pickPosition(p)
-		byPos[pos] = append(byPos[pos], p)
-	}
 	out := map[string]int{}
-	for _, group := range byPos {
+	for _, group := range picksByPosition(picks) {
 		sort.SliceStable(group, func(i, j int) bool {
 			return stats[group[i].PlayerId]["pts_ppr"] > stats[group[j].PlayerId]["pts_ppr"]
 		})
