@@ -3,7 +3,7 @@ import { renderDraftSide, renderSeasonAtGlance, renderCrossSeason } from '../../
 import draft from '../../fixtures/draft.json'
 import history from '../../fixtures/history.json'
 
-const currentEnvelope = { job: 'draft', title: 'Draft analysis', agent: 'draft-analyst', found: true, example: true, status: 'done', chatHref: '/chat/ext:sleeper:demo', data: draft }
+const currentEnvelope = { job: 'draft', title: 'Draft analysis', agent: 'draft-analyst', found: true, status: 'done', chatHref: '/chat/ext:sleeper:demo', data: draft }
 const html = () => renderDraftSide(currentEnvelope)
 // A past season's draft stop has no clock/plan card - the sidebar falls
 // back to season-at-a-glance + cross-season (see main.js's renderMain).

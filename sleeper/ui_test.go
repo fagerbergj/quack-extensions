@@ -190,9 +190,6 @@ func TestHandleArtifactsReadsExactChatID(t *testing.T) {
 	if !ok || !lineup.Found {
 		t.Fatalf("jobs[lineup] = %+v, want found", resp.Jobs["lineup"])
 	}
-	if lineup.Example {
-		t.Error("a real artifact must not be marked Example")
-	}
 	if string(lineup.Data) != `{"week":2}` {
 		t.Errorf("data = %s, want the stored bytes verbatim", lineup.Data)
 	}
@@ -218,8 +215,8 @@ func TestHandleArtifactsIncludesTradeFinder(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	finder, ok := resp.Jobs["trade-finder"]
-	if !ok || !finder.Found || finder.Example {
-		t.Fatalf("jobs[trade-finder] = %+v, want found && !example", resp.Jobs["trade-finder"])
+	if !ok || !finder.Found {
+		t.Fatalf("jobs[trade-finder] = %+v, want found", resp.Jobs["trade-finder"])
 	}
 }
 
@@ -277,7 +274,7 @@ func TestHandleArtifactsRealTradeTalkDiscovery(t *testing.T) {
 		t.Fatalf("talks = %+v, want exactly the one stored talk", resp.Talks)
 	}
 	got := resp.Talks[0]
-	if got.PartnerID != riceCookerOwnerID || got.Partner != "Rice Cooker" || !got.Found || got.Example {
+	if got.PartnerID != riceCookerOwnerID || got.Partner != "Rice Cooker" || !got.Found {
 		t.Errorf("talk = %+v, want partner_id=%q partner=Rice Cooker found=true example=false", got, riceCookerOwnerID)
 	}
 }

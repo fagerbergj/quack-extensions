@@ -4,7 +4,7 @@ import lineup from '../fixtures/lineup.json' with { type: 'json' }
 
 const unnumbered = s => s.replace(/\d+$/, '')
 const data = { ...lineup, opponent_starters: lineup.opponent_starters.map(o => ({ ...o, slot: unnumbered(o.slot) })) }
-const html = renderLineup({ job: 'lineup', title: 'Start / sit', agent: 'x', found: true, example: true, status: 'done', chatHref: '#', data })
+const html = renderLineup({ job: 'lineup', title: 'Start / sit', agent: 'x', found: true, status: 'done', chatHref: '#', data })
 const cells = [...html.matchAll(/class="sl-opp num">([^<]*)<b>/g)].map(m => m[1])
 for (const name of ['B. Robinson', 'K. Walker', 'P. Nacua', 'G. Wilson']) {
   if (!cells.includes(name)) {

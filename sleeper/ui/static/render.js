@@ -155,7 +155,7 @@ export function injBadge(p) {
 export function jobHead(meta) {
   let m
   if (meta.status === 'running') m = `<span class="qk-badge qk-badge--warn">Running</span><span>${esc(meta.agent || '')} · started just now</span>`
-  else if (meta.status === 'done') m = `${meta.example ? '<span class="qk-badge">Example</span>' : ''}<span class="qk-badge qk-badge--ok">From chat</span><span>${esc(meta.agent || '')}</span><a href="${esc(meta.chatHref || '#')}" target="_top">Open chat</a>`
+  else if (meta.status === 'done') m = `<span class="qk-badge qk-badge--ok">From chat</span><span>${esc(meta.agent || '')}</span><a href="${esc(meta.chatHref || '#')}" target="_top">Open chat</a>`
   else m = '<span class="qk-badge">Not run</span>'
   const chips = (meta.chips || []).join('')
   return `<div class="sl-sec__head"><div class="sl-sec__title"><h2>${esc(meta.title)}</h2>${chips}</div><div class="sl-sec__meta">${m}</div></div>`
@@ -224,7 +224,7 @@ function foldedRow(item) {
   return `<tr title="${esc(item.why || '')}"><td class="cell">${esc(item.player.name)}${injBadge(item.player)}</td><td class="num">${num(item.proj)}${range}</td></tr>`
 }
 
-// state: {job, title, agent, status, example, chatHref, found, data, what, running}
+// state: {job, title, agent, status, chatHref, found, data, what, running}
 export function renderLineup(state) {
   const clean = state.found && !state.invalid
   const changes = clean ? (state.data.starters || []).filter(s => s.replaces).length : 0
@@ -339,7 +339,7 @@ function tradeFinderRow(f, runnable) {
   return `<details class="sl-xrow"><summary class="sl-row sl-row--trade">${body}<span class="ms sl-xchev" aria-hidden="true">expand_more</span></summary><p class="sl-why sl-xwhy">${mdText(f.note)}</p></details>`
 }
 
-// finder: the trade-finder job's own artifactEnvelope ({found, example,
+// finder: the trade-finder job's own artifactEnvelope ({found,
 // running, data}) - a separate kind so a finder run never overwrites a talk.
 function tradeFinder(finder, runnable = true) {
   const suggestions = finder?.data?.suggestions
@@ -351,9 +351,8 @@ function tradeFinder(finder, runnable = true) {
     const msg = running ? 'Looking for trades that help both sides.' : 'No suggestions yet.'
     return `<h3 class="sl-h3">Suggested trades</h3><div class="sl-empty"><span>${esc(msg)}</span> ${cta}</div>`
   }
-  const badge = finder?.example ? ' <span class="qk-badge">Example</span>' : ''
   const rows = suggestions.map(f => tradeFinderRow(f, runnable)).join('')
-  return `<h3 class="sl-h3">Suggested trades${badge}</h3><div class="sl-rows">${rows}</div>${cta}`
+  return `<h3 class="sl-h3">Suggested trades</h3><div class="sl-rows">${rows}</div>${cta}`
 }
 
 function talkPartnerSelect(partners) {
@@ -363,7 +362,7 @@ function talkPartnerSelect(partners) {
   return `<select id="talk-partner" class="sl-select" aria-label="Team to trade with"><option value="">Pick a team…</option>${opts}</select>`
 }
 
-// talks: [{partner, found, example, status, data}], talkIdx picks the shown one; partners feeds the
+// talks: [{partner, found, status, data}], talkIdx picks the shown one; partners feeds the
 // "New talk" select; finder is the trade-finder envelope for the suggestions CTA.
 export function renderTrade(state, talks, talkIdx, partners, finder) {
   const partnerCount = finder?.data?.suggestions?.length || 0
@@ -504,10 +503,10 @@ export function renderDraftSide(state) {
   const d = state.data
   if (!d.clock && !d.plan) return ''
   let html = ''
-  if (d.clock) html = section('draft-clock', `<div class="sl-sec__head"><h2>On the clock</h2><div class="sl-sec__meta">${state.example ? '<span class="qk-badge">Example</span>' : ''}<span>${esc(state.agent || '')}</span></div></div><div class="sl-sec__body">
+  if (d.clock) html = section('draft-clock', `<div class="sl-sec__head"><h2>On the clock</h2><div class="sl-sec__meta"><span>${esc(state.agent || '')}</span></div></div><div class="sl-sec__body">
     <div class="sl-clock"><b>Pick ${int(d.clock.pick_no)} (${esc(d.clock.pick_label || '')}) · ${int(d.clock.seconds_left)}s left</b>${mdText(d.clock.note)}</div>
     <p class="sl-src">Live drafts poll the picks feed every few seconds while you are within three picks of the clock.</p></div>`)
-  if (d.plan) html += section('draft-plan', `<div class="sl-sec__head"><h2>Draft plan</h2><div class="sl-sec__meta">${state.example ? '<span class="qk-badge">Example</span>' : ''}<span>${esc(state.agent || '')} · pre-draft</span></div></div><div class="sl-sec__body"><div class="sl-tiers">${d.plan.map(p => `<div><b>${esc(p.title)}</b><span>${mdText(p.note)}</span></div>`).join('')}</div></div>`)
+  if (d.plan) html += section('draft-plan', `<div class="sl-sec__head"><h2>Draft plan</h2><div class="sl-sec__meta"><span>${esc(state.agent || '')} · pre-draft</span></div></div><div class="sl-sec__body"><div class="sl-tiers">${d.plan.map(p => `<div><b>${esc(p.title)}</b><span>${mdText(p.note)}</span></div>`).join('')}</div></div>`)
   return html
 }
 
@@ -548,7 +547,7 @@ export function renderSeasonAtGlance(x) {
 export function renderCrossSeason(x) {
   const items = x?.cross_season_summary
   if (!items?.length) return ''
-  return section('side-cross', `<div class="sl-sec__head"><h2>Recurring patterns</h2><div class="sl-sec__meta"><span class="qk-badge">Example</span></div></div><div class="sl-sec__body"><ul class="sl-mistakes">${items.map(i => `<li><b>${esc(i.n)}</b>${clampBlock(`${mdText(i.text)}${i.detail ? '<br><small>' + mdText(i.detail) + '</small>' : ''}`)}</li>`).join('')}</ul></div>`)
+  return section('side-cross', `<div class="sl-sec__head"><h2>Recurring patterns</h2></div><div class="sl-sec__body"><ul class="sl-mistakes">${items.map(i => `<li><b>${esc(i.n)}</b>${clampBlock(`${mdText(i.text)}${i.detail ? '<br><small>' + mdText(i.detail) + '</small>' : ''}`)}</li>`).join('')}</ul></div>`)
 }
 
 export function renderStandingsSide(season) {
