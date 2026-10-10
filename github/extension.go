@@ -277,9 +277,15 @@ func (e *Extension) Wait() {
 
 // Start opens and migrates the store so a bad database fails boot; queries that
 // race ahead of it (RunEnded from a resumed node) open it themselves.
-func (e *Extension) Start(context.Context) error {
-	_, err := e.store.conn()
-	return err
+func (e *Extension) Start(ctx context.Context) error {
+	if _, err := e.store.conn(); err != nil {
+		return err
+	}
+	// A row this old outlived its run's deadline and lease, so no RunEnded will ever consume it.
+	if err := e.store.PrunePendingRuns(ctx, time.Now().Add(-(e.inflightLease() + e.runTimeout))); err != nil {
+		e.host.Log.Warn("github: pending-run prune failed; stale rows stay until the next boot", "err", err)
+	}
+	return nil
 }
 
 // Deliver/GitCredential satisfy sdk.Deliverer/sdk.GitCredentialSource by delegating to App.

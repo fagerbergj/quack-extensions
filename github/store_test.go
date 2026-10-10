@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/fagerbergj/quack-extensions/sdk"
 )
@@ -329,5 +330,28 @@ func TestStoreRetriesAfterFailedOpen(t *testing.T) {
 	}
 	if _, ok, err := s.GetSnapshot(ctx, "c1"); err != nil || !ok {
 		t.Fatalf("GetSnapshot after retry: ok=%v err=%v", ok, err)
+	}
+}
+
+// Start prunes pending runs older than lease + run timeout and keeps fresh ones.
+func TestStartPrunesStalePendingRuns(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	if err := st.SetPendingRun(ctx, PendingRunRow{ChatID: "fresh"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.exec(ctx, `INSERT INTO github_pending_run (chat_id, session_id, owner, repo, number, is_pr, login, is_plan, is_label_trigger, comment_id, default_branch, installation_id, clone_url, created_at)
+		VALUES ('stale', '', '', '', 0, 0, '', 0, 0, 0, '', 0, '', ?)`, time.Now().UTC().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	e := &Extension{store: st, runTimeout: time.Minute}
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	for id, want := range map[string]bool{"fresh": true, "stale": false} {
+		row, err := st.GetPendingRun(ctx, id)
+		if err != nil || (row != nil) != want {
+			t.Errorf("GetPendingRun(%q) = %+v, %v; want kept=%v", id, row, err, want)
+		}
 	}
 }

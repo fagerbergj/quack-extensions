@@ -341,3 +341,9 @@ func (s *ghStore) DeletePendingRun(ctx context.Context, chatID string) error {
 	_, err := s.exec(ctx, `DELETE FROM github_pending_run WHERE chat_id = ?`, chatID)
 	return err
 }
+
+// PrunePendingRuns deletes rows created before cutoff: runs that never reached RunEnded.
+func (s *ghStore) PrunePendingRuns(ctx context.Context, cutoff time.Time) error {
+	_, err := s.exec(ctx, `DELETE FROM github_pending_run WHERE created_at < ?`, cutoff.UTC())
+	return err
+}
