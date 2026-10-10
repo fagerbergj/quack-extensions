@@ -58,9 +58,7 @@ func TestWithFooterIdempotent(t *testing.T) {
 	}
 }
 
-// TestAppendLineAfterFooter pins merge.go's appendToVerdict expectation: the
-// footer must stay the body's last line, with the outcome line slotted above
-// it - not appended after, which would bury the footer mid-body.
+// The footer must stay the body's last line, with the outcome line slotted above it.
 func TestAppendLineAfterFooter(t *testing.T) {
 	withFooter := "LGTM\n\n<!-- quack:delivery:review:approve -->\n\n<sub>quack 0.51.26 · <a href=\"https://quack.example.com/chat/chat1\">run</a></sub>"
 	got, changed := appendLine(withFooter, "Merged as abc1234.")
@@ -80,9 +78,8 @@ func TestAppendLineAfterFooter(t *testing.T) {
 	}
 }
 
-// TestReviewVerdictMarkerFoundWithFooterPresent pins that the own-PR verdict
-// lookup (merge.go's reviewVerdictMarkerRe/reviewHeadMarkerRe) still finds
-// its markers once withFooter's trailing <sub> block sits after them.
+// The own-PR verdict lookup (reviewVerdictMarkerRe/reviewHeadMarkerRe) still finds its markers
+// once withFooter's trailing <sub> block follows them.
 func TestReviewVerdictMarkerFoundWithFooterPresent(t *testing.T) {
 	body := "_Own PR: verdict approve._\n\n<!-- quack:delivery:review:approve -->\n<!-- quack:delivery:head:deadbeef -->\n\n<sub>quack 0.51.26 · <a href=\"https://quack.example.com/chat/chat1\">run</a></sub>"
 	m := reviewVerdictMarkerRe.FindStringSubmatch(body)
@@ -95,9 +92,7 @@ func TestReviewVerdictMarkerFoundWithFooterPresent(t *testing.T) {
 	}
 }
 
-// TestSubmitReviewCarriesMarkerAndFooter is an end-to-end check that a
-// posted review body keeps the delivery marker findable (deliverStagedComment/
-// collapsePriorReviews-style Contains lookups) alongside the trailing footer.
+// A posted review body keeps the delivery marker findable alongside the trailing footer.
 func TestSubmitReviewCarriesMarkerAndFooter(t *testing.T) {
 	var posted string
 	app := newReviewApp(t, func(w http.ResponseWriter, r *http.Request) {
@@ -217,9 +212,7 @@ func TestWithReviewFooterIdempotentAndSingleBlock(t *testing.T) {
 	}
 }
 
-// TestAppendLineAboveCommandsBlockAndFooter pins that a later check-outcome
-// line still slots above the whole trailing region, not between the
-// commands block and the <sub> line.
+// A later check-outcome line slots above the whole trailing region, not between the commands block and <sub>.
 func TestAppendLineAboveCommandsBlockAndFooter(t *testing.T) {
 	app, err := NewApp("1", mustTestKeyPEM(t))
 	if err != nil {

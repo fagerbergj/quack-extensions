@@ -46,7 +46,7 @@ var carriedOverRe = regexp.MustCompile(`^\(carried over[^)]*\)\s*`)
 // severityLabels names the labels and severity markers a finding body can carry, which are baselines, not content.
 const severityLabels = `(?:blocking|non-blocking|suggestion|nit|question|must[- ]fix|should[- ]fix|critical|major|minor)`
 
-// inlineLabelRe matches a label anywhere in a finding: at a line's start before a colon, or set off in bold or brackets.
+// inlineLabelRe matches a label anywhere in a finding: line-start before a colon, or in bold or brackets.
 var inlineLabelRe = regexp.MustCompile(`(?im)^[ \t]*[^\pL\pN*\n]{0,4}\*{0,2}` + severityLabels + `(?:\s*\([^)\n]*\))?\s*:\*{0,2}[ \t]*` +
 	`|\*\*` + severityLabels + `(?:\s*\([^)\n]*\))?:?\*\*:?[ \t]*` + `|\[` + severityLabels + `\][ \t]*`)
 

@@ -1,33 +1,17 @@
 package github
 
-// computeGrant derives a run's allowed delivery kinds from labels,
-// authorship, and fork state (#657, #662). prScoped is known once, here, and
-// resolves the "pull_request"/"comment" ambiguity locally (open a NEW PR vs.
-// push to an EXISTING one; join an issue vs. a PR conversation) - the caller
-// never needs to re-derive scope from the flattened result. Always returns a
-// non-nil slice: this is an actually-computed, trigger-scoped grant, never
-// the "no trigger governs this run" sentinel (nil) quack-core's
-// AllowedDeliveryKinds reserves for a non-GitHub run.
-func computeGrant(labelCfg Labels, labels []string, prScoped, authoredByQuack, forkHead bool) []string {
-	var joinIssueConversation, openPR, postReview, joinPRConversation, pushCommitsToPR bool
+import "slices"
 
-	if hasLabel(labels, labelCfg.Plan) {
-		joinIssueConversation = true
-	}
-	if hasLabel(labels, labelCfg.Implement) {
-		openPR = true
-	}
-	if hasLabel(labels, labelCfg.Review) {
-		postReview = true
-		joinPRConversation = true
-	}
+// computeGrant derives allowed delivery kinds from labels, authorship, and fork state; prScoped resolves
+// "pull_request"/"comment" (new PR vs push, issue vs PR thread). Never nil: nil means unrestricted to quack.
+func computeGrant(labelCfg Labels, labels []string, prScoped, authoredByQuack, forkHead bool) []string {
+	joinIssueConversation := slices.Contains(labels, labelCfg.Plan)
+	openPR := slices.Contains(labels, labelCfg.Implement)
+	postReview := slices.Contains(labels, labelCfg.Review)
 	// quack:fix and authorship share one fork-gated path.
-	if hasLabel(labels, labelCfg.Implement) || hasLabel(labels, labelCfg.Fix) || authoredByQuack {
-		joinPRConversation = true
-		if !forkHead {
-			pushCommitsToPR = true
-		}
-	}
+	writer := openPR || slices.Contains(labels, labelCfg.Fix) || authoredByQuack
+	joinPRConversation := postReview || writer
+	pushCommitsToPR := writer && !forkHead
 
 	kinds := make([]string, 0, 3)
 	if postReview {

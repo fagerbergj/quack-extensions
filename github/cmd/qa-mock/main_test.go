@@ -24,9 +24,7 @@ func testPEM(t *testing.T) string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: b}))
 }
 
-// Exercises the real App client (InstallationForRepo -> GET fixture,
-// InstallationToken -> POST /access_tokens) against this mock's handlers -
-// the contract test the epic asks for, in the extension's own client.
+// Exercises the real App client (InstallationForRepo, InstallationToken) against this mock's handlers.
 func TestMockServesRealClient(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "get"), 0o755); err != nil {

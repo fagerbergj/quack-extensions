@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -20,6 +21,19 @@ import (
 
 // maxWebhookBody bounds a hostile/oversized request.
 const maxWebhookBody = 5 << 20
+
+type ghRepository struct {
+	Name  string `json:"name"`
+	Owner struct {
+		Login string `json:"login"`
+	} `json:"owner"`
+	CloneURL      string `json:"clone_url"`
+	DefaultBranch string `json:"default_branch"`
+}
+
+type ghInstallation struct {
+	ID int64 `json:"id"`
+}
 
 // issueCommentPayload is the subset of GitHub's issue_comment webhook we use.
 type issueCommentPayload struct {
@@ -43,31 +57,19 @@ type issueCommentPayload struct {
 		// Present only when the issue is a PR.
 		PullRequest *struct{} `json:"pull_request"`
 	} `json:"issue"`
-	Repository struct {
-		Name  string `json:"name"`
-		Owner struct {
-			Login string `json:"login"`
-		} `json:"owner"`
-		CloneURL      string `json:"clone_url"`
-		DefaultBranch string `json:"default_branch"`
-	} `json:"repository"`
-	Installation struct {
-		ID int64 `json:"id"`
-	} `json:"installation"`
+	Repository   ghRepository   `json:"repository"`
+	Installation ghInstallation `json:"installation"`
 
 	// Synthetic payload fields — not part of the GitHub webhook.
 	planOnly        bool            // label-driven plan: produce a plan, touch no code.
-	isLabelTrigger  bool            // label/pr_opened trigger vs @mention (T4 session reset).
+	isLabelTrigger  bool            // label/pr_opened trigger vs @mention; resets the session.
 	deliverableHint string          // fixed deliverable for synthetic triggers (CI auto-heal, own-PR).
 	rawEvent        json.RawMessage // originating webhook JSON → envelope's <event> block.
 	eventName       string          // originating webhook dotted name.
 	checkSHA        string          // CI commit: write the "check-runs" input artifact. "" = plan/review/mention run.
 	explain         bool            // /explain: own per-user chat, no delivery, nothing posted but the chat link.
-	// issueDeliverableCache memoizes classifyIssueDeliverable for one dispatch:
-	// shared by pointer across every copy of p passed to
-	// buildEnvelope/buildWorkerAsk/deliverableIsPlan, so a live classifier
-	// call happens at most once regardless of how many of them need the
-	// answer. nil when a caller (e.g. a test) invokes one of those directly.
+	// issueDeliverableCache is shared by pointer across copies of p so one dispatch classifies at most once;
+	// nil outside a dispatch.
 	issueDeliverableCache *issueDeliverableResult
 	deliverableKind       *string // the envelope's deliverable kind, for the intent point; nil outside a dispatch
 }
@@ -86,18 +88,9 @@ type issuesPayload struct {
 	Label struct {
 		Name string `json:"name"`
 	} `json:"label"`
-	Repository struct {
-		Name  string `json:"name"`
-		Owner struct {
-			Login string `json:"login"`
-		} `json:"owner"`
-		CloneURL      string `json:"clone_url"`
-		DefaultBranch string `json:"default_branch"`
-	} `json:"repository"`
-	Installation struct {
-		ID int64 `json:"id"`
-	} `json:"installation"`
-	Sender struct {
+	Repository   ghRepository   `json:"repository"`
+	Installation ghInstallation `json:"installation"`
+	Sender       struct {
 		Login string `json:"login"`
 	} `json:"sender"`
 }
@@ -117,18 +110,9 @@ type pullRequestPayload struct {
 	Label struct {
 		Name string `json:"name"` // present on the "labeled" action
 	} `json:"label"`
-	Repository struct {
-		Name  string `json:"name"`
-		Owner struct {
-			Login string `json:"login"`
-		} `json:"owner"`
-		CloneURL      string `json:"clone_url"`
-		DefaultBranch string `json:"default_branch"`
-	} `json:"repository"`
-	Installation struct {
-		ID int64 `json:"id"`
-	} `json:"installation"`
-	Sender struct {
+	Repository   ghRepository   `json:"repository"`
+	Installation ghInstallation `json:"installation"`
+	Sender       struct {
 		Login string `json:"login"`
 	} `json:"sender"`
 }
@@ -230,8 +214,7 @@ func (e *Extension) handleIssueComment(w http.ResponseWriter, body []byte) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// handlePullRequest fires an auto-review on "opened" or "labeled" with the configured auto_review_label,
-// and refreshes the sidebar badge on close/merge/reopen.
+// handlePullRequest routes PR actions: auto-review, merge/fix labels, synchronize, and badge refresh.
 // sloplint: cc-allow flat webhook action dispatcher - one case per action, no shared logic to extract
 func (e *Extension) handlePullRequest(w http.ResponseWriter, body []byte, deliveryID string) {
 	var p pullRequestPayload
@@ -240,9 +223,7 @@ func (e *Extension) handlePullRequest(w http.ResponseWriter, body []byte, delive
 		return
 	}
 
-	// Logged before any dedup or dispatch (#1330's missing quack:merge
-	// delivery): a delivery GitHub never sent and one this handler dropped
-	// both look like silence downstream - this is the one place to tell them apart.
+	// Logged before any dedup: the one place to tell a delivery GitHub never sent from one this handler dropped.
 	if p.Action == "labeled" || p.Action == "unlabeled" {
 		slog.Info("github webhook: label delivery received", "component", "github",
 			"repo", p.Repository.Owner.Login+"/"+p.Repository.Name, "pr", p.Number,
@@ -259,7 +240,9 @@ func (e *Extension) handlePullRequest(w http.ResponseWriter, body []byte, delive
 		}
 		e.refreshChatOrigin(p.Repository.Owner.Login, p.Repository.Name, true, p.Number, badge, state)
 		if p.Action == "closed" {
-			e.clearMergeIntent(context.Background(), globalChatID(fmt.Sprintf("github-%s-%s-%d", p.Repository.Owner.Login, p.Repository.Name, p.Number)))
+			chatID := globalChatID(issueSessionID(p.Repository.Owner.Login, p.Repository.Name, p.Number))
+			e.clearMergeIntent(context.Background(), chatID)
+			e.forgetChatHistory(chatID)
 		}
 		w.WriteHeader(http.StatusOK)
 		return
@@ -267,23 +250,22 @@ func (e *Extension) handlePullRequest(w http.ResponseWriter, body []byte, delive
 
 	// Removing the merge label withdraws the standing authorization.
 	if p.Action == "unlabeled" && p.Label.Name == e.labels.Merge {
-		e.clearMergeIntent(context.Background(), globalChatID(fmt.Sprintf("github-%s-%s-%d", p.Repository.Owner.Login, p.Repository.Name, p.Number)))
+		e.clearMergeIntent(context.Background(), globalChatID(issueSessionID(p.Repository.Owner.Login, p.Repository.Name, p.Number)))
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	// The merge label is a human authorization: recorded as a standing intent, merged once quack approves the head and CI is green.
+	// The merge label is a standing human authorization, merged once quack approves the head and CI is green.
 	if e.labeledTrigger(w, p, "merge", e.labels.Merge, func() { e.spawn(func() { e.mergeIfApproved(p, body) }) }) {
 		return
 	}
 
-	// quack:fix is a persistent capability flag (#656) — re-arms auto-heal; fixes CI if currently failing.
+	// quack:fix is a persistent flag: it re-arms auto-heal and fixes CI if currently failing.
 	if e.labeledTrigger(w, p, "ci_fix", e.labels.Fix, func() { e.spawn(func() { e.fixLabelApplied(p, body) }) }) {
 		return
 	}
 
-	// A push under a running review leaves its clone pointing at a commit
-	// that no longer exists on the branch; core decides if refreshing is safe.
+	// A push under a running review strands its clone; core decides if refreshing is safe.
 	if p.Action == "synchronize" {
 		e.invalidateSetup(p.Repository.Owner.Login, p.Repository.Name, p.Number)
 		e.spawn(func() {
@@ -308,9 +290,8 @@ func (e *Extension) handlePullRequest(w http.ResponseWriter, body []byte, delive
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// labeledTrigger: the shape the quack:merge and quack:fix handlers share -
-// fire (kick + 202) on a matching human trigger, deny (200 itself) for a
-// non-invoker, return false (nothing written) when the trigger didn't fire.
+// labeledTrigger fires kick (202) on a matching human label, 200s a non-invoker, and returns false
+// with nothing written when the trigger doesn't match.
 func (e *Extension) labeledTrigger(w http.ResponseWriter, p pullRequestPayload, trigger, label string, kick func()) bool {
 	if p.Action != "labeled" || !e.triggers[trigger] || p.Label.Name != label ||
 		strings.HasSuffix(p.Sender.Login, "[bot]") {
@@ -331,14 +312,12 @@ func (e *Extension) labeledTrigger(w http.ResponseWriter, p pullRequestPayload, 
 	return true
 }
 
-// invalidateSetup signals a moved branch, but only for a PR with a run still
-// in flight - pending is the only record of that, and an unknown chat means
-// there is no clone to refresh.
+// invalidateSetup signals a moved branch only while a run is in flight; otherwise there is no clone to refresh.
 func (e *Extension) invalidateSetup(owner, repo string, number int) {
 	if e.host.InvalidateSetup == nil {
 		return
 	}
-	chatID := globalChatID(fmt.Sprintf("github-%s-%s-%d", owner, repo, number))
+	chatID := globalChatID(issueSessionID(owner, repo, number))
 	if _, running := e.pending.Load(chatID); !running {
 		return
 	}
@@ -350,25 +329,12 @@ func (e *Extension) invalidateSetup(owner, repo string, number int) {
 	}
 }
 
-// autoReviewPayload shapes a PR event as an issueCommentPayload so the mention path's dispatch/envelope builder handles it.
+// autoReviewPayload shapes a PR event as an issueCommentPayload for the mention path's dispatch.
 func autoReviewPayload(p pullRequestPayload, rawBody []byte) issueCommentPayload {
-	synthetic := issueCommentPayload{Action: "created"}
-	synthetic.Issue.Number = p.Number
-	synthetic.Issue.Title = p.PullRequest.Title
-	synthetic.Issue.PullRequest = &struct{}{}
-	synthetic.Comment.User.Login = autoReviewUser
-	synthetic.Repository.Name = p.Repository.Name
-	synthetic.Repository.Owner.Login = p.Repository.Owner.Login
-	synthetic.Repository.CloneURL = p.Repository.CloneURL
-	synthetic.Repository.DefaultBranch = p.Repository.DefaultBranch
-	synthetic.Installation.ID = p.Installation.ID
-	synthetic.isLabelTrigger = true // auto-review, never a mention (T4)
-	synthetic.rawEvent = json.RawMessage(rawBody)
-	synthetic.eventName = "pull_request." + p.Action
-	return synthetic
+	return repoInfoOf(p.Repository, p.Installation).autoReview(p.Number, p.PullRequest.Title, rawBody, "pull_request."+p.Action)
 }
 
-// pullRequestReviewPayload handles request_changes on a PR quack authored (#656).
+// pullRequestReviewPayload is the pull_request_review webhook subset.
 type pullRequestReviewPayload struct {
 	Action string `json:"action"`
 	Review struct {
@@ -380,17 +346,8 @@ type pullRequestReviewPayload struct {
 	PullRequest struct {
 		Number int `json:"number"`
 	} `json:"pull_request"`
-	Repository struct {
-		Name  string `json:"name"`
-		Owner struct {
-			Login string `json:"login"`
-		} `json:"owner"`
-		CloneURL      string `json:"clone_url"`
-		DefaultBranch string `json:"default_branch"`
-	} `json:"repository"`
-	Installation struct {
-		ID int64 `json:"id"`
-	} `json:"installation"`
+	Repository   ghRepository   `json:"repository"`
+	Installation ghInstallation `json:"installation"`
 }
 
 // handlePullRequestReview engages only on request_changes to a PR quack authored — gated on ci_fix.
@@ -439,23 +396,16 @@ func (e *Extension) engageOwnPRReview(p pullRequestReviewPayload, rawBody []byte
 		return // not quack's PR - the label/mention triggers already cover it
 	}
 
-	sessionID := fmt.Sprintf("github-%s-%s-%d", owner, repo, number)
+	sessionID := issueSessionID(owner, repo, number)
 	login := p.Review.User.Login
-	if login == "" || e.host.ChatUser == nil {
-		// fall through with whatever login we have
-	} else if u, ok := e.host.ChatUser(globalChatID(sessionID)); ok && u != "" {
-		login = u
+	if login != "" && e.host.ChatUser != nil {
+		if u, ok := e.host.ChatUser(globalChatID(sessionID)); ok && u != "" {
+			login = u
+		}
 	}
 
-	synthetic := issueCommentPayload{Action: "created"}
-	synthetic.Issue.Number = number
+	synthetic := repoInfoOf(p.Repository, p.Installation).synthetic(number, login)
 	synthetic.Issue.PullRequest = &struct{}{}
-	synthetic.Comment.User.Login = login
-	synthetic.Repository.Name = repo
-	synthetic.Repository.Owner.Login = owner
-	synthetic.Repository.CloneURL = p.Repository.CloneURL
-	synthetic.Repository.DefaultBranch = p.Repository.DefaultBranch
-	synthetic.Installation.ID = p.Installation.ID
 	// isLabelTrigger stays false: this continues the PR's existing session.
 	synthetic.rawEvent = json.RawMessage(rawBody)
 	synthetic.eventName = "pull_request_review." + p.Action
@@ -481,6 +431,7 @@ func (e *Extension) handleIssues(w http.ResponseWriter, body []byte) {
 		badge, state := "open", sdk.SubjectOpen
 		if p.Action == "closed" {
 			badge, state = "closed", sdk.SubjectClosed
+			e.forgetChatHistory(globalChatID(issueSessionID(p.Repository.Owner.Login, p.Repository.Name, p.Issue.Number)))
 		}
 		e.refreshChatOrigin(p.Repository.Owner.Login, p.Repository.Name, false, p.Issue.Number, badge, state)
 		w.WriteHeader(http.StatusOK)
@@ -500,16 +451,9 @@ func (e *Extension) handleIssues(w http.ResponseWriter, body []byte) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	synthetic := issueCommentPayload{Action: "created"}
-	synthetic.Issue.Number = p.Issue.Number
+	synthetic := repoInfoOf(p.Repository, p.Installation).synthetic(p.Issue.Number, p.Sender.Login)
 	synthetic.Issue.Title = p.Issue.Title
-	synthetic.Comment.User.Login = p.Sender.Login
-	synthetic.Repository.Name = p.Repository.Name
-	synthetic.Repository.Owner.Login = p.Repository.Owner.Login
-	synthetic.Repository.CloneURL = p.Repository.CloneURL
-	synthetic.Repository.DefaultBranch = p.Repository.DefaultBranch
-	synthetic.Installation.ID = p.Installation.ID
-	synthetic.isLabelTrigger = true // quack:plan/quack:implement, never a mention (T4)
+	synthetic.isLabelTrigger = true // quack:plan/quack:implement, never a mention
 	synthetic.rawEvent = json.RawMessage(body)
 	synthetic.eventName = "issues.labeled"
 
@@ -532,11 +476,8 @@ func (e *Extension) handleIssues(w http.ResponseWriter, body []byte) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// runImplement dispatches the implementation run on the issue's session - the
-// same session the planning run used, so the plan is also in the model's own
-// history. Fetches current labels to wire a contextual closing signal into the
-// task prompt: if the issue carries the partial-fix label the implementer
-// skips the Closes keyword; otherwise it's instructed to close the issue.
+// runImplement dispatches on the planning run's session so the plan is in history; current labels
+// decide whether the task asks for a Closes keyword (not on partial-fix).
 func (e *Extension) runImplement(p issuesPayload, synthetic issueCommentPayload) {
 	owner, repo, number := p.Repository.Owner.Login, p.Repository.Name, p.Issue.Number
 
@@ -554,7 +495,7 @@ func (e *Extension) runImplement(p issuesPayload, synthetic issueCommentPayload)
 // issueImplementDeliverable is the PR-implementing deliverable text, shared by
 // the label trigger and a comment classified/heuristically read as implement.
 func issueImplementDeliverable(partialFixLabel string, labels []string, issueNumber int) string {
-	if hasLabel(labels, partialFixLabel) {
+	if slices.Contains(labels, partialFixLabel) {
 		return "a pull request implementing the changes, without a Closes keyword (this is a partial fix)"
 	}
 	return fmt.Sprintf("a pull request implementing the approved plan, body containing `Closes #%d`", issueNumber)
@@ -569,7 +510,7 @@ func implementTask(p issuesPayload, labels []string, partialFixLabel string) str
 		fmt.Fprintf(&b, "\nIssue description (may be incomplete - see discussion below):\n%s\n", truncate(body, 4000))
 	}
 
-	isPartial := hasLabel(labels, partialFixLabel)
+	isPartial := slices.Contains(labels, partialFixLabel)
 	if isPartial {
 		b.WriteString("\nA maintainer approved this for implementation (see the approved plan in the discussion below). This is a partial fix: implement the changes, commit locally, and call stage_pr. Do NOT use a Closes keyword - the issue will not be fully closed by this PR.")
 	} else {
@@ -581,7 +522,7 @@ func implementTask(p issuesPayload, labels []string, partialFixLabel string) str
 	return b.String()
 }
 
-// planTask synthesizes the planning request for a plan-labeled issue (for implementationIntent and chat-title fallback).
+// planTask synthesizes the planning request for a plan-labeled issue.
 func planTask(p issuesPayload) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Produce an implementation plan for issue #%d: %s\n", p.Issue.Number, strings.TrimSpace(p.Issue.Title))
@@ -647,18 +588,10 @@ func (e *Extension) isPRCommand(p issueCommentPayload, trigger, cmd string) bool
 // isReviewCommand: a bare "/review" on a PR carrying the review label, gated
 // on the same "label" trigger as the labeled-event path.
 func (e *Extension) isReviewCommand(p issueCommentPayload) bool {
-	if !e.isPRCommand(p, "label", "/review") {
-		return false
-	}
-	for _, l := range p.Issue.Labels {
-		if l.Name == e.labels.Review {
-			return true
-		}
-	}
-	return false
+	return e.isPRCommand(p, "label", "/review") && e.prHasReviewLabel(p)
 }
 
-// triggerTask extracts the task from a mention at the START OF A LINE (leading spaces/tabs only) — makes quote-reply safe.
+// triggerTask extracts the task from a mention at the start of a line, so quote-replies don't trigger.
 func (e *Extension) triggerTask(p issueCommentPayload) (string, bool) {
 	if !e.triggers["mention"] {
 		return "", false
@@ -711,24 +644,15 @@ func verifySignature(secret, body []byte, header string) bool {
 	if len(secret) == 0 || !strings.HasPrefix(header, "sha256=") {
 		return false
 	}
-	mac := hmac.New(sha256.New, secret)
-	mac.Write(body)
-	expected := "sha256=" + hex.EncodeToString(mac.Sum(nil))
-	// hmac.Equal is constant time.
-	return hmac.Equal([]byte(header), []byte(expected))
+	return hmac.Equal([]byte(header), []byte(SignWebhookBody(secret, body)))
 }
 
-// runNudge is delivered when a webhook run answered without running a plan - a
-// firm instruction to actually do the work rather than narrate intent.
-// runNudge names no tool: quack owns its planning tools and renames them; the extension only says that work must run.
+// runNudge follows a run that answered without running a plan. It names no tool: quack owns and
+// renames its planning tools.
 const runNudge = "You answered without running anything. Do NOT reply in prose: plan and run the work NOW - clone the repo, read the change, and carry out the review (or the requested change). Nothing has run yet and the user is waiting."
 
-// inflightLease bounds how long one session's in-flight claim suppresses new
-// triggers. A run that dies without settling never reaches finalize's delete -
-// quack-core deliberately skips RunEnded when shutdown force-cancels a run, and
-// a killed process skips it too - so a bare flag wedges the session until the
-// extension's own process restarts (#29). The margin past runTimeout covers
-// finalize's GitHub calls, which happen after the run's own deadline.
+// inflightLease bounds a claim, since a force-cancelled or killed run never reaches RunEnded and a bare
+// flag would wedge the session. The margin covers finalize's GitHub calls after the run deadline.
 func (e *Extension) inflightLease() time.Duration { return e.runTimeout + 10*time.Minute }
 
 // inflightActive reports a session's claim age and whether it is still live.
@@ -742,10 +666,8 @@ func (e *Extension) inflightActive(sessionID string) (time.Duration, bool) {
 	return age, age < e.inflightLease()
 }
 
-// claimInflight takes sessionID's run slot. claimed is false only when a run is
-// genuinely in flight; an expired claim is taken over. age is the displaced
-// claim's age - zero when the slot was free. claimedAt is the token finalize
-// releases, so a late-settling run can't free a claim a takeover already re-took.
+// claimInflight takes sessionID's slot, taking over an expired claim; age is the displaced claim's.
+// claimedAt is finalize's release token, so a late run can't free a claim a takeover re-took.
 func (e *Extension) claimInflight(sessionID string) (claimedAt time.Time, age time.Duration, claimed bool) {
 	lease := e.inflightLease()
 	for {
@@ -764,37 +686,28 @@ func (e *Extension) claimInflight(sessionID string) (claimedAt time.Time, age ti
 	}
 }
 
-// dispatch shapes and sends one Host.Dispatch call for a webhook trigger.
-// Unlike quack-core's former synchronous dispatch (which drove the run to
-// completion inline via a Runner it owned), Host.Dispatch is fire-and-forget:
-// this function returns once the request is accepted, and pendingRun +
-// RunEnded (run.go) pick up where it left off - the nudge-if-no-plan retry
-// becomes a second Dispatch call from inside RunEnded (design doc's answer
-// for RunOutcome.PlanRan), never a raw event stream this extension drives
-// itself.
+// dispatch sends one fire-and-forget Host.Dispatch for a trigger; pendingRun and RunEnded (run.go)
+// take over once it is accepted.
 func (e *Extension) dispatch(p issueCommentPayload, task string) {
 	owner, repo, number := p.Repository.Owner.Login, p.Repository.Name, p.Issue.Number
 
-	// Key by commenter's login so sessions are partitioned per-person (#262).
+	// The commenter's login is the run's session identity.
 	login := p.Comment.User.Login
 	if login == "" {
 		login = runUserID
 	}
-	// Dedup: one run per session — second trigger is dropped, not queued (#665, #668).
+	// One run per session: a second trigger is dropped, not queued.
 	sessionID := sessionIDFor(p, login)
 	chatID := globalChatID(sessionID)
 	claimedAt, claimed := e.claimOrAck(p, sessionID, owner, repo, number)
 	if !claimed {
 		return
 	}
-	// clearInflight is called exactly once, either here (immediate failure) or
-	// from finalize (after RunEnded settles the whole chain). Compare-and-delete
-	// so a straggler can't release the claim a takeover already re-took.
+	// Released exactly once, here on failure or by finalize; compare-and-delete so a straggler
+	// can't release a claim a takeover re-took.
 	clearInflight := func() { e.inflight.CompareAndDelete(sessionID, claimedAt) }
 
-	// The pre-dispatch pipeline below (GitHub fetches, both intent-classifier
-	// attempts) needs the 2min budget meant for API phases, not the 10s
-	// reaction-ack budget; reactionTimeout stays on ackReaction/ackLabelReaction/ackDedup.
+	// Pre-dispatch fetches and classifier calls need the API-phase budget, not the reaction-ack one.
 	ctx, cancel := context.WithTimeout(context.Background(), fixContextTimeout)
 	defer cancel()
 
@@ -819,9 +732,7 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 	p.deliverableKind = new(string)
 	isPlan := e.deliverableIsPlan(ctx, p, task, allowedKinds, isPR)
 
-	// Input artifacts (#1010): the heavy evidence a worker only sometimes
-	// needs - one write per dispatch, best-effort, no fetches at all when
-	// Host has no artifact capability wired.
+	// Input artifacts hold heavy evidence a worker only sometimes needs; best-effort, skipped without the capability.
 	manifest := e.writeDispatchArtifacts(ctx, chatID, login, p, owner, repo, number, isPR)
 
 	message := e.buildEnvelope(ctx, p, task, gh, allowedKinds, manifest)
@@ -869,8 +780,7 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 		isPR: isPR, login: login, gh: gh, isPlan: isPlan, isLabelTrigger: p.isLabelTrigger, explain: p.explain,
 		isReview: task == autoReviewTask, dispatched: req, defaultBranch: p.Repository.DefaultBranch, installationID: p.Installation.ID,
 	})
-	// Durable twin of the above (#65): e.pending is in-memory only, so a run
-	// resumed at boot after a restart has nothing for RunEnded to find it by.
+	// Durable twin of e.pending, so a run resumed after a restart can still be finalized.
 	if err := e.store.SetPendingRun(ctx, PendingRunRow{
 		ChatID: chatID, SessionID: sessionID, Owner: owner, Repo: repo, Number: number,
 		IsPR: isPR, Login: login, IsPlan: isPlan, IsLabelTrigger: p.isLabelTrigger,
@@ -886,9 +796,7 @@ func (e *Extension) dispatch(p issueCommentPayload, task string) {
 		slog.Error("github: dispatch failed", "component", "github", "repo", owner+"/"+repo, "issue", number, "err", err)
 		e.pending.Delete(chatID)
 		clearInflight()
-		// SetPendingRun above wrote a durable row for this dispatch; keep the
-		// in-memory and durable records in lockstep on every exit (finalize's
-		// two defers already do this on the success paths).
+		// Keep the in-memory and durable records in lockstep; finalize does this on success paths.
 		if derr := e.store.DeletePendingRun(ctx, chatID); derr != nil {
 			slog.Warn("github: DeletePendingRun after failed dispatch", "component", "github", "repo", owner+"/"+repo, "issue", number, "err", derr)
 		}
@@ -905,6 +813,11 @@ func sessionIDFor(p issueCommentPayload, login string) string {
 	if p.explain {
 		return explainSessionID(owner, repo, number, login)
 	}
+	return issueSessionID(owner, repo, number)
+}
+
+// issueSessionID is the shared per-issue/PR session key.
+func issueSessionID(owner, repo string, number int) string {
 	return fmt.Sprintf("github-%s-%s-%d", owner, repo, number)
 }
 
@@ -930,8 +843,8 @@ func (e *Extension) dispatchGrant(ctx context.Context, p issueCommentPayload, ow
 	return allowedKinds
 }
 
-// abortBlind refuses a label-triggered or /explain run with no usable GitHub
-// context (#467) and says so on the thread; true means do not dispatch.
+// abortBlind refuses a label-triggered or /explain run with no usable GitHub context and says so
+// on the thread; true means do not dispatch.
 func (e *Extension) abortBlind(p issueCommentPayload, gh githubContext, owner, repo string, number int) bool {
 	if !gh.contextUnavailable || !(p.isLabelTrigger || p.explain) {
 		return false
@@ -981,9 +894,8 @@ func (e *Extension) prBadgeState(gh githubContext, isPR bool) (string, sdk.Subje
 	return badge, subjectState
 }
 
-// claimOrAck: the one-run-per-session dedup gate (#665, #668) - a fresh claim
-// proceeds; a live one is dropped with an ack in the right place; an expired
-// one is taken over with a warn.
+// claimOrAck is the one-run-per-session gate: a live claim drops the trigger with an ack, an
+// expired one is taken over with a warning.
 func (e *Extension) claimOrAck(p issueCommentPayload, sessionID, owner, repo string, number int) (claimedAt time.Time, claimed bool) {
 	var age time.Duration
 	claimedAt, age, claimed = e.claimInflight(sessionID)
@@ -991,9 +903,7 @@ func (e *Extension) claimOrAck(p issueCommentPayload, sessionID, owner, repo str
 		slog.Info("deduplicated trigger: a run for this session is still in flight",
 			"component", "github", "sessionID", sessionID, "repo", owner+"/"+repo, "issue", number,
 			"claim_age", age.Round(time.Second), "lease", e.inflightLease())
-		// A comment-triggered dispatch (mention, /review) already reacted to
-		// its own comment - react there, not on the issue too, or the trigger
-		// gets two visibly different reactions (#1304).
+		// A comment trigger already got a reaction on its comment; reacting on the issue too would double it.
 		if p.Comment.ID != 0 {
 			e.spawn(func() { e.ackReaction(p) })
 		} else {
@@ -1042,18 +952,15 @@ func (e *Extension) writeDispatchArtifacts(ctx context.Context, chatID, login st
 	return manifest
 }
 
-// resolvePRHead sets setup.ExistingHeadRef to the PR's real head branch (the
-// dag equivalent of OverrideExistingPRHead); a blank ref is refused and
-// refetched first - only quack's own fallback can rescue one (#55).
+// resolvePRHead sets setup.ExistingHeadRef to the PR's head branch, refetching once and refusing
+// to dispatch with a blank ref.
 func (e *Extension) resolvePRHead(ctx context.Context, p issueCommentPayload, owner, repo string, number int, gh githubContext, setup *sdk.Setup, clearInflight func()) bool {
 	headRef := gh.snap.HeadRef
 	if headRef != "" {
 		setup.ExistingHeadRef = headRef
 		return true
 	}
-	// The snapshot's pullMeta call can transiently fail or race a stale cache
-	// without tripping contextUnavailable (only checked on label triggers) -
-	// refetch once before giving up.
+	// The snapshot's pullMeta can fail transiently without tripping contextUnavailable; refetch once.
 	m, merr := e.app.pullMeta(ctx, owner, repo, number)
 	if merr == nil && m.HeadRef != "" {
 		setup.ExistingHeadRef = m.HeadRef
@@ -1071,9 +978,7 @@ func (e *Extension) resolvePRHead(ctx context.Context, p issueCommentPayload, ow
 	return false
 }
 
-// sdkDeliveryKinds converts the plain-string allowlist computeGrant emits to
-// the SDK's typed vocabulary (design doc: the seam carries a closed
-// vocabulary, quack-core stages delivery items). nil stays nil (unrestricted).
+// sdkDeliveryKinds types computeGrant's allowlist; nil stays nil (unrestricted).
 func sdkDeliveryKinds(kinds []string) []sdk.DeliveryKind {
 	if kinds == nil {
 		return nil
@@ -1085,9 +990,7 @@ func sdkDeliveryKinds(kinds []string) []sdk.DeliveryKind {
 	return out
 }
 
-// chatOrigin builds the sidebar provenance chip for an issue/PR chat -
-// shared by dispatch (initial stamp) and refreshChatOrigin (badge-only
-// updates on later state-change webhooks).
+// chatOrigin builds an issue/PR chat's provenance, stamped by dispatch and refreshChatOrigin.
 func chatOrigin(owner, repo string, isPR bool, number int, badge string, state sdk.SubjectState) sdk.ChatOrigin {
 	// kind is the SDK's documented grouping vocabulary; seg is GitHub's URL
 	// spelling. Same distinction, different spellings - don't merge them.
@@ -1106,16 +1009,13 @@ func chatOrigin(owner, repo string, isPR bool, number int, badge string, state s
 	}
 }
 
-// refreshChatOrigin advances the sidebar badge and typed State after a
-// state-change webhook - Label/Kind/Href/Labels stay exactly what dispatch
-// stamped. Most issues/PRs never had a chat dispatched (no mention, no
-// label), so ErrUnknownChat is the expected, common outcome here - swallowed
-// at Debug rather than Warn.
+// refreshChatOrigin advances Badge and State after a state-change webhook. Most issues never had a
+// chat, so ErrUnknownChat is expected and logged at Debug.
 func (e *Extension) refreshChatOrigin(owner, repo string, isPR bool, number int, badge string, state sdk.SubjectState) {
 	if e.host.UpdateChatOrigin == nil {
 		return
 	}
-	sessionID := fmt.Sprintf("github-%s-%s-%d", owner, repo, number)
+	sessionID := issueSessionID(owner, repo, number)
 	err := e.host.UpdateChatOrigin(sessionID, chatOrigin(owner, repo, isPR, number, badge, state))
 	switch {
 	case err == nil:
@@ -1127,7 +1027,15 @@ func (e *Extension) refreshChatOrigin(owner, repo string, isPR bool, number int,
 	}
 }
 
-// setupBaseRef returns the PR's base branch, or the repo's default branch for an issue run (#661).
+// forgetChatHistory drops a closed chat's snapshot and baseline; a reopen starts from a first load.
+// ponytail: a run finishing after the close re-persists its row; sweep by age if that ever piles up.
+func (e *Extension) forgetChatHistory(chatID string) {
+	if err := e.store.DeleteChatHistory(context.Background(), chatID); err != nil {
+		e.host.Log.Warn("github: chat history cleanup failed", "chat", chatID, "err", err)
+	}
+}
+
+// setupBaseRef returns the PR's base branch, or the repo's default branch for an issue run.
 func setupBaseRef(p issueCommentPayload, gh githubContext) string {
 	if gh.snap.BaseRef != "" {
 		return gh.snap.BaseRef

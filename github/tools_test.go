@@ -14,15 +14,12 @@ import (
 	"github.com/fagerbergj/quack-extensions/sdk"
 )
 
-// samplePatch is a unified diff for auth.go: hunk starts at new-file line 40, so
-// commentable RIGHT lines are 40 (context), 41 (added), 42 (added), 43 (context);
-// old-file (LEFT) lines 40 and 41 are the two context lines.
+// samplePatch: hunk starts at new line 40, so commentable RIGHT lines are 40-43 (41, 42 added);
+// LEFT lines 40 and 41 are the two context lines.
 const samplePatch = "@@ -40,2 +40,4 @@ func Check() {\n ctx := r.Context()\n+\tuser := lookup(ctx)\n+\tif user == nil { panic(user) }\n \treturn user"
 
-// newReviewApp returns an App wired to an httptest server that stubs
-// GET /pulls/7/files (one changed file, auth.go) and, if provided, the
-// POST /pulls/7/reviews endpoint. Installation/token endpoints are bypassed by
-// seeding the App caches, so the tools only hit the stubbed endpoints.
+// newReviewApp stubs GET /pulls/7/files (auth.go) and optionally POST /pulls/7/reviews,
+// with seeded caches so only those endpoints are hit.
 func newReviewApp(t *testing.T, reviews http.HandlerFunc) *App {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -202,11 +199,8 @@ func TestReviewToolsRegistered(t *testing.T) {
 	}
 }
 
-// TestPullRequestAndSubmitReviewAreNotModelTools pins the staged-delivery
-// spine's core safety property: opening a PR and submitting a review make work
-// PUBLIC, so no agent tool call can do either anymore - only the harness's own
-// delivery step (github/tools.go's Deliver), via createPullRequest/
-// createReview, does that, and only after a judge pass.
+// Opening a PR or submitting a review makes work public, so neither is a model tool:
+// only the harness's Deliver does that, after a judge pass.
 func TestPullRequestAndSubmitReviewAreNotModelTools(t *testing.T) {
 	keyPEM, _ := testKeyPEM(t)
 	app, err := NewApp("1", keyPEM)
@@ -220,14 +214,8 @@ func TestPullRequestAndSubmitReviewAreNotModelTools(t *testing.T) {
 	}
 }
 
-// validComments is the delivery-time replacement for the draft tools' per-add
-// validation: gate-parsed inline findings are anchored against the PR diff, a
-// clone-relative path is normalised to its repo-relative form, and a finding
-// on an uncommentable line is RE-ANCHORED to the nearest commentable line in
-// the same file, with its true location stated in the body, instead of being
-// dropped (#694). Only a finding whose path never resolves to a changed file
-// at all is dropped - that's a different failure (the reviewer named a file
-// not in this diff), not location loss.
+// validComments anchors findings against the diff, normalises clone-relative paths, and re-anchors an
+// uncommentable line to the nearest commentable one; only a path outside the diff is dropped.
 func TestValidCommentsNormalisesAndReanchors(t *testing.T) {
 	app := newReviewApp(t, nil)
 	in := []sdk.ReviewComment{
@@ -263,11 +251,8 @@ func TestValidCommentsNormalisesAndReanchors(t *testing.T) {
 	}
 }
 
-// TestValidCommentsUnanchoredWhenFileHasNoCommentableLine pins #694's second
-// case: a finding staged against a file whose diff hunk is a pure deletion
-// (zero commentable RIGHT lines anywhere) can't be re-anchored at all, so it
-// comes back as an unanchored finding for the caller to fold into the review
-// body, instead of vanishing.
+// A finding on a pure-deletion hunk can't be re-anchored, so it returns as unanchored for the caller
+// to fold into the review body instead of vanishing.
 func TestValidCommentsUnanchoredWhenFileHasNoCommentableLine(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/acme/widgets/pulls/7/files", func(w http.ResponseWriter, _ *http.Request) {
@@ -307,9 +292,7 @@ func TestValidCommentsUnanchoredWhenFileHasNoCommentableLine(t *testing.T) {
 	}
 }
 
-// TestValidCommentsDropsExactDuplicates pins #562: a byte-identical finding
-// staged twice posts once, but two DIFFERENT findings on the same line both
-// survive (they must never be silently collapsed).
+// A byte-identical finding staged twice posts once; two different findings on one line both survive.
 func TestValidCommentsDropsExactDuplicates(t *testing.T) {
 	app := newReviewApp(t, nil)
 	in := []sdk.ReviewComment{
@@ -333,11 +316,7 @@ func TestValidCommentsDropsExactDuplicates(t *testing.T) {
 	}
 }
 
-// TestValidCommentsDropsDuplicatesAcrossPathSpellings proves the dedupe runs
-// AFTER path normalisation: two findings staged against differently-spelled
-// but equivalent paths (clone-relative vs repo-relative) with the same line
-// and body are the same finding, and only one survives. A dedupe keyed on the
-// raw staged path (e.g. at stage_review_comment time) would miss this.
+// Dedupe runs after path normalisation, so clone-relative and repo-relative spellings of one finding collapse.
 func TestValidCommentsDropsDuplicatesAcrossPathSpellings(t *testing.T) {
 	app := newReviewApp(t, nil)
 	in := []sdk.ReviewComment{
@@ -353,10 +332,8 @@ func TestValidCommentsDropsDuplicatesAcrossPathSpellings(t *testing.T) {
 	}
 }
 
-// TestSanitizeCommentBody pins #581: a delivered plan comment must not carry
-// a leading narration line standing in for the answer, or the whole body
-// wrapped in an outer ```markdown fence (renders as one literal code block on
-// GitHub - no headings, no tables, no rendered mermaid).
+// A delivered plan comment must not lead with a narration line or wrap the body in an outer ```markdown fence
+// (GitHub would render it as one literal code block).
 func TestSanitizeCommentBody(t *testing.T) {
 	tests := []struct {
 		name string
@@ -414,9 +391,7 @@ func TestSanitizeCommentBody(t *testing.T) {
 	}
 }
 
-// TestDeliverStagedCommentSanitizesBody is the integration-level pin: the
-// POSTED comment (marker included) carries neither defect, exercised through
-// the real deliverStagedComment path a plan delivery uses.
+// The posted comment (marker included) carries neither defect through the real deliverStagedComment path.
 func TestDeliverStagedCommentSanitizesBody(t *testing.T) {
 	var posted string
 	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
@@ -452,11 +427,8 @@ func TestDeliverStagedCommentSanitizesBody(t *testing.T) {
 	}
 }
 
-// TestDeliverReviewTargetsCreatedPRNotIssue pins #652: an ISSUE-scoped run that
-// opens a PR and stages a review in the same delivery must submit that review
-// against the PR it just created. Before this, dc.IssueNumber (the issue number
-// recovered from the chat id) was used, so the review POSTed to
-// pulls/<issue-number>, 404'd, and was lost with only a server-side log.
+// An issue-scoped run that opens a PR and stages a review must review the PR it just created,
+// not POST to pulls/<issue-number> and lose it.
 func TestDeliverReviewTargetsCreatedPRNotIssue(t *testing.T) {
 	const issueNum, createdPR = 61, 96
 	var reviewPaths []string
@@ -498,9 +470,8 @@ func TestDeliverReviewTargetsCreatedPRNotIssue(t *testing.T) {
 	}
 }
 
-// A 422 on the inline anchors must not lose the review: the clone is never
-// refreshed, so a mid-run push leaves findings on lines the current diff lacks.
-// Every finding moves to the summary, even ones that would still anchor.
+// A 422 on inline anchors must not lose the review: a mid-run push can leave findings off the current diff,
+// so every finding moves to the summary.
 func TestSubmitReviewMovesAllFindingsToSummaryOn422(t *testing.T) {
 	var attempts int
 	var lastBody string

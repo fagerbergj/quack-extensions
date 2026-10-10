@@ -13,9 +13,8 @@ import (
 	"github.com/fagerbergj/quack-extensions/sdk"
 )
 
-// fakeSessionCtx stands in for the agent.Context quack actually passes -
-// OnAssignment recovers the chat id via a structural SessionID() method,
-// not a concrete adk type.
+// fakeSessionCtx stands in for quack's agent.Context: OnAssignment recovers the chat id
+// via a structural SessionID() method, not a concrete adk type.
 type fakeSessionCtx struct {
 	context.Context
 	sessionID string

@@ -39,18 +39,14 @@ func testKeyPEM(t *testing.T) (string, *rsa.PublicKey) {
 	return string(pemBytes), &key.PublicKey
 }
 
-// fakeDispatchHost records every Host.Dispatch call this test's Extension
-// makes. notify fires (non-blocking) after each recorded call so a test that
-// went through handleWebhook - which dispatches from a goroutine - can wait
-// deterministically instead of polling calls()/sleeping.
+// fakeDispatchHost records every Host.Dispatch call; notify fires (non-blocking) after each so tests that
+// dispatch via handleWebhook's goroutine can wait instead of polling.
 type fakeDispatchHost struct {
 	mu          sync.Mutex
 	dispatches  []sdk.DispatchRequest
 	dispatchErr error
 	notify      chan sdk.DispatchRequest
-	// block, if non-nil, is waited on before a call is recorded - simulates a
-	// slow Host.Dispatch to prove handleWebhook's `go e.dispatch(...)` returns
-	// without waiting on it.
+	// block, if non-nil, is awaited before recording - a slow Host.Dispatch, proving handleWebhook doesn't wait on it.
 	block chan struct{}
 
 	// originUpdates records every Host.UpdateChatOrigin call. originErr, keyed
@@ -119,9 +115,7 @@ func (f *fakeDispatchHost) calls() []sdk.DispatchRequest {
 	return out
 }
 
-// waitForDispatch blocks for one Host.Dispatch call, failing the test if none
-// arrives within timeout - the async-dispatch replacement for the original's
-// runner.gotMessage channel read.
+// waitForDispatch blocks for one Host.Dispatch call, failing the test if none arrives within timeout.
 func (f *fakeDispatchHost) waitForDispatch(t *testing.T, timeout time.Duration) sdk.DispatchRequest {
 	t.Helper()
 	select {
@@ -133,9 +127,8 @@ func (f *fakeDispatchHost) waitForDispatch(t *testing.T, timeout time.Duration) 
 	}
 }
 
-// stubGitHub serves the REST endpoints dispatch touches (installation
-// resolve, token mint, comment post) and signals postedComment when a
-// comment lands.
+// stubGitHub serves the REST endpoints dispatch touches (installation, token, comment post);
+// postedComment signals when a comment lands.
 func stubGitHub(t *testing.T, postedComment chan<- string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -260,9 +253,7 @@ func pullRequestReviewBody(state, reviewer string, prNumber int) []byte {
 	}`, state, reviewer, prNumber))
 }
 
-// newTestExtension builds an Extension wired to apiBase (a stubGitHub
-// server) and a fakeDispatchHost, bypassing the sdk.Factory/YAML path -
-// these tests exercise the webhook/dispatch/RunEnded machinery directly.
+// newTestExtension wires an Extension to apiBase and a fakeDispatchHost, bypassing the sdk.Factory/YAML path.
 func newTestExtension(t *testing.T, apiBase string, triggers []string) (*Extension, *fakeDispatchHost) {
 	t.Helper()
 	keyPEM, _ := testKeyPEM(t)
@@ -384,10 +375,8 @@ func TestTriggerTaskLineStart(t *testing.T) {
 	}
 }
 
-// TestDispatchBuildsRequestAndStoresPending proves the new dispatch() path:
-// it shapes an sdk.DispatchRequest (permissions/deliverable text in
-// Ask.Message, the deterministic Setup) and stores a pendingRun BEFORE
-// calling Host.Dispatch, rather than driving a run to completion itself.
+// Dispatch shapes an sdk.DispatchRequest and stores the pendingRun BEFORE calling Host.Dispatch,
+// since RunEnded can fire as soon as Dispatch returns.
 func TestDispatchBuildsRequestAndStoresPending(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := stubGitHub(t, posted)
@@ -430,9 +419,8 @@ func TestDispatchBuildsRequestAndStoresPending(t *testing.T) {
 	}
 }
 
-// claimInflightFor puts chatID's already-stored pendingRun into the state a
-// real dispatch leaves behind: a live inflight lease whose token the pendingRun
-// carries, so finalize's compare-and-delete releases it.
+// claimInflightFor gives chatID's stored pendingRun the live inflight lease a real dispatch leaves,
+// so finalize's compare-and-delete releases it.
 func claimInflightFor(t *testing.T, e *Extension, chatID, sessionID string) {
 	t.Helper()
 	claimedAt, _, claimed := e.claimInflight(sessionID)
@@ -446,9 +434,7 @@ func claimInflightFor(t *testing.T, e *Extension, chatID, sessionID string) {
 	v.(*pendingRun).claimedAt = claimedAt
 }
 
-// TestDispatchDedupDropsSecondTrigger proves the inflight guard still works
-// unchanged: a second trigger for a session already dispatched is dropped,
-// not queued, and never reaches Host.Dispatch.
+// A second trigger for an already-dispatched session is dropped, not queued, and never reaches Host.Dispatch.
 func TestDispatchDedupDropsSecondTrigger(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := stubGitHub(t, posted)
@@ -464,11 +450,8 @@ func TestDispatchDedupDropsSecondTrigger(t *testing.T) {
 	}
 }
 
-// TestDispatchTakesOverExpiredInflightClaim is #29: a run that dies without
-// settling never reaches finalize's delete, so its claim outlives it. Before the
-// lease that wedged the session for the life of the process - every later
-// trigger, of every type, took the dedup branch and returned. A claim older than
-// the lease must be taken over so the next trigger actually dispatches.
+// A run that dies without settling leaves its claim behind; a claim older than the lease must be taken over
+// or every later trigger dedups forever.
 func TestDispatchTakesOverExpiredInflightClaim(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := stubGitHub(t, posted)
@@ -489,9 +472,7 @@ func TestDispatchTakesOverExpiredInflightClaim(t *testing.T) {
 	}
 }
 
-// TestDispatchDedupHoldsWithinLease is the other half of #29: taking over
-// EXPIRED claims must not weaken the real guard. A second trigger arriving while
-// a claim is still within its lease is still dropped.
+// Taking over expired claims must not weaken the guard: a trigger within a live lease is still dropped.
 func TestDispatchDedupHoldsWithinLease(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := stubGitHub(t, posted)
@@ -509,10 +490,8 @@ func TestDispatchDedupHoldsWithinLease(t *testing.T) {
 	}
 }
 
-// TestStragglerFinalizeKeepsTakeoverClaim pins the compare-and-delete in
-// finalize: when a straggler from the displaced run finally settles, it must
-// release its OWN claim only - deleting the takeover's claim would let a third
-// trigger start a concurrent run on a session already running one.
+// A straggler from a displaced run must release only its OWN claim; deleting the takeover's claim would let
+// a third trigger start a concurrent run.
 func TestStragglerFinalizeKeepsTakeoverClaim(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := stubGitHub(t, posted)
@@ -543,11 +522,8 @@ func TestStragglerFinalizeKeepsTakeoverClaim(t *testing.T) {
 	}
 }
 
-// TestRunEndedNudgesOnceThenFinalizes exercises the async nudge chain that
-// replaces the old synchronous e.drive(runNudge) call: a label-triggered
-// dispatch whose outcome carries PlanRan=false gets ONE follow-up Dispatch
-// with runNudge as the message; that follow-up's own RunEnded then finalizes
-// (posts the answer as a comment) rather than nudging again.
+// A label-triggered run with PlanRan=false gets exactly ONE runNudge follow-up Dispatch;
+// the follow-up's own RunEnded finalizes rather than nudging again.
 func TestRunEndedNudgesOnceThenFinalizes(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := stubGitHub(t, posted)
@@ -574,8 +550,7 @@ func TestRunEndedNudgesOnceThenFinalizes(t *testing.T) {
 	if calls[0].Ask.Message != runNudge {
 		t.Errorf("nudge message = %q, want runNudge", calls[0].Ask.Message)
 	}
-	// #47: the nudge must carry the original dispatch's Run.Setup, or a
-	// nudged PR review can never plan (no ExistingHeadRef to override).
+	// The nudge must carry the original Run.Setup, or a nudged PR review can never plan (no ExistingHeadRef).
 	if calls[0].Run.Setup == nil || calls[0].Run.Setup.ExistingHeadRef != "pr-7-head" {
 		t.Errorf("nudge Run.Setup = %+v, want ExistingHeadRef %q carried over from the first dispatch", calls[0].Run.Setup, "pr-7-head")
 	}
@@ -583,7 +558,7 @@ func TestRunEndedNudgesOnceThenFinalizes(t *testing.T) {
 		t.Fatalf("pending entry removed after nudge - RunEnded must keep it for the nudge's own callback")
 	}
 
-	// The nudge's own RunEnded now fires with a real answer - finalize, not another nudge.
+	// The nudge's own RunEnded fires with a real answer - finalize, not another nudge.
 	e.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "done, see the fix"})
 
 	select {
@@ -602,9 +577,7 @@ func TestRunEndedNudgesOnceThenFinalizes(t *testing.T) {
 	}
 }
 
-// TestRunEndedDoesNotNudgeAGuardHardStop pins the QA rig regression: a run
-// the repeat guard hard-stopped finalizes as RunFailed (quack #1391), and
-// nudging it would only reproduce the identical refused tool-call loop.
+// A guard hard-stop finalizes as RunFailed; nudging it would only reproduce the refused tool-call loop.
 func TestRunEndedDoesNotNudgeAGuardHardStop(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := stubGitHub(t, posted)
@@ -638,10 +611,7 @@ func TestRunEndedDoesNotNudgeAGuardHardStop(t *testing.T) {
 	}
 }
 
-// TestFinalizeSkipsSummaryWhenDeliveryVerified proves finalize's
-// "commitDelivery already posted the review/PR" short-circuit still holds:
-// when takeDeliveryDetail reports a verified delivery, finalize must not
-// ALSO post the run's answer as a duplicate comment.
+// When takeDeliveryDetail reports a verified delivery, finalize must not also post the answer as a duplicate.
 func TestFinalizeSkipsSummaryWhenDeliveryVerified(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := stubGitHub(t, posted)
@@ -668,8 +638,8 @@ func TestFinalizeSkipsSummaryWhenDeliveryVerified(t *testing.T) {
 	}
 }
 
-// A review run that ends done with nothing delivered (prod quack#1607, 2026-10-02) must not
-// post its analysis prose as a comment: the PR gets a short no-verdict note instead.
+// A review run that ends done with nothing delivered must not post its analysis prose:
+// the PR gets a short no-verdict note instead.
 func TestFinalizeReviewWithoutVerdictPostsNote(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := stubGitHub(t, posted)
@@ -696,9 +666,7 @@ func TestFinalizeReviewWithoutVerdictPostsNote(t *testing.T) {
 	}
 }
 
-// TestFinalizePostsFailureCause pins #45: when RunOutcome.Error is set on a
-// failed run, finalize must post the real cause instead of the generic
-// silent-gap message.
+// When RunOutcome.Error is set on a failed run, finalize posts the real cause, not the generic silent-gap message.
 func TestFinalizePostsFailureCause(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := stubGitHub(t, posted)
@@ -752,11 +720,8 @@ func TestFinalizePostsSilentGapWhenNoError(t *testing.T) {
 	}
 }
 
-// TestFinalizePostsAnswerWhenPushLeftHeadUnchanged pins #876/#880/#882: a
-// ci_fix run that correctly finds nothing to fix still pushes (a no-op) and
-// still records a delivery outcome - if that alone suppressed the summary,
-// the run's entire analysis would post nowhere. pushedSHA equal to the PR's
-// pre-run head must fall through to the answer comment.
+// A ci_fix no-op push still records a delivery; pushedSHA equal to the pre-run head must still post the answer,
+// or the run's analysis posts nowhere.
 func TestFinalizePostsAnswerWhenPushLeftHeadUnchanged(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := stubGitHub(t, posted)
@@ -785,9 +750,7 @@ func TestFinalizePostsAnswerWhenPushLeftHeadUnchanged(t *testing.T) {
 	}
 }
 
-// TestFinalizeSkipsSummaryWhenPushActuallyMovedHead pins the complement: a
-// push whose SHA differs from the PR's pre-run head is real delivered work,
-// so the existing skip-the-duplicate-comment behavior must still hold.
+// A push whose SHA differs from the pre-run head is real delivered work, so the duplicate comment is skipped.
 func TestFinalizeSkipsSummaryWhenPushActuallyMovedHead(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := stubGitHub(t, posted)
@@ -814,11 +777,8 @@ func TestFinalizeSkipsSummaryWhenPushActuallyMovedHead(t *testing.T) {
 	}
 }
 
-// TestRunEndedCancelledPostsNoCommentAndDoesNotNudge pins the fix for the
-// live incident (quack#879): a user-cancelled run's Answer is mid-thought,
-// not a finished product, so finalize must post nothing - and a
-// label-triggered cancelled run must not get the no-plan nudge re-dispatch
-// either, since a human cancellation is not a silent no-op to retry.
+// A cancelled run's Answer is mid-thought: finalize posts nothing, and a cancelled label run is not nudged
+// since a human cancellation is not a silent no-op to retry.
 func TestRunEndedCancelledPostsNoCommentAndDoesNotNudge(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := stubGitHub(t, posted)
@@ -852,9 +812,7 @@ func TestRunEndedCancelledPostsNoCommentAndDoesNotNudge(t *testing.T) {
 	}
 }
 
-// TestRunEndedDoneStillPostsComment is the RunCancelled test's contrast case:
-// an ordinary RunDone outcome must keep posting its answer as a comment,
-// unchanged by the new cancelled handling.
+// Contrast to the cancelled case: an ordinary RunDone outcome still posts its answer as a comment.
 func TestRunEndedDoneStillPostsComment(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := stubGitHub(t, posted)
@@ -921,9 +879,8 @@ func TestHandleWebhookPROpenedTrigger(t *testing.T) {
 	}
 }
 
-// TestChatOriginDistinguishesIssueFromPR pins #31: issue and PR numbers share
-// one sequence per repo, so the same number must still be tellable apart from
-// the sidebar chip alone - while Href keeps GitHub's own URL spelling.
+// Issue and PR numbers share one sequence per repo, so the chip must tell them apart;
+// Href keeps GitHub's own URL spelling.
 func TestChatOriginDistinguishesIssueFromPR(t *testing.T) {
 	issue := chatOrigin("acme", "widgets", false, 42, "open", sdk.SubjectOpen)
 	pr := chatOrigin("acme", "widgets", true, 42, "draft", sdk.SubjectOpen)
@@ -949,8 +906,36 @@ func TestChatOriginDistinguishesIssueFromPR(t *testing.T) {
 	}
 }
 
-// TestHandleWebhookIssueStateChangeRefreshesOrigin pins the event→badge
-// mapping for a plain issue's own close/reopen - #844.
+// seedChatHistory stores a snapshot and review baseline for acme/widgets#7's chat.
+func seedChatHistory(t *testing.T, ext *Extension) {
+	t.Helper()
+	ctx, chatID := context.Background(), globalChatID("github-acme-widgets-7")
+	if err := ext.store.SetSnapshot(ctx, chatID, "{}"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ext.store.SetReviewBaseline(ctx, chatID, "[]"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// assertChatHistory checks whether acme/widgets#7's snapshot and baseline survived: a close drops both.
+func assertChatHistory(t *testing.T, ext *Extension, want bool) {
+	t.Helper()
+	ctx, chatID := context.Background(), globalChatID("github-acme-widgets-7")
+	_, snap, err := ext.store.GetSnapshot(ctx, chatID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, base, err := ext.store.GetReviewBaseline(ctx, chatID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap != want || base != want {
+		t.Errorf("snapshot kept=%v baseline kept=%v, want both %v", snap, base, want)
+	}
+}
+
+// A plain issue's close/reopen maps to the right badge and state.
 func TestHandleWebhookIssueStateChangeRefreshesOrigin(t *testing.T) {
 	tests := []struct {
 		action    string
@@ -965,12 +950,14 @@ func TestHandleWebhookIssueStateChangeRefreshesOrigin(t *testing.T) {
 			srv := stubGitHub(t, make(chan string, 1))
 			defer srv.Close()
 			ext, fh := newTestExtension(t, srv.URL, nil)
+			seedChatHistory(t, ext)
 
 			rec := httptest.NewRecorder()
 			ext.handleWebhook(rec, signedRequest("issues", issuesBody(tt.action, "", "alice", false)))
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 			}
+			assertChatHistory(t, ext, tt.action != "closed")
 
 			calls := fh.originCalls()
 			if len(calls) != 1 {
@@ -1006,9 +993,7 @@ func TestHandleWebhookIssueStateChangeRefreshesOrigin(t *testing.T) {
 	}
 }
 
-// TestHandleWebhookPullRequestStateChangeRefreshesOrigin pins the
-// merged-vs-plain-closed distinction (#844): a PR's "closed" action carries
-// merged=true/false in the same payload, badge must reflect it.
+// A PR's closed action carries merged=true/false; the badge must distinguish merged from plain closed.
 func TestHandleWebhookPullRequestStateChangeRefreshesOrigin(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -1026,12 +1011,14 @@ func TestHandleWebhookPullRequestStateChangeRefreshesOrigin(t *testing.T) {
 			srv := stubGitHub(t, make(chan string, 1))
 			defer srv.Close()
 			ext, fh := newTestExtension(t, srv.URL, nil)
+			seedChatHistory(t, ext)
 
 			rec := httptest.NewRecorder()
 			ext.handleWebhook(rec, signedRequest("pull_request", pullRequestStateBody(tt.action, tt.merged)))
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 			}
+			assertChatHistory(t, ext, tt.action != "closed")
 
 			calls := fh.originCalls()
 			if len(calls) != 1 {
@@ -1065,9 +1052,7 @@ func TestHandleWebhookPullRequestStateChangeRefreshesOrigin(t *testing.T) {
 	}
 }
 
-// TestRefreshChatOriginUnknownChatSwallowedCleanly pins the no-op contract:
-// sdk.ErrUnknownChat (the common case - most issues/PRs never had a chat
-// dispatched) must not surface as a handler error or block the webhook ack.
+// sdk.ErrUnknownChat is the common case (most issues/PRs never had a chat) and must not block the webhook ack.
 func TestRefreshChatOriginUnknownChatSwallowedCleanly(t *testing.T) {
 	srv := stubGitHub(t, make(chan string, 1))
 	defer srv.Close()
@@ -1192,9 +1177,7 @@ func TestHandleWebhookMentionRespectsTriggerSet(t *testing.T) {
 	}
 }
 
-// TestHandleWebhookMentionTriggersRun pins the mention path end to end: the
-// dispatch carries the task/repo, and RunEnded's finalize posts the run's
-// answer as a comment.
+// Mention path end to end: the dispatch carries task/repo, and finalize posts the answer as a comment.
 func TestHandleWebhookMentionTriggersRun(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := stubGitHub(t, posted)
@@ -1207,9 +1190,7 @@ func TestHandleWebhookMentionTriggersRun(t *testing.T) {
 		t.Fatalf("status = %d; want 202", rec.Code)
 	}
 
-	// The repo's own name is no longer inlined (#1010 dropped the raw event
-	// payload from the envelope; Setup.Repo already carries it for the run) -
-	// only the triggering comment's own text still is.
+	// Only the triggering comment's text is inlined; the raw event lives in the "event" artifact.
 	req := fh.waitForDispatch(t, 2*time.Second)
 	if !strings.Contains(req.Ask.Message, "add a feature") {
 		t.Errorf("dispatch message missing the triggering comment's task: %q", req.Ask.Message)
@@ -1278,9 +1259,7 @@ func TestHandleWebhookBadSignature(t *testing.T) {
 	}
 }
 
-// TestHandleWebhookAcksBeforeRunFinishes pins that handleWebhook returns fast
-// even when Host.Dispatch is slow - the dispatch happens in a goroutine
-// (`go e.dispatch(...)`), never inline on the request path.
+// handleWebhook returns fast even when Host.Dispatch is slow: dispatch runs in a goroutine, never inline.
 func TestHandleWebhookAcksBeforeRunFinishes(t *testing.T) {
 	ext, fh := newTestExtension(t, "http://unused", nil)
 	fh.block = make(chan struct{})
@@ -1396,9 +1375,8 @@ func TestHandleWebhookBotCommentIgnored(t *testing.T) {
 	}
 }
 
-// TestHandleWebhookInvokerAllowlist pins issue #357: a mention only
-// dispatches when its commenter is in allowed_users (case-insensitive), and
-// an empty allowlist is a secure DENY-ALL default rather than allow-all.
+// A mention dispatches only when its commenter is in allowed_users (case-insensitive);
+// an empty allowlist is DENY-ALL.
 func TestHandleWebhookInvokerAllowlist(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -1447,10 +1425,7 @@ func TestHandleWebhookInvokerAllowlist(t *testing.T) {
 	}
 }
 
-// TestHandleWebhookIssueLabelRespectsAllowlist pins the issues-labeled
-// (quack:plan/quack:implement) enforcement point: a sender outside
-// allowed_users never dispatches, even though the label itself required repo
-// write access.
+// A label sender outside allowed_users never dispatches, even though applying the label required write access.
 func TestHandleWebhookIssueLabelRespectsAllowlist(t *testing.T) {
 	ext, fh := newTestExtension(t, "http://unused", []string{"issue_plan"})
 
@@ -1464,10 +1439,7 @@ func TestHandleWebhookIssueLabelRespectsAllowlist(t *testing.T) {
 	}
 }
 
-// TestHandleWebhookAutoReviewIgnoresAllowlist pins that the synthetic
-// pr_opened auto-review has no human invoker and fires regardless of
-// allowed_users (including empty/deny-all) - the allowlist gates
-// human-invoked triggers only.
+// The synthetic pr_opened auto-review has no human invoker, so it fires regardless of allowed_users.
 func TestHandleWebhookAutoReviewIgnoresAllowlist(t *testing.T) {
 	srv := stubGitHub(t, make(chan string, 1))
 	defer srv.Close()
@@ -1482,11 +1454,8 @@ func TestHandleWebhookAutoReviewIgnoresAllowlist(t *testing.T) {
 	fh.waitForDispatch(t, 2*time.Second)
 }
 
-// TestHandleWebhookNoAnswerFailsLoudly guards #568: a run that neither hits
-// its deadline nor gets cancelled, but persists no final answer, must post an
-// explicit failure - not the old "quack finished but produced no answer."
-// placeholder, which read identically to a run that legitimately had nothing
-// to say.
+// A run that persists no final answer must post an explicit failure,
+// not a placeholder that reads like a run with nothing to say.
 func TestHandleWebhookNoAnswerFailsLoudly(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := stubGitHub(t, posted)
@@ -1521,10 +1490,7 @@ func TestHandleWebhookNoAnswerFailsLoudly(t *testing.T) {
 	}
 }
 
-// TestHandleWebhookSubmittedReviewSkipsSummaryComment pins that when the run
-// submitted a formal review (recordDelivery's reviewDelivered), the review IS
-// the deliverable on the PR - finalize must NOT also post the run's text
-// summary as a duplicate top-level comment.
+// A submitted formal review IS the deliverable; finalize must not also post the summary as a duplicate comment.
 func TestHandleWebhookSubmittedReviewSkipsSummaryComment(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := stubGitHub(t, posted)
@@ -1549,11 +1515,8 @@ func TestHandleWebhookSubmittedReviewSkipsSummaryComment(t *testing.T) {
 	}
 }
 
-// TestHandleWebhookFailedDeliveryStillComments pins #714/#286: a FAILED
-// delivery must not count as delivered, and must not fall back to the
-// worker's own self-reported answer (which can claim success it never had) -
-// the comment must be the actual delivery error, with the branch so the work
-// is recoverable by hand.
+// A FAILED delivery is not delivered and must not fall back to the worker's self-reported answer:
+// the comment is the real delivery error plus the branch, so the work is recoverable.
 func TestHandleWebhookFailedDeliveryStillComments(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := stubGitHub(t, posted)
@@ -1587,10 +1550,8 @@ func TestHandleWebhookFailedDeliveryStillComments(t *testing.T) {
 	}
 }
 
-// TestDispatchDedupNearSimultaneousVerifiesTheInflightGuard pins the inflight
-// guard's full lifecycle through handleWebhook: a second trigger on the same
-// session, while the first is still awaiting RunEnded, is dropped; once
-// RunEnded finalizes the first, a third trigger on the same session succeeds.
+// Inflight guard through handleWebhook: a second trigger before RunEnded is dropped;
+// after RunEnded finalizes, a third trigger succeeds.
 func TestDispatchDedupNearSimultaneousVerifiesTheInflightGuard(t *testing.T) {
 	posted := make(chan string, 2)
 	srv := stubGitHub(t, posted)
@@ -1626,7 +1587,7 @@ func TestDispatchDedupNearSimultaneousVerifiesTheInflightGuard(t *testing.T) {
 		t.Fatal("first dispatch never posted its answer")
 	}
 
-	// A third dispatch on the same sessionID must now succeed.
+	// A third dispatch on the same sessionID must succeed.
 	rec3 := httptest.NewRecorder()
 	ext.handleWebhook(rec3, signedRequest("issue_comment", issueCommentBody("@quack third")))
 	if rec3.Code != http.StatusAccepted {
@@ -1639,9 +1600,7 @@ func TestDispatchDedupNearSimultaneousVerifiesTheInflightGuard(t *testing.T) {
 	}
 }
 
-// TestDispatchDedupDifferentSessionsAllowsConcurrent verifies that dispatches
-// on DIFFERENT sessions (different issues/PRs) all proceed - the inflight
-// guard only blocks duplicate sessionIDs.
+// Dispatches on different sessions all proceed; the guard only blocks duplicate sessionIDs.
 func TestDispatchDedupDifferentSessionsAllowsConcurrent(t *testing.T) {
 	ext, fh := newTestExtension(t, "http://unused", nil)
 
@@ -1673,9 +1632,7 @@ func TestDispatchDedupDifferentSessionsAllowsConcurrent(t *testing.T) {
 	}
 }
 
-// TestDispatchPostsHITLCommentOnPause pins the HITL pause path: finalize
-// posts the paused node's question as a comment, framed distinctly from a
-// "produced no answer" tail.
+// finalize posts a paused node's question as a comment, framed distinctly from a no-answer tail.
 func TestDispatchPostsHITLCommentOnPause(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := stubGitHub(t, posted)
@@ -1710,9 +1667,7 @@ func TestDispatchPostsHITLCommentOnPause(t *testing.T) {
 	}
 }
 
-// TestDispatchSkipsNudgeOnPause verifies that RunEnded does NOT nudge a run
-// that hit a HITL pause with a plan already run - the nudge is only for runs
-// that produced no plan but were otherwise complete (not paused).
+// RunEnded does not nudge a HITL-paused run that already ran a plan.
 func TestDispatchSkipsNudgeOnPause(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := stubGitHub(t, posted)
@@ -1739,7 +1694,7 @@ func TestDispatchSkipsNudgeOnPause(t *testing.T) {
 	}
 }
 
-// ---- Batch 2: deliverable classification / isWorkRequest / dispatch internals / plan-collapse / title (ported from quack's internal/github/webhook_test.go) ----
+// ---- deliverable classification, isWorkRequest, dispatch internals, plan collapse, title ----
 
 func TestBuildEnvelopeDeliverableClassification(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
@@ -1777,12 +1732,8 @@ func TestBuildEnvelopeDeliverableClassification(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeDeliverableClassifierResolvesFindingsAddress pins #689's
-// exact production failure: "please address these findings" has no delivery
-// word and its impl verb isn't clause-initial, so ImplementationIntent
-// misreads it as review-only. With "pull_request" granted (the real ledger's
-// permission set), classifyGrantedPRDeliverable (#760) - not the regex -
-// picks the deliverable, and gets this one right.
+// "please address these findings" fools ImplementationIntent into review-only; with "pull_request" granted,
+// classifyGrantedPRDeliverable picks the deliverable and gets it right.
 func TestBuildEnvelopeDeliverableClassifierResolvesFindingsAddress(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	ext.intentClassifier = &fakeIntentClassifier{grantedDeliverable: "COMMIT"}
@@ -1807,17 +1758,10 @@ func TestBuildEnvelopeDeliverableClassifierResolvesFindingsAddress(t *testing.T)
 	}
 }
 
-// TestBuildEnvelopeDeliverableBoundedBySoleGrant pins #689's case 3: when the
-// grant permits only "review" (no "pull_request"), that's the deliverable
-// regardless of what the message reads like - classifyGrantedPRDeliverable
-// is never even consulted (mentionIsWork's pull_request gate fails first),
-// so it cannot hand back an ungranted plan.
+// With only "review" granted, that's the deliverable regardless of wording: classifyGrantedPRDeliverable
+// is never consulted, so it cannot hand back an ungranted plan.
 func TestBuildEnvelopeDeliverableBoundedBySoleGrant(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
-	// The original's fakeIntentClassifier also set `deliverable: "COMMIT"` for
-	// classifyPRDeliverable's old REVIEW/COMMIT model prompt - that prompt is
-	// gone in this port (classifyPRDeliverable is now a pure grant check, see
-	// intent.go), so there is nothing left for that field to drive.
 	classifier := &fakeIntentClassifier{verdict: "WORK"}
 	ext.intentClassifier = classifier
 	allowedKinds := []string{"review"} // PRScoped grant{PostReview: true} only, no pull_request
@@ -1830,23 +1774,18 @@ func TestBuildEnvelopeDeliverableBoundedBySoleGrant(t *testing.T) {
 	if !strings.Contains(env, "<deliverable>a review with inline comments and a verdict</deliverable>") {
 		t.Errorf("with only review granted, the deliverable must fall back to review even though the message asks for a fix:\n%s", env)
 	}
-	// One call total: isWorkRequest's WORK/CONVERSATIONAL check. classifyPRDeliverable
-	// makes no model call at all in this port.
+	// One call total: isWorkRequest's WORK/CONVERSATIONAL check; the review fallback makes no model call.
 	if calls := atomic.LoadInt32(&classifier.calls); calls != 1 {
 		t.Errorf("classifier called %d times, want 1 (deliverable choice is bounded to the sole grant, no model call needed)", calls)
 	}
 }
 
-// TestBuildEnvelopeGrantedPRChangeRequestClassifiesAsCommit pins #760 test
-// case 1: home-server#3, a quack-authored PR with "comment"+"pull_request"
-// granted, got a comment naming three numbered defects with the exact
-// replacement values and "Pick one and say which" - an unambiguous change
-// request. classifyGrantedPRDeliverable goes straight to what the comment
-// asks for, bounded by the grant.
+// A quack-authored PR with comment+pull_request granted, given an unambiguous change request,
+// classifies as commit.
 func TestBuildEnvelopeGrantedPRChangeRequestClassifiesAsCommit(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	ext.intentClassifier = &fakeIntentClassifier{grantedDeliverable: "COMMIT"}
-	// PRScoped grant{JoinPRConversation, PushCommitsToPR}: pushCommitsToPR→"pull_request", joinPRConversation→"comment".
+	// PRScoped grant: pushCommitsToPR -> "pull_request", joinPRConversation -> "comment".
 	allowedKinds := []string{"pull_request", "comment"}
 
 	task := "1. EMBEDDING_MODEL should be qwen3-embed, not text-embedding-3-small. " +
@@ -1862,9 +1801,7 @@ func TestBuildEnvelopeGrantedPRChangeRequestClassifiesAsCommit(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeGrantedPRQuestionStaysReply pins #760 test case 2, the
-// regression guard: a genuine question still gets a reply even though
-// "pull_request" is granted.
+// Regression guard: a genuine question still gets a reply even with "pull_request" granted.
 func TestBuildEnvelopeGrantedPRQuestionStaysReply(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	ext.intentClassifier = &fakeIntentClassifier{grantedDeliverable: "REPLY"}
@@ -1881,9 +1818,7 @@ func TestBuildEnvelopeGrantedPRQuestionStaysReply(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeGrantedPRDeliverableFailsSafeToReply pins the fail-safe
-// direction for #760's gate: a classifier failure here has no other signal
-// to fall back on, so it must fail toward reply - never guess commit.
+// A classifier failure here has no fallback signal, so it fails toward reply, never commit.
 func TestBuildEnvelopeGrantedPRDeliverableFailsSafeToReply(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	ext.intentClassifier = &fakeIntentClassifier{grantedDeliverableErr: errors.New("model unavailable")}
@@ -1900,9 +1835,7 @@ func TestBuildEnvelopeGrantedPRDeliverableFailsSafeToReply(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeGrantedPRDeliverableIgnoresUngrantedReview pins that a
-// live COMMIT/REVIEW answer never surfaces an ungranted deliverable: REVIEW
-// without "review" granted degrades to reply rather than escalating to commit.
+// A live REVIEW answer without "review" granted degrades to reply rather than escalating to commit.
 func TestBuildEnvelopeGrantedPRDeliverableIgnoresUngrantedReview(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	ext.intentClassifier = &fakeIntentClassifier{grantedDeliverable: "REVIEW"}
@@ -1919,11 +1852,8 @@ func TestBuildEnvelopeGrantedPRDeliverableIgnoresUngrantedReview(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeIssueDeliverableClassification pins #713: an issue comment
-// asking for implementation gets the PR deliverable when "pull_request" is
-// granted (quack:implement present), but the same comment without that grant
-// stays bounded to a plain reply - the label decides what's LEGAL, the
-// message decides what's ASKED.
+// An issue comment asking for implementation gets the PR deliverable only when "pull_request" is granted:
+// the label decides what's legal, the message what's asked.
 func TestBuildEnvelopeIssueDeliverableClassification(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	ext.intentClassifier = &fakeIntentClassifier{issueDeliverable: "IMPLEMENT"}
@@ -1957,10 +1887,8 @@ func TestBuildEnvelopeIssueDeliverableClassification(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeIssueDeliverableClassifierFailureFallsBack pins #713's
-// robustness requirement: a classifier failure (error, timeout, or
-// unparseable answer) must fall back to ImplementationIntent's wording
-// heuristic, never straight to conversational.
+// A classifier failure (error, timeout, unparseable) falls back to ImplementationIntent's heuristic,
+// never straight to conversational.
 func TestBuildEnvelopeIssueDeliverableClassifierFailureFallsBack(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	ext.intentClassifier = &fakeIntentClassifier{issueDeliverableErr: errors.New("model unavailable")}
@@ -1971,9 +1899,7 @@ func TestBuildEnvelopeIssueDeliverableClassifierFailureFallsBack(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	// ImplementationIntent("implement this, commit it, and open a PR") is true
-	// (implement verb + delivery word) - the classifier failure must still
-	// land on the PR deliverable via the heuristic, not silently downgrade it.
+	// ImplementationIntent is true here, so the classifier failure must still land on the PR deliverable.
 	env := ext.buildEnvelope(context.Background(), issue, "implement this, commit it, and open a PR", seedGC(Snapshot{}, 0), granted, nil)
 	if !strings.Contains(env, "a pull request implementing the approved plan") {
 		t.Errorf("classifier failure should fall back to ImplementationIntent's reading, not conversational:\n%s", env)
@@ -1986,10 +1912,8 @@ func TestBuildEnvelopeIssueDeliverableClassifierFailureFallsBack(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeSeedsFullOnFirstLoad pins the seed half of #666's session
-// model: session creation seeds the whole comment thread as <comments
-// count="N">, triggering comment excluded (it's already inside the <event>
-// block's own comment.body).
+// A new session seeds the whole thread as <comments count="N">, minus the triggering comment
+// (already quoted in <event>).
 func TestBuildEnvelopeSeedsFullOnFirstLoad(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	var issue issueCommentPayload
@@ -2022,9 +1946,7 @@ func TestBuildEnvelopeSeedsFullOnFirstLoad(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeResumeSeedsOnlyDelta pins the resume half of #666: a
-// later run seeds only what changed - new/edited/deleted comments - never
-// the whole thread again.
+// A resumed session seeds only new/edited/deleted comments, never the whole thread again.
 func TestBuildEnvelopeResumeSeedsOnlyDelta(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	var issue issueCommentPayload
@@ -2058,10 +1980,7 @@ func TestBuildEnvelopeResumeSeedsOnlyDelta(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeChangedFilesOnPRRuns pins the scope note: <changed_files>
-// is seeded on PR runs only, with GitHub's own filename/additions/deletions
-// shape (no reshaping needed - changedFile already matches pulls/{n}/files
-// field-for-field).
+// <changed_files> is seeded on PR runs only, in GitHub's own filename/additions/deletions shape.
 func TestBuildEnvelopeChangedFilesOnPRRuns(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	ext.intentClassifier = &fakeIntentClassifier{verdict: "WORK"}
@@ -2089,9 +2008,7 @@ func TestBuildEnvelopeChangedFilesOnPRRuns(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeIncrementalReviewScoping pins #459 §5 under the envelope:
-// a resume with new commits gets the "what's new" deliverable; a resume with
-// none says a full review is not owed either.
+// A resume with new commits gets the "what's new" deliverable; with none, no full review is owed either.
 func TestBuildEnvelopeIncrementalReviewScoping(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	ext.intentClassifier = &fakeIntentClassifier{verdict: "WORK"}
@@ -2123,9 +2040,7 @@ func TestBuildEnvelopeIncrementalReviewScoping(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeConversationalFollowup pins that a PR mention classified
-// CONVERSATIONAL gets the reply deliverable, never review/implement
-// language - and a genuine work request still gets the work deliverable.
+// A PR mention classified CONVERSATIONAL gets the reply deliverable; a real work request gets the work one.
 func TestBuildEnvelopeConversationalFollowup(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	var pr issueCommentPayload
@@ -2173,9 +2088,7 @@ func TestBuildEnvelopeMentionClassifiedAsConversational(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeLabelTriggerNeverClassifies pins rule 1: a label trigger
-// is work by construction, so buildEnvelope must never call the classifier
-// for it - not even to double-check.
+// A label trigger is work by construction, so buildEnvelope must never call the classifier for it.
 func TestBuildEnvelopeLabelTriggerNeverClassifies(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	classifier := &fakeIntentClassifier{verdict: "CONVERSATIONAL"} // even a "no" verdict must not flip a label trigger
@@ -2195,10 +2108,7 @@ func TestBuildEnvelopeLabelTriggerNeverClassifies(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopePartialFixOmitsClosesKeyword pins the partial-fix
-// deliverable distinction: quack:partial-fix suppresses the Closes keyword
-// language, read off the FRESHLY FETCHED snapshot labels (gh.snap.Labels),
-// never a separately-threaded flag.
+// quack:partial-fix suppresses the Closes keyword, read off the freshly fetched snapshot labels.
 func TestBuildEnvelopePartialFixOmitsClosesKeyword(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	ext.labels.PartialFix = "quack:partial-fix"
@@ -2220,9 +2130,7 @@ func TestBuildEnvelopePartialFixOmitsClosesKeyword(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopePlanOnlyDeliverable pins the plan-only deliverable and
-// that the issue body appears exactly once (planTask never embeds it; only
-// the hoisted <issue><description> does - #619's duplicate-body defect).
+// Plan-only deliverable, with the issue body appearing exactly once (only in <issue><description>).
 func TestBuildEnvelopePlanOnlyDeliverable(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	const body = "Widgets are refetched on every request."
@@ -2255,12 +2163,8 @@ func TestBuildEnvelopePlanOnlyDeliverable(t *testing.T) {
 	}
 }
 
-// TestIsWorkRequestTolerantOfWrappedVerdict: a small instruct model rarely
-// answers with a bare word. Exact matching made "**WORK**" unparseable, which
-// fails safe to conversational - so every genuine "@quack review this" would
-// have quietly lost the review framing. CONVERSATIONAL must win when both
-// appear, since "WORK" is a substring of neither but a hedged answer can name
-// both ("not WORK, CONVERSATIONAL").
+// Small models wrap their verdict ("**WORK**"); exact matching would fail safe to conversational and lose
+// review framing. CONVERSATIONAL wins when a hedged answer names both.
 func TestIsWorkRequestTolerantOfWrappedVerdict(t *testing.T) {
 	for _, tt := range []struct {
 		answer string
@@ -2306,8 +2210,7 @@ func TestIsWorkRequestFailsSafe(t *testing.T) {
 	}
 }
 
-// prWithReviewLabel builds a minimal payload carrying the extension's
-// configured review label, for the #1172 fallback-to-review tests.
+// prWithReviewLabel builds a minimal payload carrying the configured review label.
 func prWithReviewLabel() issueCommentPayload {
 	var p issueCommentPayload
 	p.Issue.Labels = []struct {
@@ -2340,11 +2243,8 @@ func fallbackNoticeServer(t *testing.T) (*httptest.Server, *[]string) {
 	return srv, &posted
 }
 
-// TestIsWorkRequestFallbackDefaultsToReviewOnReviewLabel is #1172 branch (a):
-// a classifier failure on a PR that already carries the review label must
-// default to work/review, not conversational, and must mark the fallback
-// with a reaction rather than failing silently (no comment: the run's own
-// answer is the one comment this trigger gets).
+// A classifier failure on a PR carrying the review label defaults to review, marked by a reaction
+// (no comment: the run's answer is the trigger's one comment).
 func TestIsWorkRequestFallbackDefaultsToReviewOnReviewLabel(t *testing.T) {
 	srv, posted := fallbackNoticeServer(t)
 	ext, _ := newTestExtension(t, srv.URL, nil)
@@ -2360,9 +2260,7 @@ func TestIsWorkRequestFallbackDefaultsToReviewOnReviewLabel(t *testing.T) {
 	}
 }
 
-// TestIsWorkRequestFallbackDefaultsToReviewOnBareReRunPhrase is #1172 branch
-// (a)'s other trigger: a bare "re-review"/"review again" mention with no
-// review label still must not fall back to conversational.
+// A bare "re-review"/"review again" mention without the label must not fall back to conversational either.
 func TestIsWorkRequestFallbackDefaultsToReviewOnBareReRunPhrase(t *testing.T) {
 	srv, posted := fallbackNoticeServer(t)
 	ext, _ := newTestExtension(t, srv.URL, nil)
@@ -2393,9 +2291,7 @@ func TestIsWorkRequestFallbackDefaultsToReviewOnBareReRunPhrase(t *testing.T) {
 	}
 }
 
-// TestIsWorkRequestFallbackPostsNoticeWithoutReviewSignal is #1172 branch (c)
-// on the plain conversational path: no review label, no bare re-run phrase -
-// the fallback still must be marked, not silent.
+// With no review signal, the conversational fallback must still be marked, not silent.
 func TestIsWorkRequestFallbackPostsNoticeWithoutReviewSignal(t *testing.T) {
 	srv, posted := fallbackNoticeServer(t)
 	ext, _ := newTestExtension(t, srv.URL, nil)
@@ -2426,9 +2322,7 @@ func (s *sequencedIntentClassifier) Classify(_ context.Context, _ string) (strin
 	return s.verdict, nil
 }
 
-// TestIsWorkRequestRetriesOnceBeforeFallingBack is #1172 branch (b): a
-// classifier call that fails once (e.g. the 5s deadline on a cold model) gets
-// one retry with the longer deadline before any fallback kicks in.
+// A classifier call that fails once (e.g. cold model) gets one longer-deadline retry before any fallback.
 func TestIsWorkRequestRetriesOnceBeforeFallingBack(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	classifier := &sequencedIntentClassifier{failCalls: 1, verdict: "WORK"}
@@ -2463,9 +2357,7 @@ func TestIsWorkRequestTimeoutFailsSafe(t *testing.T) {
 	}
 }
 
-// delayedIntentClassifier simulates a real (ctx-aware) model call that takes
-// delay to answer: it races the deadline instead of ignoring it, like an
-// actual HTTP round-trip to a cold llm-swap model would.
+// delayedIntentClassifier is a ctx-aware model call that takes delay to answer, racing the deadline.
 type delayedIntentClassifier struct {
 	calls   int32
 	delay   time.Duration
@@ -2482,13 +2374,8 @@ func (d *delayedIntentClassifier) Classify(ctx context.Context, _ string) (strin
 	}
 }
 
-// TestDispatchGivesClassifierRetryItsFullBudget is finding 9: dispatch used
-// to wrap loadGithubContext/writeInputArtifacts/failingChecks/SetPendingRun
-// AND both intent-classifier attempts in one 10s reactionTimeout, so
-// intentClassifierRetryTimeout's 30s retry (added for exactly a cold
-// llm-swap model, #1172) was clamped to whatever was left of that 10s and
-// could never be granted. A classifier that takes 15s - past the first 5s
-// attempt, comfortably inside the 30s retry - must still get to answer.
+// A 15s classifier answer (past the 5s first attempt, inside the 30s retry) must still land:
+// the pre-dispatch pipeline must not share the 10s reaction budget.
 func TestDispatchGivesClassifierRetryItsFullBudget(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := stubGitHub(t, posted)
@@ -2520,13 +2407,8 @@ func TestDispatchGivesClassifierRetryItsFullBudget(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeQuotedCodeCorrectionNotWorkRequest is the regression test
-// for the bug this classifier replaced: a naive verb regex read a method call
-// quoted inside code (it.migrate(connection)) as the imperative "migrate",
-// which armed the no-plan nudge and forced a whole re-review that discarded
-// the reply the model had already written. A real model should call this
-// CONVERSATIONAL (a correction, not an instruction); this pins that the
-// deliverable follows the classifier's verdict end to end.
+// A method call quoted in code (it.migrate(connection)) is a correction, not an instruction;
+// the deliverable must follow the classifier's CONVERSATIONAL verdict end to end.
 func TestBuildEnvelopeQuotedCodeCorrectionNotWorkRequest(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	classifier := &fakeIntentClassifier{verdict: "CONVERSATIONAL"}
@@ -2546,12 +2428,8 @@ func TestBuildEnvelopeQuotedCodeCorrectionNotWorkRequest(t *testing.T) {
 	}
 }
 
-// TestDispatchFirstLoadSeedsThenResumeInjectsDelta is the end-to-end version
-// of #459: dispatch #1 on a fresh session seeds the FULL context (no prior
-// snapshot); a comment is added on GitHub between runs; dispatch #2 (a
-// resume) injects ONLY that new comment, not the whole thread again. Uses the
-// Extension's real (sqlite-backed) store so snapshot persistence itself is
-// exercised, not just the in-memory diff function.
+// End to end on the real sqlite store: dispatch 1 seeds full context; after a new GitHub comment,
+// dispatch 2 injects only that comment.
 func TestDispatchFirstLoadSeedsThenResumeInjectsDelta(t *testing.T) {
 	var commentsJSON atomic.Value
 	commentsJSON.Store(`[{"id":1,"body":"the original comment","user":{"login":"bob"},"updated_at":"t0"}]`)
@@ -2615,14 +2493,8 @@ func TestDispatchFirstLoadSeedsThenResumeInjectsDelta(t *testing.T) {
 	}
 }
 
-// TestReviewBaselineDecoupledFromGeneralSnapshot is the coordinator-flagged
-// fix for #459/#460: the review scope (gh.newCommits) must be keyed off the
-// commits quack actually DELIVERED a review at, never off the general
-// snapshot (which advances on every dispatch, review or not). Scenario:
-// review delivered at [c1] -> c2 pushed -> a CONVERSATIONAL dispatch lands
-// (advances the general snapshot to [c1,c2] but must NOT advance the review
-// baseline) -> a review request must still see c2 as new -> once that review
-// IS delivered, the baseline advances and the NEXT review sees zero new.
+// Review scope keys off the commits a review was DELIVERED at, not the general snapshot that every
+// dispatch advances: a conversational run between reviews must not hide new commits.
 func TestReviewBaselineDecoupledFromGeneralSnapshot(t *testing.T) {
 	// Two synthetic commits with real, distinct git patch-ids (gitPatchID
 	// reads a diff from stdin - no clone needed, see snapshot.go).
@@ -2635,7 +2507,7 @@ func TestReviewBaselineDecoupledFromGeneralSnapshot(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/app": // botLogin, called computing this run's permission grant (#662)
+		case r.URL.Path == "/app": // botLogin, called computing this run's permission grant
 			fmt.Fprint(w, `{"slug":"quack"}`)
 		case strings.HasSuffix(r.URL.Path, "/installation"):
 			fmt.Fprint(w, `{"id":5}`)
@@ -2696,14 +2568,10 @@ func TestReviewBaselineDecoupledFromGeneralSnapshot(t *testing.T) {
 	// 2. c2 lands on the PR.
 	commitsJSON.Store(`[{"sha":"c1","commit":{"message":"add f1"}},{"sha":"c2","commit":{"message":"add f2"}}]`)
 
-	// 3. A CONVERSATIONAL dispatch (no review delivered) - this advances the
-	// GENERAL snapshot (comments/commits-as-seen) but must NOT touch the
-	// review baseline.
+	// 3. A CONVERSATIONAL dispatch advances the general snapshot but must not touch the review baseline.
 	_ = run("what do you think so far? no need to re-review", "CONVERSATIONAL", false)
 
-	// 4. A review request now MUST still see c2 as new - if the review scope
-	// had been keyed off the general snapshot (the bug), c2 would already
-	// read as "seen" because step 3 advanced it.
+	// 4. A review request must still see c2 as new; keyed off the general snapshot it would read as seen.
 	second := run("review this", "WORK", true)
 	if !strings.Contains(second, "Focus your review on what's NEW") || !strings.Contains(second, "c2") {
 		t.Errorf("review after a conversational dispatch must still scope to c2:\n%s", second)
@@ -2712,19 +2580,15 @@ func TestReviewBaselineDecoupledFromGeneralSnapshot(t *testing.T) {
 		t.Errorf("review under-scoped itself off the general snapshot instead of the review baseline:\n%s", second)
 	}
 
-	// 5. Step 4 DELIVERED a review covering c2 - the baseline now advances,
-	// so the NEXT review sees zero new work.
+	// 5. Step 4 delivered a review covering c2, so the baseline advances and the next review sees nothing new.
 	third := run("review this", "WORK", false)
 	if !strings.Contains(third, "already looked at every commit") {
 		t.Errorf("after the review in step 4 delivered, the next review should see zero new commits:\n%s", third)
 	}
 }
 
-// TestLatestQuackVerdictReadsOwnPRReviewMarker pins #513's webhook half: an
-// own-PR review submits as a real review (state COMMENTED, since GitHub
-// disallows approve/request_changes on your own PR) carrying the actual
-// verdict in the hidden marker - latestQuackVerdict must read that marker,
-// not the state, or an own-PR approve would be misread as "comment".
+// Own-PR reviews submit as COMMENTED (GitHub forbids approving your own PR) with the verdict in a hidden
+// marker; latestQuackVerdict must read the marker, not the state.
 func TestLatestQuackVerdictReadsOwnPRReviewMarker(t *testing.T) {
 	keyPEM, _ := testKeyPEM(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2759,11 +2623,8 @@ func TestLatestQuackVerdictReadsOwnPRReviewMarker(t *testing.T) {
 	}
 }
 
-// TestDispatchAttachesDeterministicGitHubSetup pins that a label-driven
-// implement run's Setup is deterministic (repo clone_url, base ref from the
-// repo's default branch, a quack/issue-<N> work branch) - carried directly on
-// sdk.DispatchRequest.Run.Setup in this port, not stamped onto a context the
-// way the old ctx-based Runner design required.
+// A label-driven implement run's Setup is deterministic: clone_url, default-branch base,
+// quack/issue-<N> work branch.
 func TestDispatchAttachesDeterministicGitHubSetup(t *testing.T) {
 	srv := stubGitHub(t, make(chan string, 4))
 	defer srv.Close()
@@ -2791,11 +2652,8 @@ func TestDispatchAttachesDeterministicGitHubSetup(t *testing.T) {
 	}
 }
 
-// TestDispatchResetsSessionForLabelWorkRequest pins T4 session hygiene: a
-// LABEL-driven work request (quack:implement) resets the session before
-// running (Chat.ResetHistory), so a new attempt is not poisoned by a prior
-// attempt's history - unlike a conversational @mention, which keeps full
-// history for continuity (TestDispatchDoesNotResetSessionForMention, below).
+// A label-driven work request resets history so a retry isn't poisoned by the prior attempt;
+// an @mention keeps history (see TestDispatchDoesNotResetSessionForMention).
 func TestDispatchResetsSessionForLabelWorkRequest(t *testing.T) {
 	posted := make(chan string, 4)
 	srv := stubGitHub(t, posted)
@@ -2849,11 +2707,8 @@ func TestDispatchDoesNotResetSessionForMention(t *testing.T) {
 	}
 }
 
-// TestFetchSnapshotRequiredMetaFailureSurfacesAsUnusable pins #467's first
-// guard: when the required meta call (issueMeta) fails persistently (retries
-// at the HTTP layer exhausted), loadGithubContext must flag the context as
-// UNAVAILABLE - not silently return an empty-but-"valid" firstLoad snapshot,
-// which is indistinguishable from a legitimately empty new issue.
+// A persistently failing issueMeta flags the context UNAVAILABLE, not an empty "valid" snapshot
+// indistinguishable from a legitimately empty issue.
 func TestFetchSnapshotRequiredMetaFailureSurfacesAsUnusable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -2880,10 +2735,8 @@ func TestFetchSnapshotRequiredMetaFailureSurfacesAsUnusable(t *testing.T) {
 	}
 }
 
-// TestDispatchAbortsLabelImplementWhenContextUnavailable pins #467's second
-// guard: a label-triggered implement whose GitHub context could not be
-// loaded (required fetch failed) must NOT dispatch "implement per the plan"
-// to Host.Dispatch - it must abort with an honest comment instead.
+// A label-triggered implement with unloadable GitHub context must not dispatch;
+// it aborts with an honest comment.
 func TestDispatchAbortsLabelImplementWhenContextUnavailable(t *testing.T) {
 	posted := make(chan string, 4)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2901,7 +2754,7 @@ func TestDispatchAbortsLabelImplementWhenContextUnavailable(t *testing.T) {
 			fmt.Fprint(w, `{}`)
 			posted <- string(body)
 		case isIssueMetaPath(r.URL.Path):
-			// The transient 503 from #467's diagnosis, persisting past the retry budget.
+			// A transient 503 that persists past the retry budget.
 			http.Error(w, `{"message":"No server is currently available to service your request."}`, http.StatusServiceUnavailable)
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
@@ -2938,10 +2791,8 @@ func TestDispatchAbortsLabelImplementWhenContextUnavailable(t *testing.T) {
 	}
 }
 
-// TestDispatchCollapsesPriorPlanComment pins plan half: when a NEW plan
-// is posted for an issue, any PRIOR quack plan comment (carrying the plan
-// delivery marker) is minimized via GraphQL before the new one lands, so the
-// thread shows the current plan, not a pile of dead attempts.
+// A new plan minimizes any prior quack plan comment (by its marker) via GraphQL,
+// so the thread shows only the current plan.
 func TestDispatchCollapsesPriorPlanComment(t *testing.T) {
 	posted := make(chan string, 1)
 	var minimizedID string
@@ -2954,7 +2805,7 @@ func TestDispatchCollapsesPriorPlanComment(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/app"):
 			fmt.Fprint(w, `{"slug":"quack"}`)
 		case strings.HasSuffix(r.URL.Path, "/reactions"):
-			w.WriteHeader(http.StatusCreated) // the label-triggered 👀 ack (#252); irrelevant here
+			w.WriteHeader(http.StatusCreated) // the label-triggered 👀 ack; irrelevant here
 			fmt.Fprint(w, `{"id":1}`)
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
 			fmt.Fprint(w, `[{"id":11,"node_id":"PLAN1","body":"## Old Plan\n\n<!-- quack:delivery:plan -->","user":{"login":"quack[bot]"}}]`)
@@ -3005,9 +2856,7 @@ func TestDispatchCollapsesPriorPlanComment(t *testing.T) {
 	}
 }
 
-// TestDispatchMarksCommentTriggeredPlan pins #731 test case 1: a plan
-// requested via a /quack comment (not the quack:plan label) still carries
-// the plan delivery marker on its tail comment.
+// A plan requested via a /quack comment (not the label) still carries the plan marker on its tail comment.
 func TestDispatchMarksCommentTriggeredPlan(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3057,14 +2906,8 @@ func TestDispatchMarksCommentTriggeredPlan(t *testing.T) {
 	}
 }
 
-// TestDispatchClassifiesIssueDeliverableOnce pins the single-call property a
-// review of #731 caught: deliverableText (via buildEnvelope AND
-// buildWorkerAsk) and deliverableIsPlan all need classifyIssueDeliverable's
-// answer for the same run. Without memoization each calls the classifier
-// independently, and a live model can disagree with itself between calls -
-// the envelope telling the worker to produce a plan while the tail decides
-// it wasn't one and skips the marker. quack:implement is on the issue so the
-// classifier is actually consulted (never bounded away for free).
+// deliverableText (envelope and worker ask) and deliverableIsPlan share one memoized classifier answer;
+// a live model can disagree with itself, so a second call could drop the plan marker.
 func TestDispatchClassifiesIssueDeliverableOnce(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3119,9 +2962,7 @@ func TestDispatchClassifiesIssueDeliverableOnce(t *testing.T) {
 	}
 }
 
-// TestDispatchCollapsesPriorCommentTriggeredPlan pins #731 test case 2: two
-// successive comment-triggered plan runs - the first is minimized before the
-// second posts, exactly like the label-triggered case above.
+// Two successive comment-triggered plans: the first is minimized before the second posts.
 func TestDispatchCollapsesPriorCommentTriggeredPlan(t *testing.T) {
 	var commentsJSON atomic.Value
 	commentsJSON.Store(`[]`)
@@ -3184,7 +3025,7 @@ func TestDispatchCollapsesPriorCommentTriggeredPlan(t *testing.T) {
 		t.Fatal("no first plan comment posted")
 	}
 
-	// The first plan is now on GitHub, marker and all - the second run's collapse must find it.
+	// The first plan is on GitHub, marker and all; the second run's collapse must find it.
 	commentsJSON.Store(`[{"id":11,"node_id":"PLAN1","body":"## First Plan\n1. step one\n\n<!-- quack:delivery:plan -->","user":{"login":"quack[bot]"}}]`)
 
 	rec2 := httptest.NewRecorder()
@@ -3207,10 +3048,8 @@ func TestDispatchCollapsesPriorCommentTriggeredPlan(t *testing.T) {
 	}
 }
 
-// TestDispatchCollapsesCommentTriggeredPlanOnLabelReplan pins #731 test case
-// 3 (mixed triggers): a comment-triggered plan, then a label-triggered
-// replan - the comment-triggered predecessor must still be minimized, which
-// only works because the FIRST run also carried the marker.
+// A comment-triggered plan followed by a label replan is still minimized,
+// which only works because the first run carried the marker.
 func TestDispatchCollapsesCommentTriggeredPlanOnLabelReplan(t *testing.T) {
 	var commentsJSON atomic.Value
 	commentsJSON.Store(`[]`)
@@ -3297,9 +3136,7 @@ func TestDispatchCollapsesCommentTriggeredPlanOnLabelReplan(t *testing.T) {
 	}
 }
 
-// TestDispatchImplementRunUntouchedByPlanCollapse pins #731 test case 4: a
-// non-plan deliverable's tail comment carries no plan marker and triggers no
-// collapse.
+// A non-plan deliverable's tail comment carries no plan marker and triggers no collapse.
 func TestDispatchImplementRunUntouchedByPlanCollapse(t *testing.T) {
 	posted := make(chan string, 1)
 	var graphqlCalled int32
@@ -3354,9 +3191,7 @@ func TestDispatchImplementRunUntouchedByPlanCollapse(t *testing.T) {
 	}
 }
 
-// TestDispatchPostsPlanWhenCollapseFails pins #731 test case 5: collapse
-// stays best-effort - a GraphQL minimizeComment failure must not block or
-// fail the new plan's delivery.
+// Collapse is best-effort: a minimizeComment failure must not block the new plan's delivery.
 func TestDispatchPostsPlanWhenCollapseFails(t *testing.T) {
 	posted := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3408,10 +3243,7 @@ func TestDispatchPostsPlanWhenCollapseFails(t *testing.T) {
 	}
 }
 
-// TestPlanTaskNoIssueBodyDuplicate pins #619 defect 2: planTask must not
-// embed the issue body - the envelope's #459 context block already carries
-// it verbatim, so planTask's own copy is a straight duplicate of the same
-// text in the same prompt.
+// planTask must not embed the issue body; the envelope already carries it verbatim.
 func TestPlanTaskNoIssueBodyDuplicate(t *testing.T) {
 	var p issuesPayload
 	p.Issue.Number = 7
@@ -3426,10 +3258,8 @@ func TestPlanTaskNoIssueBodyDuplicate(t *testing.T) {
 	}
 }
 
-// TestImplementTaskCore pins implementTask's own contribution - the issue
-// number/title and the delivery instructions. The discussion (the approved
-// plan) is no longer implementTask's job: it arrives via dispatch's unified
-// loadGithubContext, the same path every other trigger uses (#459).
+// implementTask contributes the issue number/title and delivery instructions;
+// the approved plan arrives via loadGithubContext.
 func TestImplementTaskCore(t *testing.T) {
 	var p issuesPayload
 	p.Issue.Number = 7
@@ -3442,8 +3272,7 @@ func TestImplementTaskCore(t *testing.T) {
 		}
 	}
 
-	// A CUSTOM configured partial-fix label is what's honoured - not a hardcoded
-	// default (the blocking finding on #505).
+	// A custom configured partial-fix label is honoured, not a hardcoded default.
 	custom := implementTask(p, []string{"bug", "my-org:incomplete"}, "my-org:incomplete")
 	if strings.Contains(custom, "`Closes #7`") {
 		t.Errorf("custom partial-fix label ignored - Closes still present:\n%s", custom)
@@ -3468,8 +3297,7 @@ func TestImplementTaskCore(t *testing.T) {
 	}
 }
 
-// mentionCommentBody is issueCommentBody with the issue's title present, as a
-// real issue_comment payload carries it - used to pin #380's title backfill.
+// mentionCommentBody is issueCommentBody with the issue's title present, as a real payload carries it.
 func mentionCommentBody(commentBody, issueTitle string) []byte {
 	return []byte(fmt.Sprintf(`{
 		"action":"created",
@@ -3480,11 +3308,8 @@ func mentionCommentBody(commentBody, issueTitle string) []byte {
 	}`, commentBody, issueTitle))
 }
 
-// TestDispatchGeneratesTitle pins #380: a GitHub-webhook-dispatched chat gets
-// a real, non-placeholder title derived from the triggering issue - carried
-// directly on sdk.DispatchRequest.Chat.Title in this port (applied by the
-// host only if the chat has no title yet, per ChatRef.Title's own contract),
-// rather than this extension calling UpdateTitle against its own chat store.
+// A webhook-dispatched chat gets a real title from the triggering issue via Chat.Title
+// (the host applies it only if the chat has none).
 func TestDispatchGeneratesTitle(t *testing.T) {
 	srv := stubGitHub(t, make(chan string, 1))
 	defer srv.Close()
@@ -3505,9 +3330,7 @@ func TestDispatchGeneratesTitle(t *testing.T) {
 	}
 }
 
-// TestDispatchTitleFromLabelDrivenIssue pins #380 for the label-driven path
-// (quack:plan/quack:implement), which synthesizes its issueCommentPayload from
-// an issuesPayload rather than a real webhook comment.
+// Title for the label-driven path, whose payload is synthesized from an issuesPayload.
 func TestDispatchTitleFromLabelDrivenIssue(t *testing.T) {
 	srv := stubGitHub(t, make(chan string, 1))
 	defer srv.Close()
@@ -3525,32 +3348,9 @@ func TestDispatchTitleFromLabelDrivenIssue(t *testing.T) {
 	}
 }
 
-// The original's TestDispatchDoesNotOverwriteExistingTitle pinned that a
-// SECOND dispatch on an already-titled session preserves the title a prior
-// dispatch set - enforced back then by this extension's own chat-store
-// UpdateTitle guard. In this port, "applied only if the chat has no title
-// yet" is now sdk.ChatRef.Title's own documented contract (sdk/sdk.go),
-// enforced by the host quack-core dispatches to - this extension always
-// sends the freshly computed title on every dispatch and has no seam left to
-// verify a not-overwritten title from; genuinely inapplicable here.
-
-// The original's TestKilledRunPreservesWatermarkDelta pinned that a run
-// killed mid-flight via ext.hub.CancelRun (this extension's own Runner-driven
-// run registry) must not have persisted the snapshot it fetched. That hub -
-// and this extension owning run lifecycle/cancellation at all - is gone in
-// this port: Host.Dispatch is fire-and-forget, and RunEnded only ever fires
-// once, with a terminal outcome, for a run the host decided was done.
-// persistGithubSnapshot only ever runs inside finalize (run.go), reached via
-// RunEnded - so a run that is killed before RunEnded fires trivially never
-// advances the watermark, by construction; there is no "started but the
-// extension must specifically avoid treating it as complete" scenario left
-// to construct at this seam. Not ported.
-
 // ---- merge-label / issue-label / request-changes batch (ported from quack's internal/github/webhook_test.go) ----
 
-// newTestExtensionWithStore is newTestExtension but reuses an existing
-// *ghStore instead of opening a fresh one - lets a test simulate a process
-// restart (a new Extension over the SAME durable state).
+// newTestExtensionWithStore reuses an existing *ghStore, simulating a restart over the same durable state.
 func newTestExtensionWithStore(t *testing.T, apiBase string, triggers []string, st *ghStore) (*Extension, *fakeDispatchHost) {
 	t.Helper()
 	e, fh := newTestExtension(t, apiBase, triggers)
@@ -3558,13 +3358,8 @@ func newTestExtensionWithStore(t *testing.T, apiBase string, triggers []string, 
 	return e, fh
 }
 
-// TestFinalizeReReviewsOnHeadModified pins #1142 through the production
-// sequence (RunEnded -> finalize -> tryMerge, inflight claim still held):
-// when the approving review's commit_id no longer matches the head, the
-// standing intent survives, nothing is posted (the re-review is the visible
-// outcome), and the auto-review re-dispatch is NOT dedup-dropped by the
-// claim finalize only releases on return. A failing metaStatus covers the
-// title lookup failing.
+// RunEnded -> finalize -> tryMerge with the claim held: a moved head keeps the standing intent, posts nothing,
+// and the re-review dispatch is not dedup-dropped. A failing metaStatus covers the title lookup failing.
 func TestFinalizeReReviewsOnHeadModified(t *testing.T) {
 	const newHeadSHA = "newhead2"
 	for _, tc := range []struct {
@@ -3587,9 +3382,8 @@ func TestFinalizeReReviewsOnHeadModified(t *testing.T) {
 				case strings.HasSuffix(r.URL.Path, "/app"):
 					fmt.Fprint(w, `{"slug":"quack"}`)
 				case strings.HasSuffix(r.URL.Path, "/reviews"):
-					// commit_id "oldhead1" != the PR's actual current head
-					// (newHeadSHA below) - #71: the compare that decides "moved"
-					// must be this mismatch, not a stale dispatch-time snapshot.
+					// commit_id "oldhead1" != the PR's current head (newHeadSHA): "moved" must come from this mismatch,
+					// not a stale dispatch-time snapshot.
 					fmt.Fprint(w, `[{"id":11,"state":"APPROVED","user":{"login":"quack[bot]"},"commit_id":"oldhead1"}]`)
 				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
 					fmt.Fprint(w, `[]`)
@@ -3607,11 +3401,8 @@ func TestFinalizeReReviewsOnHeadModified(t *testing.T) {
 				case strings.Contains(r.URL.Path, "/check-runs"):
 					fmt.Fprint(w, `{"check_runs":[]}`)
 				case strings.Contains(r.URL.Path, "/pulls/"):
-					// The FIRST pull lookup is tryMerge's own
-					// current-head fetch (always succeeds here); the SECOND is
-					// reReviewMovedHead's - the re-dispatch's own snapshot fetch
-					// must still see a healthy PR or the label-trigger path
-					// aborts "not running blind".
+					// The FIRST pull lookup is tryMerge's head fetch; the SECOND is the re-dispatch's snapshot fetch,
+					// which must see a healthy PR or the label path aborts as blind.
 					if metaCalls.Add(1) == 2 {
 						w.WriteHeader(tc.metaStatus)
 					}
@@ -3673,11 +3464,8 @@ func TestFinalizeReReviewsOnHeadModified(t *testing.T) {
 	}
 }
 
-// TestTryMergeStandingIntentEmptySnapshotMergesOnMatchingHead pins #71 case
-// (a): an approving review's commit_id equals the PR's actual current head,
-// and the pendingRun's own dispatch-time snapshot is empty (a resume whose
-// re-fetch failed, #65) - tryMerge must still merge, and must
-// NOT post "head moved" or dispatch a spurious re-review.
+// An approval at the current head merges even when the pendingRun's own snapshot is empty
+// (a resume whose re-fetch failed), with no "head moved" or re-review.
 func TestTryMergeStandingIntentEmptySnapshotMergesOnMatchingHead(t *testing.T) {
 	// mergeStub's fixed pull response reports head "headsha1" - the review's
 	// commit_id matches it exactly, so the compare must see no movement.
@@ -3726,9 +3514,7 @@ func TestTryMergeStandingIntentEmptySnapshotMergesOnMatchingHead(t *testing.T) {
 	}
 }
 
-// TestReReviewPayloadMatchesAutoReviewPayload pins that the two synthetic
-// builders produce the same shape for the same PR, so a re-review is the
-// label-trigger run and not a subtly different one.
+// Both synthetic builders produce the same shape, so a re-review is the label-trigger run.
 func TestReReviewPayloadMatchesAutoReviewPayload(t *testing.T) {
 	var p pullRequestPayload
 	p.Action = "labeled"
@@ -3745,10 +3531,8 @@ func TestReReviewPayloadMatchesAutoReviewPayload(t *testing.T) {
 	}
 }
 
-// mergeStub serves the REST endpoints mergeIfApproved/tryMerge
-// touch: reviewsJSON seeds GET .../reviews, commentsJSON seeds GET
-// .../comments (own-PR verdict-marker comments), merged fires on the PUT
-// .../merge.
+// mergeStub serves .../reviews (reviewsJSON), .../comments (commentsJSON, own-PR verdict markers);
+// merged fires on PUT .../merge.
 func mergeStub(t *testing.T, reviewsJSON, commentsJSON string, posted chan<- string, merged chan<- struct{}) *httptest.Server {
 	t.Helper()
 	if commentsJSON == "" {
@@ -3800,10 +3584,8 @@ func mergeStub(t *testing.T, reviewsJSON, commentsJSON string, posted chan<- str
 	}))
 }
 
-// mergeStubDynamic is mergeStub with reviews served from a mutable value (an
-// empty review list to start) so a test can simulate a review landing
-// mid-dispatch via the returned setReviews. merged carries the PUT
-// .../merge request body so a test can assert the head-sha merge guard.
+// mergeStubDynamic serves reviews from a mutable value (setReviews) to simulate a review landing mid-dispatch;
+// merged carries the PUT .../merge body for the head-sha guard.
 func mergeStubDynamic(t *testing.T, posted chan<- string, merged chan<- string) (srv *httptest.Server, setReviews func(string)) {
 	t.Helper()
 	var reviews atomic.Value
@@ -3856,13 +3638,10 @@ func mergeStubDynamic(t *testing.T, posted chan<- string, merged chan<- string) 
 	return srv, func(j string) { reviews.Store(j) }
 }
 
-// TestMergeFailureLineHumanizesRequiredCheckFailure pins the #876/#880/#882
-// incident: mergePR's error wraps GitHub's real 405 body verbatim
-// ("PUT /repos/.../merge: status 405: {...}") - the line must name the
-// failing check and never leak the raw JSON, and must say what actually
-// happens next rather than claim an auto-apply the merge flow never does.
+// mergePR's error wraps GitHub's raw 405 body: the line must name the failing check, never leak the JSON,
+// and state what actually happens next.
 func TestMergeFailureLineHumanizesRequiredCheckFailure(t *testing.T) {
-	// The real 405 body GitHub returned on quack PR #880.
+	// A real 405 body GitHub returned.
 	err := fmt.Errorf(`github: PUT /repos/acme/widgets/pulls/880/merge: status 405: {"message":"Required status check \"go-test\" is failing.","documentation_url":"https://docs.github.com/rest/pulls/pulls#merge-a-pull-request"}`)
 
 	got := mergeFailureLine(err, "quack:fix")
@@ -3875,9 +3654,7 @@ func TestMergeFailureLineHumanizesRequiredCheckFailure(t *testing.T) {
 	}
 }
 
-// TestMergeFailureLineConciseForOtherErrors pins the fallback: any error
-// that isn't the named-required-check 405 collapses to a single concise line
-// with the raw JSON dropped, never the wrapped-error dump.
+// Any error other than the required-check 405 collapses to one concise line without the raw JSON.
 func TestMergeFailureLineConciseForOtherErrors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -3920,13 +3697,8 @@ func mergeLabelBody(sender string) []byte {
 	}`, sender))
 }
 
-// TestHandleWebhookMergeLabel covers the cases where the merge label's fate is
-// decided WITHOUT needing to dispatch a run: an approving review already
-// exists (merges immediately, outcome appended to that review), a
-// non-approving verdict already exists (silently leaves the standing intent
-// recorded so a later approval can still merge it), the trigger is off, or
-// the sender is a bot. The "no review at all yet" case dispatches a review
-// run and is covered separately (TestHandleWebhookMergeLabelDispatchesReview).
+// Merge-label cases decided without a dispatch: existing approval merges, non-approving verdict keeps the intent,
+// trigger off or bot sender. No-review-yet is TestHandleWebhookMergeLabelDispatchesReview.
 func TestHandleWebhookMergeLabel(t *testing.T) {
 	approved := `[{"state":"CHANGES_REQUESTED","user":{"login":"quack[bot]"}},{"id":11,"state":"APPROVED","user":{"login":"quack[bot]"}}]`
 	tests := []struct {
@@ -4020,11 +3792,8 @@ func TestHandleWebhookMergeLabel(t *testing.T) {
 	}
 }
 
-// TestHandleWebhookMergeLabelDispatchesReview covers applying quack:merge to
-// a PR quack has never looked at: the label becomes a standing intent AND
-// dispatches a review itself - otherwise the label would silently do nothing
-// until someone separately asked for a review. No "queued" comment: the
-// reaction is the ack and the review is the outcome.
+// quack:merge on an unreviewed PR records the intent AND dispatches a review, or the label does nothing.
+// No "queued" comment: the reaction is the ack.
 func TestHandleWebhookMergeLabelDispatchesReview(t *testing.T) {
 	posted := make(chan string, 4)
 	merged := make(chan struct{}, 1)
@@ -4054,14 +3823,8 @@ func TestHandleWebhookMergeLabelDispatchesReview(t *testing.T) {
 	}
 }
 
-// TestHandleWebhookMergeLabelWaitsForInFlightReview covers applying
-// quack:merge while a review is ALREADY running on the PR (a common race: the
-// label lands while a review dispatched moments earlier is still in
-// progress) - it must record the intent and wait, never dispatch a SECOND
-// concurrent review on the same session. In this port a dispatched run stays
-// "in flight" (inflight map held) until its RunEnded arrives - never called
-// here - so the label lands while the first is still open, no blocking
-// channel needed.
+// quack:merge while a review is in flight records the intent and waits, never a second concurrent review;
+// RunEnded is never called, so the first run stays in flight.
 func TestHandleWebhookMergeLabelWaitsForInFlightReview(t *testing.T) {
 	posted := make(chan string, 4)
 	merged := make(chan struct{}, 1)
@@ -4097,11 +3860,8 @@ func TestHandleWebhookMergeLabelWaitsForInFlightReview(t *testing.T) {
 	}
 }
 
-// TestHandleWebhookMergeLabelReviewLandsConsumesIntent covers the standing
-// intent's whole point: no review existed when quack:merge was applied, the
-// label queued a review AND recorded the intent, and once that review is
-// actually delivered with an approving verdict, the PR merges on its own -
-// naming the original label-applier.
+// No review existed when quack:merge was applied; once the queued review lands approving,
+// the PR merges on its own, naming the label-applier.
 func TestHandleWebhookMergeLabelReviewLandsConsumesIntent(t *testing.T) {
 	posted := make(chan string, 4)
 	merged := make(chan string, 1)
@@ -4117,9 +3877,7 @@ func TestHandleWebhookMergeLabelReviewLandsConsumesIntent(t *testing.T) {
 
 	fh.waitForDispatch(t, 2*time.Second)
 
-	// The review "lands" as an approval, then the dispatched review run
-	// completes and records its delivery - simulating quack's own review
-	// being posted and the worker's RunEnded arriving.
+	// The review lands as an approval, then the review run's RunEnded records its delivery.
 	setReviews(`[{"id":11,"state":"APPROVED","user":{"login":"quack[bot]"},"submitted_at":"2026-01-01T00:00:00Z"}]`)
 	chatID := globalChatID("github-acme-widgets-7")
 	recordDelivery(chatID, deliveryOutcome{reviewDelivered: true})
@@ -4148,10 +3906,7 @@ func TestHandleWebhookMergeLabelReviewLandsConsumesIntent(t *testing.T) {
 	}
 }
 
-// TestHandleWebhookMergeLabelRestartSurvival pins that the standing intent
-// survives a process restart: a FRESH Extension over the SAME store - with no
-// in-memory memory of the label event that recorded it - still honours it
-// once a review lands.
+// The standing intent survives a restart: a fresh Extension over the same store still honours it.
 func TestHandleWebhookMergeLabelRestartSurvival(t *testing.T) {
 	st, err := openStore(t.TempDir())
 	if err != nil {
@@ -4199,13 +3954,8 @@ func TestHandleWebhookMergeLabelRestartSurvival(t *testing.T) {
 	}
 }
 
-// TestRunEndedAfterRestartStillFinalizesAndMerges pins #65: a run's
-// pendingRun lives only in e.pending, an in-memory sync.Map, so a quack
-// restart between dispatch and RunEnded used to leave the outcome (and
-// tryMergeStandingIntent) never run. This dispatches on one Extension, then
-// delivers RunEnded to a SECOND Extension instance over the SAME store - a
-// process restart, not just a fresh in-memory map - and expects the merge to
-// still happen off the durable pendingRun row.
+// e.pending is in-memory, so RunEnded on a SECOND Extension over the same store (a restart)
+// must still finalize and merge off the durable pendingRun row.
 func TestRunEndedAfterRestartStillFinalizesAndMerges(t *testing.T) {
 	st, err := openStore(t.TempDir())
 	if err != nil {
@@ -4263,9 +4013,7 @@ func TestRunEndedAfterRestartStillFinalizesAndMerges(t *testing.T) {
 	}
 }
 
-// TestRunEndedWithNoPendingDispatchDropsOutcome pins the restart fix's other
-// branch: a RunEnded for a chat with neither an in-memory entry nor a durable
-// row must log-and-drop, not merge or panic (#66 review nit).
+// A RunEnded with neither an in-memory entry nor a durable row must log-and-drop, not merge or panic.
 func TestRunEndedWithNoPendingDispatchDropsOutcome(t *testing.T) {
 	st, err := openStore(t.TempDir())
 	if err != nil {
@@ -4284,9 +4032,7 @@ func TestRunEndedWithNoPendingDispatchDropsOutcome(t *testing.T) {
 	}
 }
 
-// TestDispatchFailureDeletesPendingRunRow pins the durable-twin invariant on
-// its one asymmetric exit: a Dispatch failure must remove the row
-// SetPendingRun just wrote, exactly like finalize's two success-path defers.
+// A Dispatch failure must delete the row SetPendingRun just wrote, like finalize's success-path defers.
 func TestDispatchFailureDeletesPendingRunRow(t *testing.T) {
 	st, err := openStore(t.TempDir())
 	if err != nil {
@@ -4325,9 +4071,7 @@ func TestDispatchFailureDeletesPendingRunRow(t *testing.T) {
 	}
 }
 
-// TestHandleWebhookMergeLabelRespectsAllowlist pins the merge-label
-// enforcement point: a sender outside allowed_users can never authorize a
-// merge, even with an APPROVED review already on the PR.
+// A sender outside allowed_users can never authorize a merge, even with an APPROVED review on the PR.
 func TestHandleWebhookMergeLabelRespectsAllowlist(t *testing.T) {
 	approved := `[{"id":11,"state":"APPROVED","user":{"login":"quack[bot]"}}]`
 	posted := make(chan string, 2)
@@ -4348,9 +4092,7 @@ func TestHandleWebhookMergeLabelRespectsAllowlist(t *testing.T) {
 	}
 }
 
-// TestHandleWebhookPlanLabelPostsPlanEvenWhenDelivered pins the regression
-// where a plan-only run silently dropped its plan: a label trigger implies
-// work, so a proxy "delivered" signal must never suppress a plan-only run's
+// A label trigger implies work, so a proxy "delivered" signal must never suppress a plan-only run's
 // summary comment - that comment IS the deliverable.
 func TestHandleWebhookPlanLabelPostsPlanEvenWhenDelivered(t *testing.T) {
 	posted := make(chan string, 1)
@@ -4380,10 +4122,7 @@ func TestHandleWebhookPlanLabelPostsPlanEvenWhenDelivered(t *testing.T) {
 	}
 }
 
-// TestHandleWebhookLabelPostsEyesReactionOnIssue pins #252: a label-triggered
-// run (quack:plan / quack:implement) posts an instant 👀 on the ISSUE - POST
-// to /issues/{number}/reactions, NOT the comment-reaction endpoint (a label
-// event carries no comment ID, so ackReaction can't be reused).
+// A label-triggered run reacts on the ISSUE (/issues/{number}/reactions): a label event has no comment ID.
 func TestHandleWebhookLabelPostsEyesReactionOnIssue(t *testing.T) {
 	for _, tc := range []struct{ trigger, label string }{
 		{"issue_plan", "quack:plan"},
@@ -4473,25 +4212,18 @@ func TestHandleWebhookIssuePlanLabel(t *testing.T) {
 			}
 			req := fh.waitForDispatch(t, 2*time.Second)
 			msg := req.Ask.Message
-			// The issue title/body come from the fetched snapshot (stubGitHub's
-			// fixed issue meta), not the raw webhook payload - #1010 moved the
-			// latter to the "event" input artifact and out of the inline
-			// envelope, so it no longer carries the payload's own title text.
+			// Title/body come from the fetched snapshot (stubGitHub's issue meta), not the raw webhook payload.
 			if !strings.Contains(msg, "Test issue") {
 				t.Errorf("plan message missing issue context: %q", msg)
 			}
 			if !strings.Contains(msg, "PLANNING-ONLY") {
 				t.Errorf("plan message not framed planning-only: %q", msg)
 			}
-			// #569: the plan-only prompt must state that the answer text IS the
-			// deliverable, not a pointer to a file the run wrote and discarded.
+			// The plan-only prompt must say the answer text IS the deliverable, not a pointer to a discarded file.
 			if !strings.Contains(msg, "ANSWER TEXT is the plan") {
 				t.Errorf("plan message does not state the answer text is the deliverable: %q", msg)
 			}
-			// #662: the file-path and stale-version cautions are constant, not
-			// per-event - they moved to agents/orchestrator/prompt.md (a quack-repo
-			// file this module doesn't own/ship), so the trigger itself no longer
-			// carries them.
+			// File-path and stale-version cautions live in the orchestrator prompt, not the trigger.
 			for _, moved := range []string{"discarded", "current stable"} {
 				if strings.Contains(msg, moved) {
 					t.Errorf("plan message still carries the %q caution - it should have moved to the orchestrator bundle prompt: %q", moved, msg)
@@ -4569,9 +4301,7 @@ func TestHandleWebhookIssueImplementLabel(t *testing.T) {
 	}
 }
 
-// TestHandleWebhookRequestChangesEngagesOwnPR pins #656 test case 3 (closes
-// #655): a request_changes review on a PR quack authored engages it to
-// address the findings - authorship IS the flag, no label on the PR at all.
+// A request_changes review on a PR quack authored engages it; authorship is the flag, no label needed.
 func TestHandleWebhookRequestChangesEngagesOwnPR(t *testing.T) {
 	posted := make(chan string, 4)
 	srv := stubFixGitHubFull(t, posted, nil, false, "", "quack[bot]") // no labels; PR authored by quack itself
@@ -4591,9 +4321,7 @@ func TestHandleWebhookRequestChangesEngagesOwnPR(t *testing.T) {
 	}
 }
 
-// TestHandleWebhookRequestChangesIgnoresOtherPRs proves the label/mention
-// triggers, not this path, still own a PR quack did NOT author - and an
-// approving/commented review never engages regardless of authorship.
+// Label/mention triggers own PRs quack did not author; approving/commented reviews never engage.
 func TestHandleWebhookRequestChangesIgnoresOtherPRs(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -4704,14 +4432,8 @@ func TestHandleWebhookReviewCommandRespectsAllowlist(t *testing.T) {
 	}
 }
 
-// TestReviewCommandWhileRunningReactsOnOneTargetOnly pins #1304's silence
-// rule for the dedup path: a /review comment arriving while a review is
-// already in flight for the same PR must not end up visibly reacted twice -
-// handleIssueComment already reacted to the comment before calling dispatch,
-// so dispatch's own dedup ack must land on that SAME comment, never
-// additionally on the issue (GitHub itself collapses a repeated identical
-// reaction on the same target into the one already there; two DIFFERENT
-// targets would both stay visible).
+// A /review during an in-flight review: the dedup ack lands on the SAME comment handleIssueComment already
+// reacted to, never also the issue (different targets would both stay visible).
 func TestReviewCommandWhileRunningReactsOnOneTargetOnly(t *testing.T) {
 	var commentReactions, issueReactions int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4757,10 +4479,7 @@ func TestReviewCommandWhileRunningReactsOnOneTargetOnly(t *testing.T) {
 	}
 }
 
-// TestHandleWebhookSynchronizeInvalidatesOnlyARunningPR pins both halves of
-// the push signal: a PR with a run in flight gets its clone invalidated, and
-// a PR with none must not - there is no clone to refresh, and no run to
-// disturb.
+// synchronize invalidates the clone only for a PR with a run in flight; with none there is nothing to refresh.
 func TestHandleWebhookSynchronizeInvalidatesOnlyARunningPR(t *testing.T) {
 	srv := stubGitHub(t, make(chan string, 1))
 	defer srv.Close()
@@ -4794,10 +4513,8 @@ func TestHandleWebhookSynchronizeInvalidatesOnlyARunningPR(t *testing.T) {
 	}
 }
 
-// stubGitHubPullSequence is like stubGitHub but serves a caller-controlled
-// sequence of /pulls/<n> responses - dispatch's snapshot fetch is the first
-// call, the head-ref refetch (when the snapshot came back blank) is the
-// second (#55).
+// stubGitHubPullSequence serves a caller-controlled sequence of /pulls/<n> responses:
+// first the snapshot fetch, then the blank-head-ref refetch.
 func stubGitHubPullSequence(t *testing.T, comments chan string, pulls ...string) *httptest.Server {
 	t.Helper()
 	var n atomic.Int32
@@ -4852,13 +4569,9 @@ func prPayload(owner, repo string, number int, login, body string) issueCommentP
 const prMetaWithHead = `{"title":"Test PR","body":"A test PR.","state":"open","head":{"ref":"feature-branch","sha":"headsha1"},"base":{"ref":"main"}}`
 const prMetaNoHead = `{"title":"Test PR","body":"A test PR.","state":"open","head":{"ref":"","sha":""},"base":{"ref":"main"}}`
 
-// TestDispatchPRHeadRef covers #55: dispatch() must never send a PR Setup
-// with a blank ExistingHeadRef.
+// dispatch() must never send a PR Setup with a blank ExistingHeadRef.
 func TestDispatchPRHeadRef(t *testing.T) {
-	// Every case's /pulls/ sequence is: fetchSnapshot's pullMeta, then
-	// authoredByQuack's prAuthor call (both real calls dispatch() makes
-	// before the Setup is built), then - only if the snapshot came back
-	// without a head ref - the fix's own refetch.
+	// /pulls/ sequence: snapshot pullMeta, authoredByQuack's prAuthor, then the head-ref refetch only if blank.
 
 	t.Run("snapshot has ref: passthrough, no refetch", func(t *testing.T) {
 		srv := stubGitHubPullSequence(t, make(chan string, 8), prMetaWithHead, prMetaWithHead)

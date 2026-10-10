@@ -9,9 +9,7 @@ import (
 	"testing"
 )
 
-// requireGitSnapshotBinary skips a test when git isn't on PATH. Named
-// distinctly from any helper another in-flight port of delivery_test.go might
-// add, to avoid a package-level redeclaration.
+// requireGitSnapshotBinary skips a test when git isn't on PATH.
 func requireGitSnapshotBinary(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -31,9 +29,7 @@ func runGitSnapshotTest(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// diffFor returns one commit's unified diff (mirrors what commitDiff fetches
-// from GitHub's v3.diff media type) - used to compute a real patch-id in
-// tests without hitting the network.
+// diffFor returns one commit's unified diff (as commitDiff fetches via v3.diff) to compute a real patch-id offline.
 func diffFor(t *testing.T, dir, sha string) string {
 	t.Helper()
 	cmd := exec.Command("git", "log", "-p", "-1", "--format=format:", sha)
@@ -67,9 +63,7 @@ func writeSnapshotCommit(t *testing.T, dir, file, content, msg string) string {
 	return runGitSnapshotTest(t, dir, "rev-parse", "HEAD")
 }
 
-// TestGitPatchIDStableAcrossRebase pins the core rebase-safety mechanism: the
-// same patch content produces the same patch-id even after a rebase rewrites
-// the commit's SHA and parent.
+// The same patch content keeps its patch-id after a rebase rewrites the commit's SHA and parent.
 func TestGitPatchIDStableAcrossRebase(t *testing.T) {
 	requireGitSnapshotBinary(t)
 	dir := t.TempDir()
@@ -79,9 +73,7 @@ func TestGitPatchIDStableAcrossRebase(t *testing.T) {
 	sha1 := writeSnapshotCommit(t, dir, "a.txt", "hello\n", "add a")
 	pid1 := patchIDFor(t, dir, sha1)
 
-	// Simulate "rebased onto a newer base": amend committer date/env so the
-	// SHA changes while the diff content is identical (a real `git rebase`
-	// does the same thing to every replayed commit).
+	// Amend the committer date so the SHA changes with identical diff content, as a rebase does.
 	t.Setenv("GIT_COMMITTER_DATE", "2030-01-01T00:00:00")
 	runGitSnapshotTest(t, dir, "commit", "--amend", "--quiet", "--no-edit")
 	sha1Rebased := runGitSnapshotTest(t, dir, "rev-parse", "HEAD")
@@ -94,10 +86,8 @@ func TestGitPatchIDStableAcrossRebase(t *testing.T) {
 	}
 }
 
-// TestDiffSnapshotsRebaseNoNewWork pins required test (a) from #459: a PR
-// reviewed at commits [c1,c2] gets rebased onto a newer base - same patches,
-// new SHAs. The delta must report ZERO new commits, not "all new" and not an
-// error on a SHA that's no longer reachable the old way.
+// A PR reviewed at [c1,c2] then rebased (same patches, new SHAs) reports zero new commits,
+// not "all new" and not an error on an unreachable SHA.
 func TestDiffSnapshotsRebaseNoNewWork(t *testing.T) {
 	requireGitSnapshotBinary(t)
 	dir := t.TempDir()
@@ -134,9 +124,7 @@ func TestDiffSnapshotsRebaseNoNewWork(t *testing.T) {
 	}
 }
 
-// TestDiffSnapshotsRebasePlusOneNewCommit pins required test (b): the same
-// rebase as above, PLUS a genuinely new commit c3. The delta must be EXACTLY
-// c3 - not [c1,c2,c3].
+// The same rebase plus a genuinely new c3 reports exactly c3, not [c1,c2,c3].
 func TestDiffSnapshotsRebasePlusOneNewCommit(t *testing.T) {
 	requireGitSnapshotBinary(t)
 	dir := t.TempDir()
@@ -168,9 +156,7 @@ func TestDiffSnapshotsRebasePlusOneNewCommit(t *testing.T) {
 	}
 }
 
-// TestDiffSnapshotsForcePushDropsCommit pins required test (c): reviewed at
-// [c1,c2,c3], force-pushed down to [c1,c2] (c3 dropped). The delta must not
-// error and must not re-flag c1/c2 as new.
+// Reviewed at [c1,c2,c3], force-pushed to [c1,c2]: the delta must not error or re-flag c1/c2 as new.
 func TestDiffSnapshotsForcePushDropsCommit(t *testing.T) {
 	requireGitSnapshotBinary(t)
 	dir := t.TempDir()
@@ -198,9 +184,7 @@ func TestDiffSnapshotsForcePushDropsCommit(t *testing.T) {
 	}
 }
 
-// TestDiffSnapshotsCommentLifecycle pins the general (non-commit) delta
-// mechanics: added/edited/deleted comments, title/state/label changes - all
-// keyed by stable id, never by position.
+// Comment add/edit/delete and title/state/label changes are keyed by stable id, never by position.
 func TestDiffSnapshotsCommentLifecycle(t *testing.T) {
 	old := Snapshot{
 		Title: "Old title", State: "open", Labels: []string{"bug"},
@@ -239,15 +223,12 @@ func TestDiffSnapshotsCommentLifecycle(t *testing.T) {
 		t.Error("delta with real changes reported Empty()")
 	}
 
-	// An identical resnapshot yields an empty delta - the resume-with-nothing
-	// -new case (#459's "injects an empty delta, not the whole thread again").
+	// An identical resnapshot yields an empty delta, not the whole thread again.
 	if noop := diffSnapshots(cur, cur, 0); !noop.Empty() {
 		t.Errorf("diffSnapshots(cur, cur) = %+v; want Empty()", noop)
 	}
 }
 
-// TestMarshalUnmarshalSnapshotRoundTrip pins the store's opaque JSON
-// encode/decode.
 func TestMarshalUnmarshalSnapshotRoundTrip(t *testing.T) {
 	snap := Snapshot{
 		Title: "t", Body: "b", State: "open", Labels: []string{"bug"},
@@ -255,13 +236,13 @@ func TestMarshalUnmarshalSnapshotRoundTrip(t *testing.T) {
 		Comments: []snapshotComment{{ID: 1, User: "alice", Body: "hi"}},
 		Commits:  []snapshotCommit{{SHA: "abc", PatchID: "pid1", Message: "msg"}},
 	}
-	j, err := marshalSnapshot(snap)
+	j, err := marshalJSON(snap)
 	if err != nil {
-		t.Fatalf("marshalSnapshot: %v", err)
+		t.Fatalf("marshalJSON: %v", err)
 	}
-	got, err := unmarshalSnapshot(j)
+	got, err := unmarshalJSON[Snapshot](j)
 	if err != nil {
-		t.Fatalf("unmarshalSnapshot: %v", err)
+		t.Fatalf("unmarshalJSON: %v", err)
 	}
 	if got.Title != snap.Title || got.HeadSHA != snap.HeadSHA || len(got.Comments) != 1 || len(got.Commits) != 1 {
 		t.Errorf("round-trip mismatch: got %+v, want %+v", got, snap)

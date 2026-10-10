@@ -28,9 +28,8 @@ func TestStripMentions(t *testing.T) {
 		{"~~~\n@kept\n~~~", "~~~\n@kept\n~~~"},
 		{"**@alice** wrote", "**alice** wrote"},
 		{"", ""},
-		// An unterminated fence (a truncated diff quote) must not disable
-		// stripping for the rest of the body - a real mention past it would
-		// otherwise leak through untouched.
+		// An unterminated fence (a truncated diff quote) must not disable stripping for the rest of the body,
+		// or a real mention past it leaks through.
 		{"```go\n@decorator\nno closing fence\n@alice", "```go\ndecorator\nno closing fence\nalice"},
 		// An unterminated inline span (odd backtick count) must not read as
 		// "code" for its trailing segment either - same fail-safe as fences.
@@ -110,9 +109,8 @@ func TestAppendLineOnce(t *testing.T) {
 	}
 }
 
-// mergeSim is a mutable GitHub stub for the event-driven merge flow: the
-// test flips reviews / check runs / head sha between webhook events and
-// counts every outbound write by kind.
+// mergeSim is a mutable GitHub stub for the merge flow: tests flip reviews, check runs and head sha
+// between webhook events, and it counts every outbound write by kind.
 type mergeSim struct {
 	mu            sync.Mutex
 	reviews       string // GET .../reviews; BODY is replaced by body
@@ -275,8 +273,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-// TestMergeWaitsForChecksThenMerges: approval already on the head, checks
-// still running when the label lands - no merge, no comment, one reaction.
+// Approved head, checks still running when the label lands: no merge, no comment, one reaction.
 // The check completing merges and appends the sha to the review, once.
 func TestMergeWaitsForChecksThenMerges(t *testing.T) {
 	sim := &mergeSim{reviews: approvedOnHead1, body: "LGTM", checks: checksPending, headSHA: "head1"}
@@ -321,9 +318,7 @@ func TestMergeWaitsForChecksThenMerges(t *testing.T) {
 	}
 }
 
-// TestMergeChecksGreenThenApproval: label lands on a green but unreviewed
-// PR - a review is dispatched, nothing merges. The approving review's
-// submitted event then merges.
+// Label on a green, unreviewed PR dispatches a review and merges nothing; the approving review's event merges.
 func TestMergeChecksGreenThenApproval(t *testing.T) {
 	sim := &mergeSim{reviews: "[]", checks: checksGreen, headSHA: "head1"}
 	srv := sim.server(t)
@@ -346,9 +341,7 @@ func TestMergeChecksGreenThenApproval(t *testing.T) {
 	}
 }
 
-// TestMergeApprovalOnOldHeadDoesNotMerge: the approval's commit_id is not
-// the current head after a push - synchronize must not merge and must stay
-// silent.
+// An approval whose commit_id is no longer the head after a push must not merge, and stays silent.
 func TestMergeApprovalOnOldHeadDoesNotMerge(t *testing.T) {
 	sim := &mergeSim{reviews: approvedOnHead1, checks: checksGreen, headSHA: "head2"}
 	srv := sim.server(t)
@@ -373,14 +366,11 @@ func TestMergeApprovalOnOldHeadDoesNotMerge(t *testing.T) {
 	}
 }
 
-// ownPRApprovalOnHead1 is an own-PR verdict living in a plain issue comment
-// (GitHub forbids self-review) - commit_id doesn't exist on that object, so
-// the head it was reviewed against is pinned via the embedded head marker.
+// ownPRApprovalOnHead1 is an own-PR verdict in a plain issue comment (GitHub forbids self-review),
+// so the reviewed head is pinned by the embedded head marker.
 const ownPRApprovalOnHead1 = `[{"id":21,"body":"Own PR: verdict approve.\n\n<!-- quack:delivery:review:approve -->\n<!-- quack:delivery:head:head1 -->","user":{"login":"quack[bot]"},"created_at":"2026-01-01T00:00:00Z"}]`
 
-// TestMergeOwnPRApprovalStaleAfterPushDoesNotMerge: an own-PR verdict has no
-// commit_id of its own (issue comment, not a review) - the embedded head
-// marker must still catch a push that moved the head past what was reviewed.
+// An own-PR verdict has no commit_id, so the embedded head marker must catch a push past the reviewed head.
 func TestMergeOwnPRApprovalStaleAfterPushDoesNotMerge(t *testing.T) {
 	sim := &mergeSim{reviews: "[]", issueComments: ownPRApprovalOnHead1, checks: checksGreen, headSHA: "head2"}
 	srv := sim.server(t)
@@ -459,11 +449,8 @@ func TestMergeLabelRemovedWithdrawsIntent(t *testing.T) {
 	}
 }
 
-// TestMergeLabelTwiceWhileReviewRunsPostsNothing pins #1304: `gh pr create
-// --label quack:review --label quack:merge` delivers the review label (a
-// review dispatch) and then the merge label twice within a second. Every
-// trigger on the same head while that review runs must post nothing and
-// must not start a second review.
+// `gh pr create --label quack:review --label quack:merge` delivers the merge label twice within a second;
+// every trigger on that head while the review runs must post nothing and start no second review.
 func TestMergeLabelTwiceWhileReviewRunsPostsNothing(t *testing.T) {
 	sim := &mergeSim{reviews: "[]", checks: checksPending, headSHA: "head1"}
 	srv := sim.server(t)
@@ -498,11 +485,8 @@ func mergeLabelEvent(actor string, labeled bool, createdAt string) string {
 	return fmt.Sprintf(`{"event":%q,"created_at":%q,"actor":{"login":%q},"label":{"name":"quack:merge"}}`, action, createdAt, actor)
 }
 
-// TestTryMergeAdoptsIntentFromLabelWhenNoneStored pins #1330: a PR carries
-// quack:merge on GitHub but has no stored intent (its "labeled" delivery was
-// missed) - tryMerge must adopt the label itself rather than staying blocked
-// on mergeNoIntent until someone re-applies it, but only once the timeline
-// confirms an authorized human actually applied it (#1332).
+// A PR labeled quack:merge with no stored intent (missed delivery) adopts the label in tryMerge,
+// but only once the timeline confirms an authorized human applied it.
 func TestTryMergeAdoptsIntentFromLabelWhenNoneStored(t *testing.T) {
 	sim := &mergeSim{
 		reviews: "[]", checks: checksGreen, headSHA: "head1", labels: `[{"name":"quack:merge"}]`,
@@ -528,9 +512,7 @@ func TestTryMergeAdoptsIntentFromLabelWhenNoneStored(t *testing.T) {
 	}
 }
 
-// TestTryMergeClosedPRDoesNotReachMerge: the PR closed (or merged) after
-// the intent was set and the approval stood - tryMerge must clear the
-// intent and stop with mergeNoIntent, never calling PUT /merge.
+// A PR closed after the intent and approval stood: tryMerge clears the intent and stops, never calling PUT /merge.
 func TestTryMergeClosedPRDoesNotReachMerge(t *testing.T) {
 	sim := &mergeSim{reviews: approvedOnHead1, checks: checksGreen, headSHA: "head1", prState: "closed"}
 	srv := sim.server(t)
@@ -555,9 +537,7 @@ func TestTryMergeClosedPRDoesNotReachMerge(t *testing.T) {
 	}
 }
 
-// TestTryMergeAdoptionRefusedForBotActor: the timeline says the label's
-// actor is a bot login - the delivery path excludes bots via the same
-// suffix check, so adoption must too.
+// Adoption refuses a bot actor, matching the delivery path's bot suffix check.
 func TestTryMergeAdoptionRefusedForBotActor(t *testing.T) {
 	sim := &mergeSim{
 		reviews: "[]", checks: checksGreen, headSHA: "head1", labels: `[{"name":"quack:merge"}]`,
@@ -579,9 +559,7 @@ func TestTryMergeAdoptionRefusedForBotActor(t *testing.T) {
 	}
 }
 
-// TestTryMergeAdoptionRefusedForDisallowedActor: the timeline's actor is a
-// real human but not in allowed_users - same access check the labeled
-// delivery enforces.
+// Adoption refuses a human actor not in allowed_users, matching the labeled delivery's access check.
 func TestTryMergeAdoptionRefusedForDisallowedActor(t *testing.T) {
 	sim := &mergeSim{
 		reviews: "[]", checks: checksGreen, headSHA: "head1", labels: `[{"name":"quack:merge"}]`,
@@ -603,11 +581,8 @@ func TestTryMergeAdoptionRefusedForDisallowedActor(t *testing.T) {
 	}
 }
 
-// TestTryMergeAdoptionRefusedWhenLatestEventIsUnlabeled: the label is back on
-// the PR (pullMeta says so) but the timeline's latest labeled/unlabeled event
-// for it is "unlabeled" - a stale read, a second relabel not yet reflected in
-// pullMeta, or similar skew. Adoption must not trust presence over the
-// timeline's own most-recent verdict.
+// The label is present but the timeline's latest labeled/unlabeled event says "unlabeled" (read skew):
+// adoption trusts the timeline's most recent verdict over presence.
 func TestTryMergeAdoptionRefusedWhenLatestEventIsUnlabeled(t *testing.T) {
 	sim := &mergeSim{
 		reviews: "[]", checks: checksGreen, headSHA: "head1", labels: `[{"name":"quack:merge"}]`,
@@ -632,10 +607,7 @@ func TestTryMergeAdoptionRefusedWhenLatestEventIsUnlabeled(t *testing.T) {
 	}
 }
 
-// TestTryMergeAdoptionRefusedWhenTimelineErrors: the timeline lookup itself
-// fails - fail closed, same as any other infra error, but as mergeNoIntent
-// rather than surfacing an error (the label check that led here is
-// best-effort; a GitHub hiccup should not read as a hard tryMerge failure).
+// A failing timeline lookup fails closed as mergeNoIntent, not an error: the label check is best-effort.
 func TestTryMergeAdoptionRefusedWhenTimelineErrors(t *testing.T) {
 	sim := &mergeSim{
 		reviews: "[]", checks: checksGreen, headSHA: "head1", labels: `[{"name":"quack:merge"}]`,
@@ -677,11 +649,8 @@ func TestTryMergeNoIntentNoLabelStaysNoIntent(t *testing.T) {
 	}
 }
 
-// TestConcurrentReviewAndMergeLabelDeliveriesBothHandled pins #1330's other
-// half: GitHub can deliver quack:review and quack:merge as two
-// near-simultaneous "labeled" events for one PR. Both deliveries must be
-// handled - the merge-intent write must not wait on, or be dropped by, the
-// review dispatch racing it in the same window.
+// Near-simultaneous quack:review and quack:merge labeled events must both be handled: the merge-intent
+// write must not wait on, or be dropped by, the racing review dispatch.
 func TestConcurrentReviewAndMergeLabelDeliveriesBothHandled(t *testing.T) {
 	sim := &mergeSim{reviews: "[]", checks: checksPending, headSHA: "head1"}
 	srv := sim.server(t)
@@ -722,9 +691,7 @@ func synchronizeBody(sha string) []byte {
 		"installation":{"id":5},"sender":{"login":"alice"}}`, sha))
 }
 
-// TestSynchronizeUnderMergeIntentDispatchesReview pins #1277 (quack#1277): a
-// push under a standing quack:merge intent must not sit silent until a human
-// comments /review - it re-reviews automatically.
+// A push under a standing quack:merge intent re-reviews automatically instead of waiting for /review.
 func TestSynchronizeUnderMergeIntentDispatchesReview(t *testing.T) {
 	sim := &mergeSim{reviews: "[]", checks: checksGreen, headSHA: "head2"}
 	srv := sim.server(t)
@@ -758,10 +725,8 @@ func TestSynchronizeWithoutMergeIntentDispatchesNothing(t *testing.T) {
 	}
 }
 
-// TestSynchronizeSameHeadTwiceDispatchesOnce pins the guard: two synchronize
-// events for the SAME head must dispatch exactly once, even after the first
-// review has already completed (so the ordinary inflight dedup is no longer
-// what's preventing the second one - the head-SHA guard on the intent itself is).
+// Two synchronize events for the same head dispatch once even after the first review completed:
+// the intent's head-SHA guard, not inflight dedup, prevents the second.
 func TestSynchronizeSameHeadTwiceDispatchesOnce(t *testing.T) {
 	sim := &mergeSim{reviews: "[]", checks: checksGreen, headSHA: "head2"}
 	srv := sim.server(t)
@@ -773,9 +738,7 @@ func TestSynchronizeSameHeadTwiceDispatchesOnce(t *testing.T) {
 
 	ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request", synchronizeBody("head2")))
 	fh.waitForDispatch(t, 2*time.Second)
-	// Settle the first run so the ordinary inflight dedup releases its claim -
-	// what's left standing between the two synchronize events must be the
-	// head-SHA guard, not the unrelated in-flight-run guard.
+	// Settle the first run so inflight dedup releases; only the head-SHA guard remains between the two events.
 	ext.RunEnded(chatID, sdk.RunOutcome{Status: sdk.RunDone, PlanRan: true, Answer: "reviewed"})
 
 	ext.handleWebhook(httptest.NewRecorder(), signedRequest("pull_request", synchronizeBody("head2")))
@@ -785,12 +748,8 @@ func TestSynchronizeSameHeadTwiceDispatchesOnce(t *testing.T) {
 	}
 }
 
-// TestMergeWaitsWhenNoChecksRegisteredYetThenMerges pins design decision (4):
-// an empty check-run list is NOT green - pull_request_review.submitted can
-// arrive before any workflow has even queued. No merge until at least one
-// check exists and is green; the next completion event re-evaluates, with no
-// timer and no polling. A queued check suite is what makes this "wait" and
-// not "no CI at all" (see TestMergeNoCheckSuitesMergesImmediately).
+// An empty check-run list is not green: a review can land before any workflow queued. A queued suite means
+// wait for the next completion event (no timer, no polling), unlike having no CI at all.
 func TestMergeWaitsWhenNoChecksRegisteredYetThenMerges(t *testing.T) {
 	sim := &mergeSim{reviews: "[]", body: "LGTM", checks: checksEmpty, suites: suitesQueued, headSHA: "head1"}
 	srv := sim.server(t)
@@ -811,12 +770,8 @@ func TestMergeWaitsWhenNoChecksRegisteredYetThenMerges(t *testing.T) {
 	waitFor(t, "the merge", func() bool { return sim.merges.Load() == 1 })
 }
 
-// TestMergeNoCheckSuitesMergesImmediately pins the fix for the permanent
-// silent stall: a head with zero check runs AND zero check suites (a
-// docs-only PR under path-filtered workflows, or a repo with no CI at all)
-// will never get a completion event to re-evaluate on, so tryMerge must
-// attempt the merge right away and let GitHub's own required-check refusal
-// be the last guard.
+// Zero check runs and zero suites (docs-only PR, or no CI) never yield a completion event, so tryMerge
+// merges right away and lets GitHub's required-check refusal be the last guard.
 func TestMergeNoCheckSuitesMergesImmediately(t *testing.T) {
 	sim := &mergeSim{reviews: approvedOnHead1, body: "LGTM", checks: checksEmpty, suites: suitesNone, headSHA: "head1"}
 	srv := sim.server(t)
@@ -826,9 +781,7 @@ func TestMergeNoCheckSuitesMergesImmediately(t *testing.T) {
 	waitFor(t, "the merge", func() bool { return sim.merges.Load() == 1 })
 }
 
-// TestMergeQueuedSuiteWaitsThenRunsCompleteMerges: a check suite exists
-// (queued, no runs posted yet) - tryMerge must wait for the completion event
-// instead of attempting the merge, then merge once the run reports green.
+// A queued suite with no runs yet: wait for the completion event, then merge once the run is green.
 func TestMergeQueuedSuiteWaitsThenRunsCompleteMerges(t *testing.T) {
 	sim := &mergeSim{reviews: approvedOnHead1, body: "LGTM", checks: checksEmpty, suites: suitesQueued, headSHA: "head1"}
 	srv := sim.server(t)
@@ -845,11 +798,8 @@ func TestMergeQueuedSuiteWaitsThenRunsCompleteMerges(t *testing.T) {
 	waitFor(t, "the merge", func() bool { return sim.merges.Load() == 1 })
 }
 
-// TestMergeCompletedSuiteNoRunsMergesImmediately pins the terminal-suite
-// half of the merge.go:103 fix: a suite that already reached "completed"
-// (success, no runs ever posted) emits no further event, so treating it as
-// pending would stall the merge forever. It must fall through and attempt
-// the merge like the no-suite-at-all case.
+// A suite already "completed" (success, no runs) emits no further event, so it must not count as pending;
+// merge like the no-suite case.
 func TestMergeCompletedSuiteNoRunsMergesImmediately(t *testing.T) {
 	sim := &mergeSim{reviews: approvedOnHead1, body: "LGTM", checks: checksEmpty, suites: suitesCompleted, headSHA: "head1"}
 	srv := sim.server(t)
@@ -859,12 +809,8 @@ func TestMergeCompletedSuiteNoRunsMergesImmediately(t *testing.T) {
 	waitFor(t, "the merge", func() bool { return sim.merges.Load() == 1 })
 }
 
-// TestMergeCompletedFailedSuiteNoRunsDoesNotMerge pins the other half of the
-// merge.go:103 fix: a suite that completed with a failing conclusion but
-// posted no check run is terminal too - GitHub's merge API would only read
-// the missing named check as "expected" (mergePendingRe), which would stall
-// forever the same way. tryMerge must recognize the failure itself, skip
-// the merge attempt, and append the reason to the review exactly once.
+// A suite completed with a failing conclusion and no runs is terminal too: GitHub would read the missing check
+// as "expected" and stall, so tryMerge skips the merge and appends the reason once.
 func TestMergeCompletedFailedSuiteNoRunsDoesNotMerge(t *testing.T) {
 	sim := &mergeSim{reviews: approvedOnHead1, body: "LGTM", checks: checksEmpty, suites: suitesFailed, headSHA: "head1"}
 	srv := sim.server(t)
@@ -886,10 +832,8 @@ func TestMergeCompletedFailedSuiteNoRunsDoesNotMerge(t *testing.T) {
 	}
 }
 
-// TestMergeBlockedByHumanRequestChangesThenReapprovalMerges pins design
-// decision (5): a human's standing CHANGES_REQUESTED on the current head
-// blocks an otherwise green, quack-approved, quack:merge-labeled PR; the
-// SAME reviewer approving again on that head clears it.
+// A human's standing CHANGES_REQUESTED on the head blocks an otherwise mergeable PR;
+// the same reviewer re-approving on that head clears it.
 func TestMergeBlockedByHumanRequestChangesThenReapprovalMerges(t *testing.T) {
 	sim := &mergeSim{reviews: approvedOnHead1, body: "LGTM", checks: checksGreen, headSHA: "head1"}
 	srv := sim.server(t)

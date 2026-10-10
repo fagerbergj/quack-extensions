@@ -1,12 +1,5 @@
-// Command qa-mock is a standalone fake GitHub API + webhook sender for QA -
-// exercises the review/plan/implement/fix flows end to end without real
-// GitHub credentials. Not part of the quack binary; run with `go run`.
-//
-// Subcommands:
-//
-//	serve   --fixtures DIR --addr :8090 [--record TOKEN]
-//	send    --fixtures DIR --secret SECRET --url URL --event NAME --fixture FILE
-//	deliveries --fixtures DIR
+// Command qa-mock is a fake GitHub API and webhook sender for QA without real credentials. Subcommands:
+// serve --fixtures DIR [--addr A] [--record TOKEN]; send --secret S --url U --event E --fixture F; deliveries
 package main
 
 import (
@@ -49,9 +42,8 @@ func main() {
 
 // --- serve: fixture-backed fake api.github.com ---
 
-// server is a generic method+path fixture replay backend, not a per-endpoint
-// model of GitHub's API - the smaller lever: a PR/issue fixture captured
-// once (record mode, real token) replays byte-identical offline.
+// server replays fixtures keyed by method+path rather than modelling GitHub's API: a fixture
+// captured once in record mode replays byte-identical offline.
 type server struct {
 	dir        string // fixtures directory: GET fixtures live at <dir>/get/<key>.json
 	recordTok  string // if set, GET misses proxy to real GitHub and are saved
@@ -143,9 +135,8 @@ func (s *server) serveFixture(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 
-// mockMutationResponse fabricates a generic success body for any write call
-// (comment, review, label, push-check, etc) - the QA assertion is the
-// recorded delivery, not GitHub's real response shape.
+// mockMutationResponse fabricates a generic success body for any write; QA asserts on the
+// recorded delivery, not GitHub's response shape.
 func (s *server) mockMutationResponse(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)

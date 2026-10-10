@@ -2,11 +2,7 @@ package github
 
 import "regexp"
 
-// Duplicated from internal/vetting/delivery.go's ImplementationIntent:
-// vetting's own gate (demandedDelivery) calls it internally too, so
-// deleting the original would break the gate - only this extension's copy
-// (envelope.go/intent.go's classification, tools.go's self-review path via
-// StripVerdictTail below) crosses the seam.
+// Mirrors quack's vetting ImplementationIntent, which its own gate still calls; keep the two in step.
 var (
 	implVerbs  = `add|implement|create|write|fix|refactor|build|port|migrate|scaffold|generate`
 	implVerbRe = regexp.MustCompile(`(?i)\b(` + implVerbs + `)\b`)
@@ -19,7 +15,7 @@ var (
 	clauseStart    = `(?i)(?:^|[.;:!?\n]\s*|\b(?:and|then|also|please)\s+)`
 	implDirectedRe = regexp.MustCompile(clauseStart + `(?:` + implVerbs + `)\b`)
 
-	// review/audit ask is read-only by default.
+	// A review/audit ask is read-only by default.
 	reviewRe = regexp.MustCompile(`(?i)\b(review|audit|critique|assess)(s|ed|ing)?\b`)
 )
 

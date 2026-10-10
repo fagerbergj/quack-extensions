@@ -6,19 +6,12 @@ import (
 	"testing"
 )
 
-// TestBuildEnvelopeSizeShrinksOrderOfMagnitude pins issue #1010's measured
-// target: a #1006-shaped dispatch (a long-running issue with a large
-// comment thread and a large raw webhook payload) built ~48.8k chars before
-// this change. With comments/timeline/event moved to input artifacts and
-// only the steady-state delta inlined, the envelope for the SAME underlying
-// data should be an order of magnitude smaller - this asserts a bound, not
-// the exact number (which depends on fixture sizes chosen here).
+// A large-thread, large-payload dispatch must build an envelope an order of magnitude smaller than
+// inlining everything; this asserts a bound, not an exact size.
 func TestBuildEnvelopeSizeShrinksOrderOfMagnitude(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 
-	// A #1006-shaped thread: ~50 long-ish comments (the seeded snapshot),
-	// none of them new/edited/deleted since the last dispatch (steady state -
-	// "the case the issue says gets worse over time").
+	// ~50 long-ish seeded comments, none new/edited/deleted since the last dispatch (steady state).
 	comments := make([]snapshotComment, 0, 50)
 	for i := 0; i < 50; i++ {
 		comments = append(comments, snapshotComment{
@@ -32,8 +25,7 @@ func TestBuildEnvelopeSizeShrinksOrderOfMagnitude(t *testing.T) {
 	var issue issueCommentPayload
 	issue.Issue.Number = 1006
 	issue.Action = "created"
-	// A large raw webhook payload (repo metadata, gravatar_id, etc. - the
-	// #1010 issue's own measured ~10.6k chunk) - no longer inlined at all.
+	// A large raw webhook payload (~10k of repo metadata) that must not be inlined.
 	issue.rawEvent = []byte(`{"action":"created","repository":{` + strings.Repeat(`"field":"noise",`, 400) + `"last":"x"}}`)
 	issue.eventName = "issues.labeled"
 
@@ -55,10 +47,8 @@ func TestBuildEnvelopeSizeShrinksOrderOfMagnitude(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeSizeWithManifest pins the <artifacts> manifest's own
-// contribution to envelope size: even with every #1006-shaped input
-// artifact listed, the manifest block itself stays small (one compact line
-// per artifact), not a second copy of what it points at.
+// Even with every input artifact listed, the manifest stays one compact line per artifact,
+// not a second copy of what it points at.
 func TestBuildEnvelopeSizeWithManifest(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 

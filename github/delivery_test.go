@@ -15,9 +15,8 @@ import (
 	"github.com/fagerbergj/quack-extensions/sdk"
 )
 
-// newDeliveryApp returns an App wired to an httptest server for App.Deliver
-// tests, its install/token caches pre-seeded so only the stubbed endpoints
-// are hit (mirrors newReviewApp/seededApp in tools_test.go).
+// newDeliveryApp wires an App to an httptest server with install/token caches pre-seeded,
+// so only the stubbed endpoints are hit.
 func newDeliveryApp(t *testing.T, handler http.HandlerFunc) *App {
 	t.Helper()
 	srv := httptest.NewServer(handler)
@@ -33,9 +32,7 @@ func newDeliveryApp(t *testing.T, handler http.HandlerFunc) *App {
 	return app
 }
 
-// TestDeliverPullRequestUpdatesExistingInsteadOfDuplicate pins a staged
-// pull_request delivered against a branch that already has an OPEN PR must
-// UPDATE that PR, never open a second one.
+// A staged pull_request for a branch that already has an OPEN PR updates it, never opens a second.
 func TestDeliverPullRequestUpdatesExistingInsteadOfDuplicate(t *testing.T) {
 	var created bool
 	var patchedBody map[string]string
@@ -81,9 +78,7 @@ func TestDeliverPullRequestUpdatesExistingInsteadOfDuplicate(t *testing.T) {
 	}
 }
 
-// TestDeliverPushErrorShortCircuits pins #46: a gate push failure carried on
-// dc.PushError must post the failure and attempt nothing against a branch
-// that was never pushed.
+// A gate push failure on dc.PushError posts the failure and attempts nothing against the unpushed branch.
 func TestDeliverPushErrorShortCircuits(t *testing.T) {
 	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("unexpected request %s %s - Deliver must not call GitHub on a push failure", r.Method, r.URL.Path)
@@ -104,10 +99,7 @@ func TestDeliverPushErrorShortCircuits(t *testing.T) {
 	}
 }
 
-// TestDeliverPushWithNothingToSayOmitsThePatch pins #724 test case 1: a
-// stage_push with no title/body must leave the existing PR completely
-// untouched - openOrUpdatePullRequest reuses findOpenPR's own url/number
-// instead of round-tripping a no-op PATCH, so no PATCH request happens at all.
+// A stage_push with no title/body leaves the PR untouched: no PATCH request at all.
 func TestDeliverPushWithNothingToSayOmitsThePatch(t *testing.T) {
 	var patched bool
 	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
@@ -141,7 +133,6 @@ func TestDeliverPushWithNothingToSayOmitsThePatch(t *testing.T) {
 	}
 }
 
-// TestDeliverPushWithDeliberateUpdateAppliesBoth pins #724 test case 2:
 // stage_push(title, body) applies both fields.
 func TestDeliverPushWithDeliberateUpdateAppliesBoth(t *testing.T) {
 	var patchedBody map[string]any
@@ -173,9 +164,7 @@ func TestDeliverPushWithDeliberateUpdateAppliesBoth(t *testing.T) {
 	}
 }
 
-// TestDeliverPushPartialUpdateOmitsTitleKey pins #724 test case 3: a
-// body-only stage_push must PATCH with no "title" key at all, not an empty
-// string - an empty string would blank the PR's real title on GitHub.
+// A body-only stage_push PATCHes with no "title" key; an empty string would blank the PR's real title.
 func TestDeliverPushPartialUpdateOmitsTitleKey(t *testing.T) {
 	var patchedBody map[string]any
 	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
@@ -209,14 +198,8 @@ func TestDeliverPushPartialUpdateOmitsTitleKey(t *testing.T) {
 	}
 }
 
-// TestDeliverPushWithNoTitleAndNoExistingPRFailsExplicitly closes a gap
-// openOrUpdatePullRequest had: a titleless stage_push falls through to
-// openPullRequest exactly like a legitimate new-PR run whenever no open PR
-// is found for the branch (e.g. it was closed between trigger and delivery)
-// - but a push run has no title to open one with. GitHub would 422 a
-// titleless PR; inventing a title is the exact fabrication #724 removed
-// stage_pr's compulsion to do. Delivery must refuse with a named cause
-// instead, and never call the create-PR endpoint.
+// A titleless stage_push with no open PR for the branch must refuse with a named cause, never invent
+// a title or call the create-PR endpoint (GitHub would 422 a titleless PR).
 func TestDeliverPushWithNoTitleAndNoExistingPRFailsExplicitly(t *testing.T) {
 	var posted bool
 	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
@@ -257,9 +240,7 @@ func TestDeliverPushWithNoTitleAndNoExistingPRFailsExplicitly(t *testing.T) {
 	}
 }
 
-// TestDeliverPushWithNoTitleAndFailedLookupFailsExplicitly is the sibling
-// case: findOpenPR itself errors (a transient API blip) rather than cleanly
-// reporting no PR - same refusal, same no-POST guarantee.
+// Same refusal and no-POST guarantee when findOpenPR itself errors instead of reporting no PR.
 func TestDeliverPushWithNoTitleAndFailedLookupFailsExplicitly(t *testing.T) {
 	var posted bool
 	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
@@ -298,15 +279,8 @@ func TestDeliverPushWithNoTitleAndFailedLookupFailsExplicitly(t *testing.T) {
 	}
 }
 
-// TestDeliverVerifiesPushAgainstGitHub pins that a non-empty dc.PushedSHA is
-// not itself proof the branch landed - Deliver must confirm the branch's head
-// against GitHub's OWN state (verifyPushedBranch) before opening/updating
-// anything, and fail closed (no PR, no summary claiming success) when it
-// doesn't match. Unlike the original (which drove a real `git push` against a
-// local bare repo and passed CloneDir), this port's Deliver never touches a
-// clone at all - quack-core pushes and hands over the proof via dc.PushedSHA
-// (see github/tools.go's Deliver) - so these cases only need a synthetic SHA
-// and a stub git/ref endpoint, no git binary.
+// A non-empty dc.PushedSHA isn't proof the branch landed: Deliver confirms the head against GitHub
+// (verifyPushedBranch) and fails closed on mismatch. quack-core pushes, so no git binary is needed.
 func TestDeliverVerifiesPushAgainstGitHub(t *testing.T) {
 	const fullSHA = "abcdef0123456789abcdef0123456789abcdef01"
 
@@ -382,9 +356,8 @@ func TestDeliverVerifiesPushAgainstGitHub(t *testing.T) {
 		}
 	})
 
-	// #570: GitHub's git-refs API isn't read-your-writes consistent - a ref
-	// lookup right after an accepted push can 404 before it settles. Delivery
-	// must retry that instead of declaring the push a phantom failure.
+	// GitHub's git-refs API isn't read-your-writes consistent: retry an early 404 instead of
+	// declaring the push a phantom failure.
 	t.Run("transient 404 on verification recovers", func(t *testing.T) {
 		dc := dc
 		dc.ChatID = "chat-push-race"
@@ -420,9 +393,7 @@ func TestDeliverVerifiesPushAgainstGitHub(t *testing.T) {
 	})
 }
 
-// TestDeliverCommentIdempotentEdit pins re-delivering a staged comment
-// for the SAME slot must EDIT the prior quack-authored comment carrying its
-// marker, not pile up a duplicate.
+// Re-delivering a staged comment for the same slot edits the prior marked comment, not a duplicate.
 func TestDeliverCommentIdempotentEdit(t *testing.T) {
 	var posted, patched bool
 	var patchedBody string
@@ -471,9 +442,8 @@ func TestDeliverCommentIdempotentEdit(t *testing.T) {
 	}
 }
 
-// TestDeliverCommentCarriesGateCaveat pins #709: a gate-failed comment must
-// carry the same caveat banner as a gate-failed PR/review, since a comment
-// has no draft-equivalent signal to fall back on.
+// A gate-failed comment carries the same caveat banner as a gate-failed PR/review:
+// a comment has no draft-equivalent signal to fall back on.
 func TestDeliverCommentCarriesGateCaveat(t *testing.T) {
 	t.Run("gate failed adds the banner", func(t *testing.T) {
 		var postedBody string
@@ -547,9 +517,7 @@ func TestDeliverCommentCarriesGateCaveat(t *testing.T) {
 	})
 }
 
-// TestDeliverCollapsesPriorReview pins review half: before submitting a
-// new review, Deliver minimizes (GraphQL minimizeComment) any prior
-// quack-authored review carrying the review marker.
+// Before submitting a new review, Deliver minimizes (GraphQL minimizeComment) any prior marked quack review.
 func TestDeliverCollapsesPriorReview(t *testing.T) {
 	var minimizedID string
 	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
@@ -594,10 +562,8 @@ func TestDeliverCollapsesPriorReview(t *testing.T) {
 	}
 }
 
-// A review on a PR quack authored can't carry an approve/request_changes
-// verdict (GitHub 422s an author approving their own PR) - but a COMMENT-event
-// review IS allowed, and #513 pins that it must still carry the findings as
-// real inline comments[], not flattened text.
+// On a quack-authored PR GitHub 422s approve/request_changes, but a COMMENT-event review is allowed
+// and must still carry findings as real inline comments[], not flattened text.
 func TestDeliverReviewOnOwnPRIsCommentNoVerdict(t *testing.T) {
 	var reviewBody []byte
 	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
@@ -654,11 +620,8 @@ func TestDeliverReviewOnOwnPRIsCommentNoVerdict(t *testing.T) {
 	}
 }
 
-// TestDeliverReviewOnOwnPREmbedsHeadMarker pins the fix for merge.go's
-// staleness guard on own-PR verdicts: since a plain issue-comment marker has
-// no commit_id to compare (GitHub forbids self-review formally too, on some
-// repos falling back to a comment), quack embeds the head SHA it reviewed
-// against directly in the posted body.
+// An own-PR review comment has no commit_id, so quack embeds the reviewed head SHA in the body
+// for merge.go's staleness guard.
 func TestDeliverReviewOnOwnPREmbedsHeadMarker(t *testing.T) {
 	var reviewBody []byte
 	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
@@ -697,10 +660,8 @@ func TestDeliverReviewOnOwnPREmbedsHeadMarker(t *testing.T) {
 	}
 }
 
-// TestDeliverReviewOnOwnPRStripsVerdictTail pins #482: the raw ACP reviewer
-// answer carries a machine-parseable VERDICT/FINDINGS tail (for
-// augmentFromAnswer) and sometimes a fallback-format preamble - neither
-// belongs in the human-facing own-PR review body.
+// The reviewer's machine-parseable VERDICT/FINDINGS tail and any fallback preamble don't belong
+// in the human-facing own-PR review body.
 func TestDeliverReviewOnOwnPRStripsVerdictTail(t *testing.T) {
 	var reviewBody []byte
 	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
@@ -763,9 +724,8 @@ func TestDeliverReviewOnOwnPRStripsVerdictTail(t *testing.T) {
 	}
 }
 
-// An external (ACP) reviewer's staged review carries gate-parsed inline
-// comments and no ledger PR number - delivery posts the comments and recovers
-// the PR from the GitHub-dispatched chat id.
+// An external (ACP) reviewer's staged review carries gate-parsed inline comments and no ledger PR number;
+// delivery posts the comments and recovers the PR from the chat id.
 func TestDeliverReviewInlineCommentsAndChatIDPR(t *testing.T) {
 	var reviewBody []byte
 	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
@@ -814,13 +774,8 @@ func TestDeliverReviewInlineCommentsAndChatIDPR(t *testing.T) {
 	}
 }
 
-// TestDeliverReviewReanchorsUncommentableFinding reproduces #694 end to end:
-// NightsOut#97's judge-flagged BLOCKING finding cited ManageDBActivity.kt:50,
-// a line outside the diff (context, not changed) that GitHub refuses inline
-// comments on. It must land as a real inline comment on the nearest
-// commentable line - the same discrete, GET /pulls/{n}/comments-visible form
-// as every anchored finding - not survive only as a body sentence, so a later
-// fix run finds it at the same rate as the six anchored nits it did address.
+// A finding on a line outside the diff (GitHub refuses inline comments there) lands as an inline comment
+// on the nearest commentable line, so a later fix run finds it like any anchored finding.
 func TestDeliverReviewReanchorsUncommentableFinding(t *testing.T) {
 	var reviewBody []byte
 	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
@@ -884,11 +839,8 @@ func TestDeliverReviewReanchorsUncommentableFinding(t *testing.T) {
 	}
 }
 
-// TestDeliverReviewKeepsUnanchorableFindingInBody pins #694's second case: a
-// finding staged against a file whose diff hunk is pure deletion (no
-// commentable RIGHT line at all) can't be re-anchored anywhere, so it must
-// still reach the review body as a distinguishable, located item - not
-// dropped, and not folded silently into prose.
+// A finding on a pure-deletion hunk can't be re-anchored, so it must reach the review body
+// as a distinguishable, located item, not dropped or folded into prose.
 func TestDeliverReviewKeepsUnanchorableFindingInBody(t *testing.T) {
 	var reviewBody []byte
 	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
@@ -940,10 +892,7 @@ func TestDeliverReviewKeepsUnanchorableFindingInBody(t *testing.T) {
 	}
 }
 
-// TestDeliverReviewNeverPushesBranch pins #452: a review-only delivery must
-// NOT push - a review lands on the existing PR via the API. This port's
-// Deliver only ever pushes-verifies when dc.PushedSHA is set; a review-only
-// item never sets it, so the git/ref endpoint below must never be hit.
+// A review-only delivery never pushes: dc.PushedSHA is unset, so the git/ref endpoint must never be hit.
 func TestDeliverReviewNeverPushesBranch(t *testing.T) {
 	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -977,9 +926,7 @@ func TestDeliverReviewNeverPushesBranch(t *testing.T) {
 	}
 }
 
-// TestDeliverApprovePostsDespiteFailingChecks pins the maintainer's rule: a
-// review always posts - failing checks are the merge's problem (branch
-// protection), never the review's. No CI re-check happens at delivery time.
+// A review always posts: failing checks are the merge's problem (branch protection), not the review's.
 func TestDeliverApprovePostsDespiteFailingChecks(t *testing.T) {
 	var posted bool
 	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
@@ -1062,16 +1009,14 @@ func TestDeliverFailedGateOpensDraftPR(t *testing.T) {
 	if !strings.Contains(posted.Body, "did not pass") {
 		t.Fatalf("caveat banner missing from body: %s", posted.Body)
 	}
-	// #575: a fresh PR opened for a chat tied to issue #3 closes it deterministically.
+	// A fresh PR opened for a chat tied to issue #3 closes it deterministically.
 	if !strings.Contains(posted.Body, "Closes #3") {
 		t.Fatalf("delivered PR body missing deterministic Closes trailer: %s", posted.Body)
 	}
 }
 
-// TestDeliverSuppressesClosesTrailerWhenPartialFix pins #575's "Done when":
-// the quack:partial-fix label on the originating issue must suppress the
-// deterministic trailer - a maintainer's explicit "this PR does not close it"
-// signal, never overridden.
+// The quack:partial-fix label on the originating issue suppresses the Closes trailer:
+// the maintainer's explicit "this PR does not close it" signal.
 func TestDeliverSuppressesClosesTrailerWhenPartialFix(t *testing.T) {
 	var prBody []byte
 	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
@@ -1108,13 +1053,8 @@ func TestDeliverSuppressesClosesTrailerWhenPartialFix(t *testing.T) {
 	}
 }
 
-// TestDeliverSkipsClosesTrailerWhenChatIDResolvesToAPR covers the edge case
-// findOpenPR alone can't catch: a PR-scoped chat id (github-owner-repo-<PR
-// number>) whose branch's ORIGINAL PR was since closed/merged also takes the
-// fresh-open path (no OPEN PR on that branch), and the chat id's number is
-// still a pull request, not an issue - GitHub's issues endpoint returns PRs
-// too, so a body-less partial-fix check alone would wrongly close #92 by
-// naming another pull request.
+// A PR-scoped chat id whose original PR was closed also takes the fresh-open path, but its number is a PR,
+// not an issue; GitHub's issues endpoint returns PRs too, so it must not get a Closes trailer.
 func TestDeliverSkipsClosesTrailerWhenChatIDResolvesToAPR(t *testing.T) {
 	var prBody []byte
 	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
@@ -1153,11 +1093,8 @@ func TestDeliverSkipsClosesTrailerWhenChatIDResolvesToAPR(t *testing.T) {
 	}
 }
 
-// TestDeliverDoesNotAppendClosesOnPRUpdate pins the other half of #575: a PR
-// update (an already-open PR on this branch - a fix/continuation run, not a
-// fresh issue-implement run) must never get a Closes trailer, even when the
-// chat id encodes a number - that number is the PR's own, not a distinct
-// issue to close.
+// A PR update (an already-open PR on the branch) never gets a Closes trailer: the chat id's number
+// is the PR's own, not an issue to close.
 func TestDeliverDoesNotAppendClosesOnPRUpdate(t *testing.T) {
 	var patchedBody map[string]string
 	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
@@ -1189,9 +1126,8 @@ func TestDeliverDoesNotAppendClosesOnPRUpdate(t *testing.T) {
 	}
 }
 
-// TestDeliverClosesTrailerNotDuplicated pins the other "Done when": a body
-// that already references the issue with a closing keyword is left alone -
-// no second trailer, and no partial-fix lookup needed to decide that.
+// A body that already references the issue with a closing keyword gets no second trailer
+// and needs no partial-fix lookup.
 func TestDeliverClosesTrailerNotDuplicated(t *testing.T) {
 	var prBody []byte
 	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {
@@ -1228,9 +1164,8 @@ func TestDeliverClosesTrailerNotDuplicated(t *testing.T) {
 	}
 }
 
-// #1093 finding 1: a review delivered with dc.IdempotencyKey set embeds the
-// key marker in the posted body, through the real Deliver path (not just
-// deliveryKeyMarker in isolation) - what RecoverDelivery later searches for.
+// A review delivered with dc.IdempotencyKey embeds the key marker via the real Deliver path:
+// what RecoverDelivery later searches for.
 func TestDeliverReviewEmbedsIdempotencyKeyMarker(t *testing.T) {
 	var reviewBody []byte
 	app := newDeliveryApp(t, func(w http.ResponseWriter, r *http.Request) {

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/fagerbergj/quack-extensions/sdk"
 )
@@ -82,10 +83,8 @@ func TestStoreRoundTrips(t *testing.T) {
 	}
 }
 
-// TestMigrationAddsDispatchedHeadColumn opens a database created before the
-// dispatched_head column existed (#1277) - openStore must add it in place
-// rather than erroring on "duplicate column" on every later open, and the
-// pre-existing row must survive with an empty dispatched_head.
+// openStore adds dispatched_head in place to an older database instead of erroring with "duplicate column"
+// on every later open, and the existing row survives with an empty dispatched_head.
 func TestMigrationAddsDispatchedHeadColumn(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "github.sqlite")
@@ -133,10 +132,8 @@ func TestMigrationAddsDispatchedHeadColumn(t *testing.T) {
 	s2.Close()
 }
 
-// TestSetMergeIntentConflictLeavesDispatchedHeadUntouched pins the ON
-// CONFLICT clause's deliberate omission of dispatched_head: re-labeling a PR
-// that already has a push-triggered re-review dispatched must not forget
-// that head, or the next synchronize for the same head would dispatch again.
+// The ON CONFLICT clause omits dispatched_head on purpose: re-labeling must not forget an already-dispatched
+// head, or the next synchronize for that head would dispatch again.
 func TestSetMergeIntentConflictLeavesDispatchedHeadUntouched(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
@@ -159,12 +156,8 @@ func TestSetMergeIntentConflictLeavesDispatchedHeadUntouched(t *testing.T) {
 	}
 }
 
-// TestStoreConcurrentAccessNoErrors is Risk 2's baseline: many goroutines
-// hitting all four tables, many keys, concurrently. Run with -race. The
-// property under test is that MaxOpenConns(1) actually prevents SQLITE_BUSY
-// under concurrent writers - a failure here means every "best effort,
-// log-and-continue" caller in webhook.go/cifix.go would silently drop
-// writes under load, not that anything panics.
+// Run with -race: MaxOpenConns(1) must prevent SQLITE_BUSY under concurrent writers, or every
+// best-effort log-and-continue caller silently drops writes under load.
 func TestStoreConcurrentAccessNoErrors(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
@@ -205,14 +198,8 @@ func TestStoreConcurrentAccessNoErrors(t *testing.T) {
 	}
 }
 
-// TestKeyedMutexPreventsDoubleConsumeMergeIntent reproduces the exact race
-// the design doc's Risk 2 names: mergeIfApproved (Set) racing
-// tryMerge (Get-then-Delete) for the SAME chat. Without
-// serializing the two, two concurrent "Get, see an intent, Delete it"
-// sequences can both observe the same intent and both act on it (a double
-// merge attempt). keyedMutex closes this at the call-site: every
-// consume-if-present pass for one chat is serialized against every set for
-// that chat.
+// mergeIfApproved (Set) racing tryMerge (Get-then-Delete) for one chat could double-merge;
+// keyedMutex serializes every consume-if-present pass against every set for that chat.
 func TestKeyedMutexPreventsDoubleConsumeMergeIntent(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
@@ -343,5 +330,28 @@ func TestStoreRetriesAfterFailedOpen(t *testing.T) {
 	}
 	if _, ok, err := s.GetSnapshot(ctx, "c1"); err != nil || !ok {
 		t.Fatalf("GetSnapshot after retry: ok=%v err=%v", ok, err)
+	}
+}
+
+// Start prunes pending runs older than lease + run timeout and keeps fresh ones.
+func TestStartPrunesStalePendingRuns(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	if err := st.SetPendingRun(ctx, PendingRunRow{ChatID: "fresh"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.exec(ctx, `INSERT INTO github_pending_run (chat_id, session_id, owner, repo, number, is_pr, login, is_plan, is_label_trigger, comment_id, default_branch, installation_id, clone_url, created_at)
+		VALUES ('stale', '', '', '', 0, 0, '', 0, 0, 0, '', 0, '', ?)`, time.Now().UTC().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	e := &Extension{store: st, runTimeout: time.Minute}
+	if err := e.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	for id, want := range map[string]bool{"fresh": true, "stale": false} {
+		row, err := st.GetPendingRun(ctx, id)
+		if err != nil || (row != nil) != want {
+			t.Errorf("GetPendingRun(%q) = %+v, %v; want kept=%v", id, row, err, want)
+		}
 	}
 }

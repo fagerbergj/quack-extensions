@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"strconv"
@@ -91,25 +92,22 @@ func (a *App) SetPartialFixLabel(label string) {
 	}
 }
 
-// SetAPIBase points the client at something other than api.github.com - the
-// lever a QA mock GitHub server needs (see tools/qa/github-mock).
+// SetAPIBase points the client at something other than api.github.com, e.g. the QA mock server.
 func (a *App) SetAPIBase(base string) {
 	if base != "" {
 		a.apiBase = strings.TrimRight(base, "/")
 	}
 }
 
-// SetFooter records what withFooter stamps on posted bodies: the quack
-// build stamp and the server's externally reachable base URL. Either may be
-// "" (host predates these Host fields, or the deployment has no public URL).
+// SetFooter records the build stamp and public base URL withFooter stamps on posted bodies;
+// either may be "".
 func (a *App) SetFooter(version, publicURL string) {
 	a.version = version
 	a.publicURL = strings.TrimRight(publicURL, "/")
 }
 
-// SetReviewCommands records the mention token, label names and enabled
-// triggers a posted review's commands block is built from - this
-// deployment's actual config, never a hardcoded default.
+// SetReviewCommands records the deployment's mention token, label names and enabled triggers,
+// which a posted review's commands block is built from.
 func (a *App) SetReviewCommands(mention string, labels Labels, triggers map[string]bool) {
 	a.mention = mention
 	a.labels = labels
@@ -263,22 +261,18 @@ func (a *App) doJSON(ctx context.Context, method, path, authz string, reqBody, o
 	return nil
 }
 
-// getRepoJSON resolves the repo token and GETs path, decoding the response into out.
-func (a *App) getRepoJSON(ctx context.Context, owner, repo, path string, out any) error {
+// repoJSON is doJSON authorized with owner/repo's installation token.
+func (a *App) repoJSON(ctx context.Context, owner, repo, method, path string, reqBody, out any) error {
 	tok, err := a.tokenForRepo(ctx, owner, repo)
 	if err != nil {
 		return err
 	}
-	return a.doJSON(ctx, http.MethodGet, path, "token "+tok, nil, out)
+	return a.doJSON(ctx, method, path, "token "+tok, reqBody, out)
 }
 
-// setCommentBody resolves the repo token and writes bodyText (mentions stripped) as {"body": ...}.
+// setCommentBody writes bodyText (mentions stripped) as {"body": ...}.
 func (a *App) setCommentBody(ctx context.Context, owner, repo, method, path, bodyText string) error {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return err
-	}
-	return a.doJSON(ctx, method, path, "token "+tok, map[string]string{"body": stripMentions(bodyText)}, nil)
+	return a.repoJSON(ctx, owner, repo, method, path, map[string]string{"body": stripMentions(bodyText)}, nil)
 }
 
 func (a *App) postIssueComment(ctx context.Context, owner, repo string, number int, bodyText string) error {
@@ -291,22 +285,14 @@ func (a *App) editIssueComment(ctx context.Context, owner, repo string, id int64
 	return a.setCommentBody(ctx, owner, repo, http.MethodPatch, path, bodyText)
 }
 
-// updateReview replaces the body of one of quack's own reviews - how a merge
-// outcome lands on the review that approved it instead of as a new comment.
+// updateReview replaces the body of one of quack's own reviews, so a merge outcome lands on
+// the approving review instead of a new comment.
 func (a *App) updateReview(ctx context.Context, owner, repo string, number int, reviewID int64, bodyText string) error {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return err
-	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews/%d", owner, repo, number, reviewID)
-	return a.doJSON(ctx, http.MethodPut, path, "token "+tok, map[string]string{"body": stripMentions(bodyText)}, nil)
+	return a.setCommentBody(ctx, owner, repo, http.MethodPut, path, bodyText)
 }
 
 func (a *App) createPullRequest(ctx context.Context, owner, repo, title, head, base, bodyText string, draft bool) (string, int, error) {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return "", 0, err
-	}
 	var out struct {
 		HTMLURL string `json:"html_url"`
 		Number  int    `json:"number"`
@@ -316,23 +302,19 @@ func (a *App) createPullRequest(ctx context.Context, owner, repo, title, head, b
 	if draft {
 		reqBody["draft"] = true
 	}
-	if err := a.doJSON(ctx, http.MethodPost, path, "token "+tok, reqBody, &out); err != nil {
+	if err := a.repoJSON(ctx, owner, repo, http.MethodPost, path, reqBody, &out); err != nil {
 		return "", 0, err
 	}
 	return out.HTMLURL, out.Number, nil
 }
 
 func (a *App) findOpenPR(ctx context.Context, owner, repo, branch string) (number int, url string, ok bool, err error) {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return 0, "", false, err
-	}
 	var out []struct {
 		Number  int    `json:"number"`
 		HTMLURL string `json:"html_url"`
 	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls?head=%s:%s&state=open", owner, repo, owner, branch)
-	if err := a.doJSON(ctx, http.MethodGet, path, "token "+tok, nil, &out); err != nil {
+	if err := a.repoJSON(ctx, owner, repo, http.MethodGet, path, nil, &out); err != nil {
 		return 0, "", false, err
 	}
 	if len(out) == 0 {
@@ -341,14 +323,9 @@ func (a *App) findOpenPR(ctx context.Context, owner, repo, branch string) (numbe
 	return out[0].Number, out[0].HTMLURL, true, nil
 }
 
-// updatePullRequest PATCHes only the fields the caller actually supplied - an
-// omitted key leaves that field untouched on GitHub rather than blanking it
-// (#724: a push with nothing to say must not erase the PR's real title/body).
+// updatePullRequest PATCHes only the supplied fields: an omitted key leaves GitHub's title/body
+// untouched rather than blanking it.
 func (a *App) updatePullRequest(ctx context.Context, owner, repo string, number int, title string, titleSet bool, bodyText string, bodySet bool) (string, error) {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return "", err
-	}
 	var out struct {
 		HTMLURL string `json:"html_url"`
 	}
@@ -360,7 +337,7 @@ func (a *App) updatePullRequest(ctx context.Context, owner, repo string, number 
 	if bodySet {
 		reqBody["body"] = stripMentions(bodyText)
 	}
-	if err := a.doJSON(ctx, http.MethodPatch, path, "token "+tok, reqBody, &out); err != nil {
+	if err := a.repoJSON(ctx, owner, repo, http.MethodPatch, path, reqBody, &out); err != nil {
 		return "", err
 	}
 	return out.HTMLURL, nil
@@ -373,7 +350,7 @@ func (a *App) branchHeadSHA(ctx context.Context, owner, repo, branch string) (st
 		} `json:"object"`
 	}
 	path := fmt.Sprintf("/repos/%s/%s/git/ref/heads/%s", owner, repo, branch)
-	if err := a.getRepoJSON(ctx, owner, repo, path, &out); err != nil {
+	if err := a.repoJSON(ctx, owner, repo, http.MethodGet, path, nil, &out); err != nil {
 		return "", err
 	}
 	return out.Object.SHA, nil
@@ -409,10 +386,6 @@ func (a *App) verifyPushedBranch(ctx context.Context, owner, repo, branch string
 }
 
 func (a *App) listIssueComments(ctx context.Context, owner, repo string, number int) ([]commentView, error) {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return nil, err
-	}
 	var raw []struct {
 		ID        int64     `json:"id"`
 		NodeID    string    `json:"node_id"`
@@ -422,7 +395,7 @@ func (a *App) listIssueComments(ctx context.Context, owner, repo string, number 
 		UpdatedAt string    `json:"updated_at"`
 	}
 	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments?per_page=100", owner, repo, number)
-	if err := a.doJSON(ctx, http.MethodGet, path, "token "+tok, nil, &raw); err != nil {
+	if err := a.repoJSON(ctx, owner, repo, http.MethodGet, path, nil, &raw); err != nil {
 		return nil, err
 	}
 	out := make([]commentView, 0, len(raw))
@@ -433,10 +406,6 @@ func (a *App) listIssueComments(ctx context.Context, owner, repo string, number 
 }
 
 func (a *App) issueMeta(ctx context.Context, owner, repo string, number int) (title, body, state string, labels []string, isPR bool, err error) {
-	tok, terr := a.tokenForRepo(ctx, owner, repo)
-	if terr != nil {
-		return "", "", "", nil, false, terr
-	}
 	var out struct {
 		Title       string    `json:"title"`
 		Body        string    `json:"body"`
@@ -447,7 +416,7 @@ func (a *App) issueMeta(ctx context.Context, owner, repo string, number int) (ti
 		} `json:"labels"`
 	}
 	path := fmt.Sprintf("/repos/%s/%s/issues/%d", owner, repo, number)
-	if err = a.doJSON(ctx, http.MethodGet, path, "token "+tok, nil, &out); err != nil {
+	if err = a.repoJSON(ctx, owner, repo, http.MethodGet, path, nil, &out); err != nil {
 		return "", "", "", nil, false, err
 	}
 	labels = make([]string, 0, len(out.Labels))
@@ -463,10 +432,6 @@ type prCommitView struct {
 }
 
 func (a *App) listPRCommits(ctx context.Context, owner, repo string, number int) ([]prCommitView, error) {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return nil, err
-	}
 	var raw []struct {
 		SHA    string `json:"sha"`
 		Commit struct {
@@ -474,7 +439,7 @@ func (a *App) listPRCommits(ctx context.Context, owner, repo string, number int)
 		} `json:"commit"`
 	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=250", owner, repo, number)
-	if err := a.doJSON(ctx, http.MethodGet, path, "token "+tok, nil, &raw); err != nil {
+	if err := a.repoJSON(ctx, owner, repo, http.MethodGet, path, nil, &raw); err != nil {
 		return nil, err
 	}
 	out := make([]prCommitView, 0, len(raw))
@@ -543,14 +508,9 @@ func (a *App) minimizeComment(ctx context.Context, owner, repo, nodeID string) e
 	return a.doGraphQL(ctx, "token "+tok, mutation, map[string]any{"id": nodeID}, nil)
 }
 
-// mergePR squash-merges a PR and returns the merge commit sha. headSHA pins
-// to a specific commit;
+// mergePR squash-merges a PR pinned to requiredHeadSHA and returns the merge commit sha.
 // ponytail: squash only; add merge_method config when someone wants otherwise.
 func (a *App) mergePR(ctx context.Context, owner, repo string, number int, requiredHeadSHA string) (string, error) {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return "", err
-	}
 	body := map[string]string{"merge_method": "squash"}
 	if requiredHeadSHA != "" {
 		body["sha"] = requiredHeadSHA
@@ -559,7 +519,7 @@ func (a *App) mergePR(ctx context.Context, owner, repo string, number int, requi
 		SHA string `json:"sha"`
 	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", owner, repo, number)
-	if err := a.doJSON(ctx, http.MethodPut, path, "token "+tok, body, &out); err != nil {
+	if err := a.repoJSON(ctx, owner, repo, http.MethodPut, path, body, &out); err != nil {
 		return "", err
 	}
 	return out.SHA, nil
@@ -575,14 +535,12 @@ type checkRunView struct {
 		Title   string `json:"title"`
 		Summary string `json:"summary"`
 	} `json:"output"`
-	// Why: bounded failure detail (annotations or output title) filled by
-	// enrichFailingChecks - only for failure/timed_out runs, never fetched otherwise.
+	// Why is bounded failure detail filled by enrichFailingChecks, only for failure/timed_out runs.
 	Why []string `json:"-"`
 }
 
-// enrichFailingChecks fills Why on up to 3 failing runs (2 annotation lines
-// each, output title as fallback) so the envelope can say what broke, not
-// just that something did.
+// enrichFailingChecks fills Why on up to 3 failing runs (2 annotation lines each, output title
+// as fallback) so the envelope can say what broke.
 func (a *App) enrichFailingChecks(ctx context.Context, owner, repo string, runs []checkRunView) {
 	enriched := 0
 	for i := range runs {
@@ -600,22 +558,14 @@ func (a *App) enrichFailingChecks(ctx context.Context, owner, repo string, runs 
 				if an.Level != "failure" && an.Level != "warning" {
 					continue
 				}
-				line := fmt.Sprintf("%s:%d %s", an.Path, an.StartLine, an.Message)
-				if len(line) > 200 {
-					line = line[:200]
-				}
-				r.Why = append(r.Why, line)
+				r.Why = append(r.Why, truncate(fmt.Sprintf("%s:%d %s", an.Path, an.StartLine, an.Message), 200))
 				if len(r.Why) >= 2 {
 					break
 				}
 			}
 		}
-		if len(r.Why) == 0 && strings.TrimSpace(r.Output.Title) != "" {
-			t := strings.TrimSpace(r.Output.Title)
-			if len(t) > 200 {
-				t = t[:200]
-			}
-			r.Why = []string{t}
+		if t := strings.TrimSpace(r.Output.Title); len(r.Why) == 0 && t != "" {
+			r.Why = []string{truncate(t, 200)}
 		}
 	}
 }
@@ -624,7 +574,7 @@ func (a *App) listCheckRuns(ctx context.Context, owner, repo, sha string) ([]che
 	var out = &struct {
 		CheckRuns []checkRunView `json:"check_runs"`
 	}{}
-	if err := a.getRepoJSON(ctx, owner, repo, fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs?per_page=100", owner, repo, sha), out); err != nil {
+	if err := a.repoJSON(ctx, owner, repo, http.MethodGet, fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs?per_page=100", owner, repo, sha), nil, out); err != nil {
 		return nil, err
 	}
 	return out.CheckRuns, nil
@@ -642,9 +592,8 @@ type checkSuiteView struct {
 	} `json:"app"`
 }
 
-// producesRuns reports whether this suite is ever expected to post check
-// runs: GitHub Actions always does; any other app only counts once it has -
-// some apps register a suite purely informational and never populate one.
+// producesRuns: GitHub Actions suites always post runs; other apps count only once they have,
+// since some register purely informational suites that never populate one.
 func (s checkSuiteView) producesRuns() bool {
 	return s.App.Slug == "github-actions" || s.LatestCheckRunsCount > 0
 }
@@ -654,7 +603,7 @@ func (a *App) listCheckSuites(ctx context.Context, owner, repo, sha string) ([]c
 		CheckSuites []checkSuiteView `json:"check_suites"`
 	}
 	var out suitesPage
-	if err := a.getRepoJSON(ctx, owner, repo, fmt.Sprintf("/repos/%s/%s/commits/%s/check-suites?per_page=100", owner, repo, sha), &out); err != nil {
+	if err := a.repoJSON(ctx, owner, repo, http.MethodGet, fmt.Sprintf("/repos/%s/%s/commits/%s/check-suites?per_page=100", owner, repo, sha), nil, &out); err != nil {
 		return nil, err
 	}
 	return out.CheckSuites, nil
@@ -670,26 +619,18 @@ type checkAnnotation struct {
 func (a *App) listCheckAnnotations(ctx context.Context, owner, repo string, checkRunID int64) ([]checkAnnotation, error) {
 	var out []checkAnnotation
 	path := fmt.Sprintf("/repos/%s/%s/check-runs/%d/annotations?per_page=50", owner, repo, checkRunID)
-	if err := a.getRepoJSON(ctx, owner, repo, path, &out); err != nil {
+	if err := a.repoJSON(ctx, owner, repo, http.MethodGet, path, nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
 func (a *App) addLabels(ctx context.Context, owner, repo string, number int, labels []string) error {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return err
-	}
 	path := fmt.Sprintf("/repos/%s/%s/issues/%d/labels", owner, repo, number)
-	return a.doJSON(ctx, http.MethodPost, path, "token "+tok, map[string][]string{"labels": labels}, nil)
+	return a.repoJSON(ctx, owner, repo, http.MethodPost, path, map[string][]string{"labels": labels}, nil)
 }
 
 func (a *App) createReview(ctx context.Context, owner, repo string, number int, event, bodyText string, comments []reviewComment) (string, int64, error) {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return "", 0, err
-	}
 	var out struct {
 		ID      int64  `json:"id"`
 		HTMLURL string `json:"html_url"`
@@ -704,18 +645,14 @@ func (a *App) createReview(ctx context.Context, owner, repo string, number int, 
 		}
 		reqBody["comments"] = clean
 	}
-	if err := a.doJSON(ctx, http.MethodPost, path, "token "+tok, reqBody, &out); err != nil {
+	if err := a.repoJSON(ctx, owner, repo, http.MethodPost, path, reqBody, &out); err != nil {
 		return "", 0, err
 	}
 	return out.HTMLURL, out.ID, nil
 }
 
-func draftKey(owner, repo string, number int) string {
-	return fmt.Sprintf("%s/%s#%d", owner, repo, number)
-}
-
 func (a *App) commentablePositions(ctx context.Context, owner, repo string, number int) (map[string]diffPositions, error) {
-	key := draftKey(owner, repo, number)
+	key := fmt.Sprintf("%s/%s#%d", owner, repo, number)
 	a.reviewMu.Lock()
 	if cd, ok := a.diffs[key]; ok && time.Since(cd.fetched) < diffTTL {
 		a.reviewMu.Unlock()
@@ -723,16 +660,12 @@ func (a *App) commentablePositions(ctx context.Context, owner, repo string, numb
 	}
 	a.reviewMu.Unlock()
 
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return nil, err
-	}
 	var files []struct {
 		Filename string `json:"filename"`
 		Patch    string `json:"patch"`
 	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/files?per_page=100", owner, repo, number)
-	if err := a.doJSON(ctx, http.MethodGet, path, "token "+tok, nil, &files); err != nil {
+	if err := a.repoJSON(ctx, owner, repo, http.MethodGet, path, nil, &files); err != nil {
 		return nil, err
 	}
 	positions := make(map[string]diffPositions, len(files))
@@ -743,6 +676,7 @@ func (a *App) commentablePositions(ctx context.Context, owner, repo string, numb
 		positions[f.Filename] = parsePatch(f.Patch)
 	}
 	a.reviewMu.Lock()
+	maps.DeleteFunc(a.diffs, func(_ string, cd cachedDiff) bool { return time.Since(cd.fetched) >= diffTTL })
 	a.diffs[key] = cachedDiff{files: positions, fetched: time.Now()}
 	a.reviewMu.Unlock()
 	return positions, nil
@@ -831,11 +765,6 @@ type reviewView struct {
 }
 
 func (a *App) listPRDiscussion(ctx context.Context, owner, repo string, number int) (prDiscussion, error) {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return prDiscussion{}, err
-	}
-	authz := "token " + tok
 	var out prDiscussion
 
 	var rawReviewComments []struct {
@@ -847,7 +776,7 @@ func (a *App) listPRDiscussion(ctx context.Context, owner, repo string, number i
 		InReplyToID int64     `json:"in_reply_to_id"`
 		CreatedAt   string    `json:"created_at"`
 	}
-	if err := a.doJSON(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/pulls/%d/comments?per_page=100", owner, repo, number), authz, nil, &rawReviewComments); err != nil {
+	if err := a.repoJSON(ctx, owner, repo, http.MethodGet, fmt.Sprintf("/repos/%s/%s/pulls/%d/comments?per_page=100", owner, repo, number), nil, &rawReviewComments); err != nil {
 		return prDiscussion{}, err
 	}
 	for _, c := range rawReviewComments {
@@ -862,7 +791,7 @@ func (a *App) listPRDiscussion(ctx context.Context, owner, repo string, number i
 		User      ghUserRef `json:"user"`
 		CreatedAt string    `json:"created_at"`
 	}
-	if err := a.doJSON(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/issues/%d/comments?per_page=100", owner, repo, number), authz, nil, &rawComments); err != nil {
+	if err := a.repoJSON(ctx, owner, repo, http.MethodGet, fmt.Sprintf("/repos/%s/%s/issues/%d/comments?per_page=100", owner, repo, number), nil, &rawComments); err != nil {
 		return prDiscussion{}, err
 	}
 	for _, c := range rawComments {
@@ -876,7 +805,7 @@ func (a *App) listPRDiscussion(ctx context.Context, owner, repo string, number i
 		User        ghUserRef `json:"user"`
 		SubmittedAt string    `json:"submitted_at"`
 	}
-	if err := a.doJSON(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews?per_page=100", owner, repo, number), authz, nil, &rawReviews); err != nil {
+	if err := a.repoJSON(ctx, owner, repo, http.MethodGet, fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews?per_page=100", owner, repo, number), nil, &rawReviews); err != nil {
 		return prDiscussion{}, err
 	}
 	for _, r := range rawReviews {
@@ -902,7 +831,7 @@ type prReview struct {
 
 func (a *App) listReviews(ctx context.Context, owner, repo string, number int) ([]prReview, error) {
 	var out []prReview
-	if err := a.getRepoJSON(ctx, owner, repo, fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews?per_page=100", owner, repo, number), &out); err != nil {
+	if err := a.repoJSON(ctx, owner, repo, http.MethodGet, fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews?per_page=100", owner, repo, number), nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -918,14 +847,10 @@ type prMeta struct {
 	Draft   bool
 	Merged  bool
 	Labels  []string
-	Fork    bool // head repo differs from base — cannot push to fork branches (#662)
+	Fork    bool // head repo differs from base: cannot push to fork branches
 }
 
 func (a *App) pullMeta(ctx context.Context, owner, repo string, number int) (prMeta, error) {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return prMeta{}, err
-	}
 	var out struct {
 		Title    string     `json:"title"`
 		Body     string     `json:"body"`
@@ -950,7 +875,7 @@ func (a *App) pullMeta(ctx context.Context, owner, repo string, number int) (prM
 		} `json:"labels"`
 	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number)
-	if err := a.doJSON(ctx, http.MethodGet, path, "token "+tok, nil, &out); err != nil {
+	if err := a.repoJSON(ctx, owner, repo, http.MethodGet, path, nil, &out); err != nil {
 		return prMeta{}, err
 	}
 	labels := make([]string, 0, len(out.Labels))
@@ -965,14 +890,9 @@ func (a *App) pullMeta(ctx context.Context, owner, repo string, number int) (prM
 	}, nil
 }
 
-// mergeLabelActor finds who last applied (or removed) label, via the issues
-// timeline - the only place GitHub records that actor. known is false when
-// the label never appears there; callers must fail closed on that.
+// mergeLabelActor finds who last applied or removed label via the timeline, the only place
+// GitHub records that actor. known is false when the label never appears; callers fail closed.
 func (a *App) mergeLabelActor(ctx context.Context, owner, repo string, number int, label string) (actor string, stillApplied, known bool, err error) {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return "", false, false, err
-	}
 	type timelineEvent struct {
 		Event     string `json:"event"`
 		CreatedAt string `json:"created_at"`
@@ -987,11 +907,10 @@ func (a *App) mergeLabelActor(ctx context.Context, owner, repo string, number in
 	for page := 1; ; page++ {
 		var events []timelineEvent
 		path := fmt.Sprintf("/repos/%s/%s/issues/%d/timeline?per_page=100&page=%d", owner, repo, number, page)
-		if err := a.doJSON(ctx, http.MethodGet, path, "token "+tok, nil, &events); err != nil {
+		if err := a.repoJSON(ctx, owner, repo, http.MethodGet, path, nil, &events); err != nil {
 			return "", false, false, err
 		}
-		// Comparing created_at (not page/list order) keeps this correct
-		// regardless of the API's page ordering.
+		// Compare created_at, not list order, so page ordering can't matter.
 		for _, e := range events {
 			if e.Label.Name == label && (e.Event == "labeled" || e.Event == "unlabeled") && e.CreatedAt >= latest {
 				latest, actor, stillApplied, known = e.CreatedAt, e.Actor.Login, e.Event == "labeled", true
@@ -1010,12 +929,9 @@ type changedFile struct {
 	Status    string `json:"status"`
 }
 
-// pullFilesPage is one page of the PR changed-files listing.
-type pullFilesPage = []changedFile
-
 func (a *App) pullFiles(ctx context.Context, owner, repo string, number int) ([]changedFile, error) {
-	var out pullFilesPage
-	if err := a.getRepoJSON(ctx, owner, repo, fmt.Sprintf("/repos/%s/%s/pulls/%d/files?per_page=100", owner, repo, number), &out); err != nil {
+	var out []changedFile
+	if err := a.repoJSON(ctx, owner, repo, http.MethodGet, fmt.Sprintf("/repos/%s/%s/pulls/%d/files?per_page=100", owner, repo, number), nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -1028,17 +944,13 @@ func (a *App) prAuthor(ctx context.Context, owner, repo string, number int) (str
 		} `json:"user"`
 	}
 	var out authorPage
-	if err := a.getRepoJSON(ctx, owner, repo, fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number), &out); err != nil {
+	if err := a.repoJSON(ctx, owner, repo, http.MethodGet, fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number), nil, &out); err != nil {
 		return "", err
 	}
 	return out.User.Login, nil
 }
 
 func (a *App) commitAuthorEmail(ctx context.Context, owner, repo, sha string) (string, error) {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return "", err
-	}
 	var out struct {
 		Commit struct {
 			Author struct {
@@ -1047,7 +959,7 @@ func (a *App) commitAuthorEmail(ctx context.Context, owner, repo, sha string) (s
 		} `json:"commit"`
 	}
 	path := fmt.Sprintf("/repos/%s/%s/commits/%s", owner, repo, sha)
-	if err := a.doJSON(ctx, http.MethodGet, path, "token "+tok, nil, &out); err != nil {
+	if err := a.repoJSON(ctx, owner, repo, http.MethodGet, path, nil, &out); err != nil {
 		return "", err
 	}
 	return out.Commit.Author.Email, nil
@@ -1082,46 +994,34 @@ func (a *App) botLogin(ctx context.Context) (string, error) {
 }
 
 func (a *App) replyToReviewComment(ctx context.Context, owner, repo string, number int, commentID int64, bodyText string) (int64, string, error) {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return 0, "", err
-	}
 	var out struct {
 		ID      int64  `json:"id"`
 		HTMLURL string `json:"html_url"`
 	}
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/comments/%d/replies", owner, repo, number, commentID)
-	if err := a.doJSON(ctx, http.MethodPost, path, "token "+tok, map[string]string{"body": stripMentions(bodyText)}, &out); err != nil {
+	if err := a.repoJSON(ctx, owner, repo, http.MethodPost, path, map[string]string{"body": stripMentions(bodyText)}, &out); err != nil {
 		return 0, "", err
 	}
 	return out.ID, out.HTMLURL, nil
 }
 
 func (a *App) reactToComment(ctx context.Context, owner, repo, commentPath string, commentID int64, content string) (int64, error) {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return 0, err
-	}
 	var out struct {
 		ID int64 `json:"id"`
 	}
 	path := fmt.Sprintf("/repos/%s/%s/%s/comments/%d/reactions", owner, repo, commentPath, commentID)
-	if err := a.doJSON(ctx, http.MethodPost, path, "token "+tok, map[string]string{"content": content}, &out); err != nil {
+	if err := a.repoJSON(ctx, owner, repo, http.MethodPost, path, map[string]string{"content": content}, &out); err != nil {
 		return 0, err
 	}
 	return out.ID, nil
 }
 
 func (a *App) reactToIssue(ctx context.Context, owner, repo string, number int, content string) (int64, error) {
-	tok, err := a.tokenForRepo(ctx, owner, repo)
-	if err != nil {
-		return 0, err
-	}
 	var out struct {
 		ID int64 `json:"id"`
 	}
 	path := fmt.Sprintf("/repos/%s/%s/issues/%d/reactions", owner, repo, number)
-	if err := a.doJSON(ctx, http.MethodPost, path, "token "+tok, map[string]string{"content": content}, &out); err != nil {
+	if err := a.repoJSON(ctx, owner, repo, http.MethodPost, path, map[string]string{"content": content}, &out); err != nil {
 		return 0, err
 	}
 	return out.ID, nil

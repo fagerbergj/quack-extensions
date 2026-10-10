@@ -5,13 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/url"
 	"regexp"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
-
 	"sync"
 
 	adkagent "google.golang.org/adk/v2/agent"
@@ -21,9 +20,8 @@ import (
 	"github.com/fagerbergj/quack-extensions/sdk"
 )
 
-// deliveryResults records each run's last commitDelivery outcome, keyed by
-// (global) chatID. Process-local; read-and-cleared once by the RunEnded
-// handling that caused it.
+// deliveryResults records each run's last Deliver outcome by global chatID; process-local,
+// read-and-cleared once by RunEnded.
 var deliveryResults sync.Map // chatID → deliveryOutcome
 
 // recordDelivery includes the verified GitHub state (PR number/url, pushed SHA).
@@ -46,11 +44,11 @@ func takeDeliveryDetail(chatID string) (deliveryOutcome, bool) {
 // deliveryOutcome wraps a possibly-nil error and the GitHub state a successful delivery produced.
 type deliveryOutcome struct {
 	err       error
-	branch    string // for a failure comment, so the work is recoverable by hand (#714)
+	branch    string // for a failure comment, so the work is recoverable by hand
 	prNumber  int
 	prURL     string
 	pushedSHA string
-	// reviewDelivered — dispatch's only trigger to advance the review baseline (#459).
+	// reviewDelivered is dispatch's only trigger to advance the review baseline.
 	reviewDelivered bool
 }
 
@@ -112,16 +110,11 @@ type commentResult struct {
 }
 
 func (a *App) commentTool() tool.Tool {
-	t, _ := functiontool.New[commentArgs, commentResult](
-		functiontool.Config{
-			Name: "github_comment",
-			Description: "Post a comment on a GitHub issue or pull request (PR conversation comments are " +
-				"issue comments). `owner`/`repo` identify the repository, `issue_number` the issue/PR number, " +
-				"`body` the markdown comment text. Authenticated as the app installation.",
-		},
-		func(ctx adkagent.Context, args commentArgs) (commentResult, error) { return a.comment(ctx, args) },
-	)
-	return t
+	return newTool[commentArgs, commentResult]("github_comment",
+		"Post a comment on a GitHub issue or pull request (PR conversation comments are "+
+			"issue comments). `owner`/`repo` identify the repository, `issue_number` the issue/PR number, "+
+			"`body` the markdown comment text. Authenticated as the app installation.",
+		func(ctx adkagent.Context, args commentArgs) (commentResult, error) { return a.comment(ctx, args) })
 }
 
 func (a *App) comment(ctx context.Context, args commentArgs) (commentResult, error) {
@@ -162,8 +155,6 @@ type reviewComment struct {
 // reviewEvents are the verdicts GitHub's reviews API accepts.
 var reviewEvents = map[string]bool{"COMMENT": true, "REQUEST_CHANGES": true, "APPROVE": true}
 
-// Review location: inline comments anchor to (path, line); one bad anchor 422s the whole submit.
-
 // resolvePath maps the agent's workspace-relative path to the PR diff's repo-relative path by suffix matching.
 func resolvePath(positions map[string]diffPositions, path string) (string, error) {
 	p := strings.Trim(strings.TrimPrefix(strings.TrimSpace(path), "./"), "/")
@@ -176,7 +167,7 @@ func resolvePath(positions map[string]diffPositions, path string) (string, error
 			candidates = append(candidates, f)
 		}
 	}
-	sort.Strings(candidates)
+	slices.Sort(candidates)
 	switch len(candidates) {
 	case 1:
 		slog.Debug("github: normalised review-comment path to its repo-relative form",
@@ -191,12 +182,7 @@ func resolvePath(positions map[string]diffPositions, path string) (string, error
 
 // changedFiles returns the PR's changed files, sorted.
 func changedFiles(positions map[string]diffPositions) []string {
-	files := make([]string, 0, len(positions))
-	for f := range positions {
-		files = append(files, f)
-	}
-	sort.Strings(files)
-	return files
+	return slices.Sorted(maps.Keys(positions))
 }
 
 // joinCapped renders paths capped so a huge PR can't blow context.
@@ -227,22 +213,12 @@ func validateLocation(positions map[string]diffPositions, path string, line int,
 	return nil
 }
 
-// nearestCommentableLine finds the commentable line closest to target (ties
-// broken toward the lower line number, for determinism). ok is false when
-// lines is empty - the file has no commentable line at all (#694).
+// nearestCommentableLine finds the commentable line closest to target, ties toward the lower
+// line for determinism. ok is false when the file has no commentable line at all.
 func nearestCommentableLine(lines map[int]bool, target int) (nearest int, ok bool) {
 	bestDist := -1
-	nums := make([]int, 0, len(lines))
-	for n := range lines {
-		nums = append(nums, n)
-	}
-	sort.Ints(nums)
-	for _, n := range nums {
-		d := n - target
-		if d < 0 {
-			d = -d
-		}
-		if bestDist == -1 || d < bestDist {
+	for _, n := range slices.Sorted(maps.Keys(lines)) {
+		if d := max(n-target, target-n); bestDist == -1 || d < bestDist {
 			nearest, bestDist = n, d
 		}
 	}
@@ -254,24 +230,11 @@ func describeLines(lines map[int]bool) string {
 	if len(lines) == 0 {
 		return "(none - file has no commentable lines)"
 	}
-	nums := make([]int, 0, len(lines))
-	for n := range lines {
-		nums = append(nums, n)
+	var parts []string
+	for _, n := range slices.Sorted(maps.Keys(lines)) {
+		parts = append(parts, strconv.Itoa(n))
 	}
-	sort.Ints(nums)
-	const maxShown = 30
-	if len(nums) > maxShown {
-		parts := make([]string, maxShown)
-		for i := 0; i < maxShown; i++ {
-			parts[i] = strconv.Itoa(nums[i])
-		}
-		return strings.Join(parts, ", ") + fmt.Sprintf(", … (%d more)", len(nums)-maxShown)
-	}
-	parts := make([]string, len(nums))
-	for i, n := range nums {
-		parts[i] = strconv.Itoa(n)
-	}
-	return strings.Join(parts, ", ")
+	return joinCapped(parts)
 }
 
 type submitReviewArgs struct {
@@ -308,17 +271,13 @@ func (a *App) submitReview(ctx context.Context, args submitReviewArgs) (submitRe
 		// Empty body guard — never post a review with no summary.
 		body = defaultReviewBody(event, len(comments))
 	}
-	// Marker lets a later run find this review. Footer goes last, after the
-	// marker - both are unanchored substring lookups, so order doesn't
-	// affect either parser.
+	// Marker lets a later run find this review; both marker and footer are unanchored substring
+	// lookups, so their order doesn't matter.
 	marker := "\n\n" + deliveryMarker("review")
 	url, id, err := a.createReview(ctx, args.Owner, args.Repo, args.PullNumber, event, a.withReviewFooter(body+marker, args.ChatID), comments)
 	if err != nil && len(comments) > 0 && strings.Contains(err.Error(), "status 422") {
-		// One unresolvable anchor 422s the WHOLE review and GitHub never says which
-		// comment is at fault, so there is nothing to salvage selectively. The clone
-		// is taken once at run start and never refreshed, so a branch pushed mid-run
-		// leaves findings on lines the current diff no longer has. Put every finding
-		// in the body: a located bullet beats losing the review outright.
+		// One bad anchor 422s the whole review and GitHub never says which (e.g. a mid-run push moved
+		// lines), so put every finding in the body: a located bullet beats losing the review.
 		slog.Warn("github: delivery: review rejected on its inline anchors; posting every finding in the summary instead",
 			"component", "github", "repo", args.Owner+"/"+args.Repo, "pr", args.PullNumber, "findings", len(comments), "err", err)
 		stranded := make([]sdk.ReviewComment, len(comments))
@@ -335,16 +294,13 @@ func (a *App) submitReview(ctx context.Context, args submitReviewArgs) (submitRe
 	return submitReviewResult{URL: url, ReviewID: id, Comments: len(comments)}, nil
 }
 
-// deliveryMarker is the hidden HTML marker embedded so a later run can find its own prior post (plan/review/comment:<slot>).
+// deliveryMarker is the hidden HTML marker a later run uses to find its own prior post.
 func deliveryMarker(family string) string {
 	return "<!-- quack:delivery:" + family + " -->"
 }
 
-// deliveryKeyMarker embeds #1093's idempotency key (quack's target artifact
-// id + revision) into the posted body, separate from deliveryMarker's own
-// family marker so existing parsers (reviewVerdictMarkerRe et al.) never see
-// it and don't need to change. "" key = don't embed - review predates this
-// scheme, and DeliveryRecoverer's search below correctly won't find it.
+// deliveryKeyMarker embeds the idempotency key (artifact id + revision) apart from the family
+// marker, so reviewVerdictMarkerRe et al. never see it. "" key embeds nothing.
 func deliveryKeyMarker(key string) string {
 	if key == "" {
 		return ""
@@ -355,10 +311,8 @@ func deliveryKeyMarker(key string) string {
 // deliveryKeyMarkerRe extracts a review's embedded idempotency key, if any.
 var deliveryKeyMarkerRe = regexp.MustCompile(`<!-- quack:delivery:key:([^\s]+) -->`)
 
-// RecoverDelivery implements sdk.DeliveryRecoverer (#1093): scans quack's
-// own reviews on the PR for one already carrying key, so `quack ledger
-// recover` can tell a crash AFTER the post landed (found=true, don't
-// redeliver) from a crash BEFORE it did (found=false, redeliver).
+// RecoverDelivery implements sdk.DeliveryRecoverer: a review already carrying key means the
+// crash came after the post landed (found=true, don't redeliver).
 func (a *App) RecoverDelivery(ctx context.Context, key string, dc sdk.DeliveryContext) (bool, sdk.DeliveryItemOutcome, error) {
 	owner, repo, ok := ownerRepoFromURL(dc.CloneURL)
 	if !ok || dc.IssueNumber == 0 {
@@ -440,10 +394,10 @@ func (a *App) findQuackComment(ctx context.Context, owner, repo string, number i
 	return 0, false, nil
 }
 
-// narrationLeadRe matches process narration standing in for a real first line (#581).
+// narrationLeadRe matches process narration standing in for a real first line.
 var narrationLeadRe = regexp.MustCompile(`(?i)^(I've|I have|I need to|I'll|I will|Let me|Here's|Here is)\b`)
 
-// sanitizeCommentBody strips leading narration and an outer ```markdown fence (#581).
+// sanitizeCommentBody strips leading narration and an outer ```markdown fence.
 func sanitizeCommentBody(body string) string {
 	lines := strings.Split(body, "\n")
 	lines = stripFenceWrapper(lines)
@@ -474,7 +428,7 @@ func stripFenceWrapper(lines []string) []string {
 	return lines[start+1 : end]
 }
 
-// stripNarrationLead drops the first non-blank line if it reads as narration — ships original if nothing would remain.
+// stripNarrationLead drops a narrating first non-blank line, unless nothing would remain.
 func stripNarrationLead(lines []string) []string {
 	start := 0
 	for start < len(lines) && strings.TrimSpace(lines[start]) == "" {
@@ -639,10 +593,8 @@ func (a *App) openPullRequest(ctx context.Context, owner, repo, title, head, bas
 	return u, number, nil
 }
 
-// openOrUpdatePullRequest opens or updates a PR idempotently. Labels only on
-// first open. titleSet/bodySet false means the caller has nothing to say
-// about that field (stage_push, #724) - an existing PR is left untouched
-// rather than PATCHed with an empty string.
+// openOrUpdatePullRequest opens or updates a PR idempotently; labels only on first open.
+// titleSet/bodySet false (stage_push) leaves that field of an existing PR untouched.
 func (a *App) openOrUpdatePullRequest(ctx context.Context, owner, repo, title string, titleSet bool, head, base, body string, bodySet bool, labels []string, draft bool, closesIssue int) (url string, number int, err error) {
 	num, foundURL, ok, ferr := a.findOpenPR(ctx, owner, repo, head)
 	if ferr != nil {
@@ -661,10 +613,8 @@ func (a *App) openOrUpdatePullRequest(ctx context.Context, owner, repo, title st
 			"component", "github", "repo", owner+"/"+repo, "pr", num, "url", u)
 		return u, num, nil
 	}
-	// No open PR found for this branch (or the lookup itself failed) and the
-	// caller has no title to open one with (stage_push, #724) - refuse rather
-	// than open a titleless PR (GitHub 422s) or invent a title, which is the
-	// exact fabrication #724 removed stage_pr's compulsion to do.
+	// No open PR (or the lookup failed) and no title to open one with: refuse rather than open a
+	// titleless PR (GitHub 422s) or invent a title.
 	if !titleSet {
 		if ferr != nil {
 			return "", 0, fmt.Errorf("github: delivery: staged a push with no title against branch %q, and checking for its open pull request failed: %w", head, ferr)
@@ -688,7 +638,8 @@ func closesReferences(body string, issueNum int) bool {
 	return false
 }
 
-// withClosesTrailer appends `Closes #N` to a new PR's body (the model drops it ~1 in 3). Skipped when already present, for a PR, or with partial-fix label.
+// withClosesTrailer appends `Closes #N` to a new PR's body (the model drops it ~1 in 3);
+// skipped when already present, for a PR, or with the partial-fix label.
 func (a *App) withClosesTrailer(ctx context.Context, owner, repo string, issueNum int, body string) string {
 	if issueNum == 0 || closesReferences(body, issueNum) {
 		return body
@@ -699,16 +650,14 @@ func (a *App) withClosesTrailer(ctx context.Context, owner, repo string, issueNu
 			"component", "github", "repo", owner+"/"+repo, "issue", issueNum, "err", err)
 		return body
 	}
-	if isPR || hasLabel(labels, a.partialFixLabel) {
+	if isPR || slices.Contains(labels, a.partialFixLabel) {
 		return body
 	}
 	return strings.TrimRight(body, "\n") + fmt.Sprintf("\n\nCloses #%d\n", issueNum)
 }
 
-// Deliver posts staged items (PR → review → comments). The push itself is
-// gate-owned (vetting.commitDelivery) - dc.PushedSHA arrives already pushed;
-// this only confirms GitHub's own state reflects it (#570).
-// Outcomes are this extension's own record, never the worker's self-report.
+// Deliver posts staged items (PR, review, comments). The push is gate-owned; this only confirms
+// GitHub reflects dc.PushedSHA. Outcomes are this extension's record, never the worker's self-report.
 func (a *App) Deliver(ctx context.Context, dc sdk.DeliveryContext) (outcomes []sdk.DeliveryItemOutcome, err error) {
 	detail := deliveryOutcome{branch: dc.Branch}
 	defer func() {
@@ -754,7 +703,7 @@ func (a *App) Deliver(ctx context.Context, dc sdk.DeliveryContext) (outcomes []s
 		}
 		if res.prNumber != 0 {
 			detail.prNumber, detail.prURL = res.prNumber, res.prURL
-			// Route review/comment to the PR we just opened, not the issue chatID (#652).
+			// Route review/comment to the PR we just opened, not the issue chatID.
 			dc.IssueNumber = res.prNumber
 		}
 		if item.Kind == sdk.KindReview {
@@ -774,13 +723,8 @@ func itemOutcomesForPushFailure(dc sdk.DeliveryContext, err error) []sdk.Deliver
 	return out
 }
 
-// validComments splits staged findings into inline comments and unanchored
-// ones, never dropping a finding outright (#694). A finding on an uncommentable
-// line is re-anchored to the nearest commentable line in the same file, with
-// its true location stated in the body; a finding in a file with no
-// commentable line at all comes back unanchored, for the caller to fold into
-// the review body as a distinguishable item. Exact duplicates are deduped -
-// that's a presentation choice, not information loss.
+// validComments splits findings into inline and unanchored, re-anchoring an uncommentable line to the
+// nearest commentable one (true location in the body). Exact duplicates are deduped.
 func (a *App) validComments(ctx context.Context, owner, repo string, number int, comments []sdk.ReviewComment) (inline []reviewComment, unanchored []sdk.ReviewComment) {
 	if len(comments) == 0 {
 		return nil, nil
@@ -825,10 +769,8 @@ func (a *App) validComments(ctx context.Context, owner, repo string, number int,
 	return inline, unanchored
 }
 
-// renderUnanchoredFindings renders findings GitHub won't take an inline
-// comment on anywhere in their file as a distinguishable review-body block
-// (#694) - never merged into prose, so a later fix run can still see them as
-// located findings rather than sentences.
+// renderUnanchoredFindings renders findings with no commentable line as a separate review-body
+// block, never prose, so a later fix run still sees them as located findings.
 func renderUnanchoredFindings(findings []sdk.ReviewComment) string {
 	if len(findings) == 0 {
 		return ""
@@ -841,10 +783,8 @@ func renderUnanchoredFindings(findings []sdk.ReviewComment) string {
 	return b.String()
 }
 
-// prNumberFromChatID recovers the issue/PR number from a
-// "github-<owner>-<repo>-<number>" sessionID, or the same shape namespaced
-// as "ext:github:github-<owner>-<repo>-<number>" (the global chat id every
-// dispatch now uses).
+// githubChatIDRe matches a "github-<owner>-<repo>-<number>" session id, optionally namespaced
+// as the global chat id "ext:github:...".
 var githubChatIDRe = regexp.MustCompile(`^(?:ext:github:)?github-.+-(\d+)$`)
 
 func prNumberFromChatID(chatID string) int {
@@ -866,11 +806,8 @@ type deliveryItemResult struct {
 	url      string
 }
 
-// deliverOne posts one staged item past Deliver's push.
-// gateCaveat prepends a caveat banner: a WARNING when the trust gate did not
-// pass, or - on a node that DID pass - a plain NOTE when no build/test check
-// ran, so a passing PR on an unchecked build system doesn't read the same as
-// one that compiled clean (#780).
+// gateCaveat prepends a WARNING when the trust gate failed, or a NOTE when it passed with no
+// build/test check, so an unchecked pass doesn't read like a clean compile.
 func gateCaveat(dc sdk.DeliveryContext, body string) string {
 	if dc.GatePassed {
 		if dc.ChecksSkipNote == "" {
@@ -889,6 +826,7 @@ func gateCaveat(dc sdk.DeliveryContext, body string) string {
 	return banner + body
 }
 
+// deliverOne posts one staged item past Deliver's push.
 func (a *App) deliverOne(ctx context.Context, owner, repo string, dc sdk.DeliveryContext, item sdk.StagedDelivery) (deliveryItemResult, error) {
 	switch item.Kind {
 	case sdk.KindPR:
@@ -902,9 +840,8 @@ func (a *App) deliverOne(ctx context.Context, owner, repo string, dc sdk.Deliver
 	}
 }
 
-// deliverPR opens the staged PR from its branch. The body is only wrapped
-// with the gate caveat when it's actually going out - an omitted body
-// (stage_push, #724) must reach updatePullRequest as "don't touch this key".
+// deliverPR opens the staged PR from its branch. An omitted body (stage_push) skips the caveat
+// so updatePullRequest reads it as "don't touch this key".
 func (a *App) deliverPR(ctx context.Context, owner, repo string, dc sdk.DeliveryContext, item sdk.StagedDelivery) (deliveryItemResult, error) {
 	if dc.Branch == "" {
 		return deliveryItemResult{}, fmt.Errorf("github: delivery: staged pull request %q has no branch to open it from", item.Title)
@@ -913,7 +850,7 @@ func (a *App) deliverPR(ctx context.Context, owner, repo string, dc sdk.Delivery
 	if !item.BodyOmitted {
 		body = gateCaveat(dc, item.Body)
 	}
-	// Gate-failed → deliver as draft. issueNumber == closing target for a new PR (#575).
+	// Gate-failed delivers as draft; issueNumber is the closing target for a new PR.
 	u, num, err := a.openOrUpdatePullRequest(ctx, owner, repo, item.Title, !item.TitleOmitted, dc.Branch, "", body, !item.BodyOmitted, nil, !dc.GatePassed, dc.IssueNumber)
 	if err != nil {
 		return deliveryItemResult{}, fmt.Errorf("github: delivery: open pull request: %w", err)
@@ -951,9 +888,8 @@ func (a *App) deliverReview(ctx context.Context, owner, repo string, dc sdk.Deli
 	return deliveryItemResult{url: res.URL}, nil
 }
 
-// deliverSelfReview posts the own-PR fallback: a COMMENT-event review that
-// carries the intended verdict as text, since GitHub allows no self-review
-// verdict (422).
+// deliverSelfReview posts the own-PR fallback: a COMMENT-event review carrying the verdict as
+// text, since GitHub 422s a self-review verdict.
 func (a *App) deliverSelfReview(ctx context.Context, owner, repo string, dc sdk.DeliveryContext, item sdk.StagedDelivery) (deliveryItemResult, error) {
 	verdict := strings.ToLower(strings.TrimSpace(item.Event))
 	if !reviewEvents[strings.ToUpper(verdict)] {
@@ -961,9 +897,8 @@ func (a *App) deliverSelfReview(ctx context.Context, owner, repo string, dc sdk.
 	}
 	body := fmt.Sprintf("_Own PR: GitHub allows no self-review verdict. Verdict: %s. A maintainer decides._\n\n", verdict) + StripVerdictTail(item.Body)
 	body += "\n\n" + deliveryMarker("review:"+verdict) + deliveryKeyMarker(dc.IdempotencyKey)
-	// This is the head at DELIVERY time, not necessarily the head reviewed:
-	// sdk.DeliveryContext carries no reviewed-head field to thread through. Still strictly better than trusting the marker
-	// for any head; the synchronize re-review is the backstop.
+	// Head at delivery time, not necessarily the one reviewed (DeliveryContext has no reviewed head);
+	// the synchronize re-review is the backstop.
 	if m, merr := a.pullMeta(ctx, owner, repo, dc.IssueNumber); merr == nil && m.HeadSHA != "" {
 		body += "\n" + deliveryMarker("head:"+m.HeadSHA)
 	}

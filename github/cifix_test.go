@@ -22,13 +22,8 @@ func stubFixGitHub(t *testing.T, posted chan<- string, prLabels []string, failin
 	return stubFixGitHubFull(t, posted, prLabels, failing, "", "someone-else")
 }
 
-// stubFixGitHubFull is stubGitHub plus the checks API (commits/{sha}/check-runs,
-// check-runs/{id}/annotations), configurable PR labels, and a configurable PR
-// author - what the #254/#656 auto-heal + authorship paths read. failing
-// toggles whether the head commit has a failed check run; commitAuthorEmail
-// is the /commits/{sha} author email the ONE-attempt guard reads (default ""
-// - a human commit); prAuthorLogin is the /pulls/{n} author login (default
-// "someone-else" - not quack).
+// stubFixGitHubFull is stubGitHub plus the checks API, PR labels and PR author. commitAuthorEmail
+// defaults to "" (a human commit); prAuthorLogin defaults to "someone-else" (not quack).
 func stubFixGitHubFull(t *testing.T, posted chan<- string, prLabels []string, failing bool, commitAuthorEmail, prAuthorLogin string) *httptest.Server {
 	t.Helper()
 	labelsJSON := make([]string, 0, len(prLabels))
@@ -92,9 +87,8 @@ func workflowRunBody(action, conclusion, sha string, prNumbers ...int) []byte {
 	}`, action, sha, conclusion, strings.Join(prs, ",")))
 }
 
-// Eligibility (#656): a failing workflow_run only dispatches a fix run when
-// the PR carries quack:fix OR quack itself authored the PR - either is
-// sufficient, neither requires the label to have just been (re-)applied.
+// A failing workflow_run dispatches a fix only when the PR carries quack:fix OR quack authored it;
+// either suffices, and the label need not have just been (re-)applied.
 func TestWorkflowRunAutoHealEligibility(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -199,11 +193,8 @@ func TestWorkflowRunSameSHADeduped(t *testing.T) {
 	}
 }
 
-// The Forbidden section's ONE rule: if quack's OWN fix push also fails CI, it
-// must NOT fix again - it stops and comments why, and the state survives a
-// process restart. A LATER failure caused by a NEW (human) commit heals again
-// with no human action required - the guard is keyed on the failing commit's
-// actual author, not a counter that needs resetting.
+// If quack's own fix push also fails CI it stops and comments, and that survives a restart. A later failure
+// from a new human commit heals again: the guard keys on the failing commit's author, not a counter.
 func TestAutoHealOneAttemptGuard(t *testing.T) {
 	posted := make(chan string, 4)
 	// commitAuthorEmail "agent@quack.local" - the failing commit IS quack's own.
@@ -216,9 +207,7 @@ func TestAutoHealOneAttemptGuard(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	chatID := globalChatID("github-acme-widgets-7")
-	// Seed the state a REAL prior failure/fix cycle would have left: sha1 (a
-	// human commit) already failed once and quack already dispatched a fix for
-	// it - sha2 below is that fix's own CI run failing.
+	// Seed a prior cycle: sha1 (human) failed and quack dispatched a fix; sha2 below is that fix failing.
 	if err := st.SetFixState(context.Background(), FixState{ChatID: chatID, LastSHA: "sha1"}); err != nil {
 		t.Fatalf("seed fix state: %v", err)
 	}
@@ -274,10 +263,8 @@ func TestAutoHealOneAttemptGuard(t *testing.T) {
 	fh3.waitForDispatch(t, 2*time.Second)
 }
 
-// On a PR quack itself authored, EVERY commit is quack's, including the very
-// first one it opened the PR with - the FIRST-ever CI failure must still get
-// a fix attempt, not read as "my own fix already failed" (see autoHeal's
-// st != nil gate on the one-attempt guard).
+// On a quack-authored PR every commit is quack's, so the first-ever CI failure must still get a fix attempt,
+// not read as "my own fix already failed" (autoHeal's st != nil gate).
 func TestAutoHealAuthoredPRFirstFailureGetsAFix(t *testing.T) {
 	posted := make(chan string, 4)
 	srv := stubFixGitHubFull(t, posted, nil, true, gitCommitAuthorEmail, "quack[bot]")
@@ -292,11 +279,8 @@ func TestAutoHealAuthoredPRFirstFailureGetsAFix(t *testing.T) {
 	fh.waitForDispatch(t, 2*time.Second)
 }
 
-// stubFixGitHubDelayed is stubFixGitHubFull trimmed to what autoHeal needs,
-// with an artificial delay before answering the check-runs fetch - widens
-// the window between autoHeal's GetFixState read and its SetFixState claim
-// deterministically, instead of relying on goroutine-scheduling luck to hit
-// the race.
+// stubFixGitHubDelayed delays the check-runs fetch to deterministically widen the window between
+// autoHeal's GetFixState read and its SetFixState claim.
 func stubFixGitHubDelayed(t *testing.T, posted chan<- string, prLabels []string, delay time.Duration) *httptest.Server {
 	t.Helper()
 	labelsJSON := make([]string, 0, len(prLabels))
@@ -344,13 +328,8 @@ func stubFixGitHubDelayed(t *testing.T, posted chan<- string, prLabels []string,
 	}))
 }
 
-// TestAutoHealConcurrentSameHeadPostsOnce is the "below the cut" audit item:
-// autoHeal's GetFixState-then-SetFixState claim straddles GitHub round-trips
-// with no lock. Two workflow_run.completed deliveries for the same head SHA
-// (CI usually runs several checks, each firing its own event) both pass the
-// GetFixState check before either's claim lands, so both dispatch a fix run
-// for one commit. The success path never posts a GitHub comment itself - it
-// calls Host.Dispatch (fh) - so that's the observable to dedup on, not comments.
+// Two workflow_run deliveries for the same head SHA must dispatch one fix, not race past GetFixState together.
+// The success path posts no comment, so Host.Dispatch calls are the observable.
 func TestAutoHealConcurrentSameHeadPostsOnce(t *testing.T) {
 	posted := make(chan string, 8)
 	srv := stubFixGitHubDelayed(t, posted, []string{"quack:fix"}, 50*time.Millisecond)
@@ -381,9 +360,7 @@ func TestAutoHealConcurrentSameHeadPostsOnce(t *testing.T) {
 	}
 }
 
-// Re-applying quack:fix is the retry convention: it re-arms auto-heal (clears
-// a prior stop) and, since CI is still failing, fixes it immediately - no
-// waiting for the next CI event.
+// Re-applying quack:fix re-arms auto-heal (clears a prior stop) and, with CI still failing, fixes immediately.
 func TestFixLabelReapplyRearms(t *testing.T) {
 	srv := stubFixGitHub(t, make(chan string, 4), []string{"quack:fix"}, true)
 	defer srv.Close()
@@ -420,10 +397,8 @@ func TestFixLabelReapplyRearms(t *testing.T) {
 	}
 }
 
-// The label event's other half: an allowlisted human applying quack:fix to a
-// PR with nothing currently failing does NOTHING observable - no phantom
-// review, no comment - the flag just arms silently for the next CI failure
-// (#655). A non-allowlisted sender is refused outright.
+// quack:fix on a PR with nothing failing arms silently (no review, no comment);
+// a non-allowlisted sender is refused outright.
 func TestFixLabelApplied(t *testing.T) {
 	fixLabelBody := func(sender string) []byte {
 		return []byte(fmt.Sprintf(`{
@@ -492,11 +467,8 @@ func TestFixLabelApplied(t *testing.T) {
 	})
 }
 
-// TestWorkflowRunAttachesWorkerAskAndCIChecks pins #664: a CI-fix run's
-// dispatch carries the ask-only worker background (never the orchestrator's
-// own evidence) in Ask.NodeContext, and the ONE failing check's own
-// annotation detail in Ask.ContextItems - go-test fails, lint is green, so
-// exactly one NamedContext should reach the plan tool.
+// A CI-fix dispatch carries the ask-only worker background in Ask.NodeContext and only the
+// failing check's annotations in Ask.ContextItems (go-test fails, lint is green: one NamedContext).
 func TestWorkflowRunAttachesWorkerAskAndCIChecks(t *testing.T) {
 	srv := stubFixGitHubFull(t, make(chan string, 4), []string{"quack:fix"}, true, "", "someone-else")
 	defer srv.Close()
@@ -530,15 +502,8 @@ func TestWorkflowRunAttachesWorkerAskAndCIChecks(t *testing.T) {
 	}
 }
 
-// TestCIFixNamesTheMergeRef pins #843: CI builds the MERGE of the head branch
-// with the PR's base, not the head branch alone, so a fix worker whose clone
-// starts on the head branch must be told to merge the named base in and
-// diagnose against that merged state - both the orchestrator's Ask.Message
-// and the worker node's Ask.NodeContext must carry the instruction (#664
-// splits worker-scoped from orchestrator-scoped text; the merge instruction
-// is actionable for the worker, so it must survive that split), and the
-// PR's real base ref ("main", from stubFixGitHubFull's /pulls stub) must be
-// named, not left generic.
+// CI builds the MERGE of head with base, so both Ask.Message and Ask.NodeContext must tell the worker
+// to merge the PR's real base ("main") in and diagnose against that state.
 func TestCIFixNamesTheMergeRef(t *testing.T) {
 	assertMergeRef := func(t *testing.T, req sdk.DispatchRequest) {
 		t.Helper()

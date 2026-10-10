@@ -14,19 +14,18 @@ type IntentClassifier interface {
 	Classify(ctx context.Context, prompt string) (string, error)
 }
 
-// Bounds classification (runs inline in webhook dispatch).
+// intentClassifierTimeout bounds classification, which runs inline in webhook dispatch.
 const intentClassifierTimeout = 5 * time.Second
 
-// intentClassifierRetryTimeout: one retry with a longer deadline before
-// falling back (#1172) - a cold worker model on llm-swap can take longer
-// than intentClassifierTimeout to swap in right after a restart.
+// intentClassifierRetryTimeout: one longer retry before falling back, since a cold
+// worker model on llm-swap can take longer than intentClassifierTimeout to swap in.
 const intentClassifierRetryTimeout = 30 * time.Second
 
 // bareReReviewRe: only a mention that is NOTHING but the re-run phrase is unambiguous
-// enough to hardcode; anything with extra wording still goes through the model (#1172).
+// enough to hardcode; anything with extra wording still goes through the model.
 var bareReReviewRe = regexp.MustCompile(`(?i)^\s*(re-review|review again)[.!]?\s*$`)
 
-// intentClassifierPrompt: replaces regex classifier; handles quoted code, declines, corrections.
+// intentClassifierPrompt handles quoted code, declines, and corrections.
 const intentClassifierPrompt = `You classify a single GitHub comment as WORK or CONVERSATIONAL.
 
 WORK means the user is asking for review or implementation work to be done now - e.g. "review this PR", "focus on the auth path", "please fix the lint errors", "implement this and push a branch".
@@ -41,9 +40,8 @@ Reply with exactly one word: WORK or CONVERSATIONAL. No punctuation, no explanat
 Message:
 %s`
 
-// isWorkRequest: PR mention → work or conversational. When the classifier fails, a PR
-// already carrying the review label or a bare re-run phrase defaults to review, not
-// conversational (#1172), and the fallback is announced on the PR instead of log-only.
+// isWorkRequest: PR mention → work or conversational. On classifier failure, a PR with the review label
+// or a bare re-run phrase defaults to review, and the fallback is announced on the PR.
 func (e *Extension) isWorkRequest(ctx context.Context, p issueCommentPayload, task string) bool {
 	toReview := e.prHasReviewLabel(p) || bareReReviewRe.MatchString(task)
 	if e.intentClassifier == nil {
@@ -72,9 +70,8 @@ func (e *Extension) isWorkRequest(ctx context.Context, p issueCommentPayload, ta
 	return e.fallbackWorkRequest(p, toReview, fmt.Sprintf("classifier failed twice: %v", lastErr))
 }
 
-// fallbackWorkRequest marks a failed classification with a 😕 reaction on the
-// comment (the run's own answer is the one comment this trigger gets) and
-// returns the review-vs-conversational default the caller already resolved (#1172).
+// fallbackWorkRequest marks a failed classification with a 😕 reaction (the run's answer is the
+// one comment this trigger gets) and returns the default the caller already resolved.
 func (e *Extension) fallbackWorkRequest(p issueCommentPayload, toReview bool, reason string) bool {
 	e.host.Log.Warn("github: intent classifier fallback", "reason", reason, "as_review", toReview)
 	if p.Comment.ID == 0 {
@@ -89,8 +86,7 @@ func (e *Extension) fallbackWorkRequest(p issueCommentPayload, toReview bool, re
 	return toReview
 }
 
-// prHasReviewLabel reports whether the PR being commented on already carries
-// the configured review label (#1172) - mirrors isReviewCommand's label scan.
+// prHasReviewLabel reports whether the commented-on PR already carries the configured review label.
 func (e *Extension) prHasReviewLabel(p issueCommentPayload) bool {
 	for _, l := range p.Issue.Labels {
 		if l.Name == e.labels.Review {
@@ -100,22 +96,8 @@ func (e *Extension) prHasReviewLabel(p issueCommentPayload) bool {
 	return false
 }
 
-// classifyPRDeliverable resolves review-vs-nothing for a PR mention when the grant does NOT
-// carry push_commits_to_pr (that case runs through classifyGrantedPRDeliverable instead - #760,
-// which also retired this function's old COMMIT branch: with no push permission "commit" was
-// never a legal answer here, so the remaining question is bounded entirely by post_review and
-// decided from the grant alone - no model call needed, ctx/task kept for a stable signature
-// alongside classifyGrantedPRDeliverable/classifyIssueDeliverable).
-func (e *Extension) classifyPRDeliverable(_ context.Context, _ string, allowedKinds []string) (kind string, ok bool) {
-	if slices.Contains(allowedKinds, "review") {
-		return "review", true
-	}
-	return "", false
-}
-
-// grantedPRPrompt: reply, review, or commit? Only reachable when the grant already carries
-// push_commits_to_pr (#760) - the permission question is answered deterministically by the
-// grant, so this asks only what the comment wants, never whether quack may act.
+// grantedPRPrompt: reply, review, or commit? Only reachable when the grant already permits pushing,
+// so this asks only what the comment wants, never whether quack may act.
 const grantedPRPrompt = `You classify a single GitHub pull request comment as REPLY, REVIEW, or COMMIT.
 
 REPLY means the asker wants a response, clarification, or discussion right now - a question, an FYI, or feedback about something already said that does not end in an ask to act on it.
@@ -129,14 +111,8 @@ Reply with exactly one word: REPLY, REVIEW, or COMMIT. No punctuation, no explan
 Message:
 %s`
 
-// classifyGrantedPRDeliverable picks reply vs review vs commit for a PR comment when the grant
-// already carries push_commits_to_pr (#760): computeGrant already decided, from labels and
-// authorship, that quack MAY push here - unlike isWorkRequest/classifyPRDeliverable below, this
-// never asks a model to re-derive that permission, only what the comment is asking for. REPLY is
-// always legal; REVIEW is legal only when the grant also carries post_review. ok=false
-// (classifier nil/erroring/unparseable) leaves the caller to fail safe to reply - never guess
-// commit. A live answer that names an ungranted option (REVIEW without post_review) degrades to
-// reply rather than being discarded outright, so a real ask for engagement isn't silently dropped.
+// classifyGrantedPRDeliverable picks reply/review/commit when the grant permits pushing; REVIEW without
+// post_review degrades to reply. ok=false (no/failed classifier) means the caller falls back to reply.
 func (e *Extension) classifyGrantedPRDeliverable(ctx context.Context, task string, allowedKinds []string) (kind string, ok bool) {
 	if e.intentClassifier == nil {
 		return "", false
@@ -164,7 +140,7 @@ func (e *Extension) classifyGrantedPRDeliverable(ctx context.Context, task strin
 	}
 }
 
-// implementPrompt: implement vs comment? Only reachable when the grant permits open_pr (#713).
+// implementPrompt: implement vs comment? Only reachable when the grant permits open_pr.
 const implementPrompt = `You classify a single GitHub issue comment as IMPLEMENT or COMMENT.
 
 IMPLEMENT means the asker wants code written and a pull request opened now - e.g. "implement this", "go ahead and build it", "the deliverable is a pull request, not a plan", "commit and stage the PR".
@@ -176,13 +152,8 @@ Reply with exactly one word: IMPLEMENT or COMMENT. No punctuation, no explanatio
 Message:
 %s`
 
-// classifyIssueDeliverable picks implement-vs-comment for an issue comment,
-// mirroring classifyPRDeliverable (#691) on the issue side (#713): a comment
-// is always a legal answer, but "implement" is legal only when the grant
-// carries open_pr (quack:implement) - the classifier picks within that bound.
-// ok=false falls back to implementationIntent's wording heuristic, never
-// straight to conversational (a cold/erroring classifier must not silently
-// invert an implementation request).
+// classifyIssueDeliverable picks implement-vs-comment for an issue comment; "implement" needs open_pr.
+// ok=false falls back to the wording heuristic, so a failing classifier can't invert an implement ask.
 func (e *Extension) classifyIssueDeliverable(ctx context.Context, task string, allowedKinds []string) (kind string, ok bool) {
 	if !slices.Contains(allowedKinds, "pull_request") || e.intentClassifier == nil {
 		return "", false
@@ -205,20 +176,15 @@ func (e *Extension) classifyIssueDeliverable(ctx context.Context, task string, a
 	}
 }
 
-// issueDeliverableResult memoizes one classifyIssueDeliverable call (#731).
+// issueDeliverableResult memoizes one classifyIssueDeliverable call.
 type issueDeliverableResult struct {
 	kind string
 	ok   bool
 	done bool
 }
 
-// classifyIssueDeliverableCached calls classifyIssueDeliverable at most once
-// per dispatch: deliverableText (two callers) and deliverableIsPlan all need
-// this same answer for the same run, and a second live call could disagree
-// with the first, telling the worker to produce a plan while the tail
-// decides it wasn't one. p.issueDeliverableCache is nil for a caller that
-// invokes this outside a dispatch (e.g. a test calling buildEnvelope
-// directly) - falls back to one uncached call, preserving prior behaviour.
+// classifyIssueDeliverableCached classifies once per dispatch: a second live call could disagree, asking
+// for a plan the tail then says wasn't one. A nil cache (outside a dispatch) makes one uncached call.
 func (e *Extension) classifyIssueDeliverableCached(ctx context.Context, p issueCommentPayload, task string, allowedKinds []string) (kind string, ok bool) {
 	c := p.issueDeliverableCache
 	if c == nil {
@@ -231,21 +197,12 @@ func (e *Extension) classifyIssueDeliverableCached(ctx context.Context, p issueC
 	return c.kind, c.ok
 }
 
-// planIntentRe: did the human's OWN request mention planning? Mirrors
-// implementationIntent's contract - read what was ASKED, never what the
-// model wrote back, so a rephrased answer can't silently change the
-// outcome. "comment" (deliverableText's non-implement issue bucket) also
-// covers plain conversational replies; without this, every one of them
-// would wrongly get marked and collapsed as a plan.
+// planIntentRe: did the human's own request mention planning? Reads what was asked, never the model's
+// answer; without it every plain "comment" reply would be marked and collapsed as a plan.
 var planIntentRe = regexp.MustCompile(`(?i)\bplan(s|ning)?\b`)
 
-// deliverableIsPlan reports whether this run's deliverable belongs to the
-// issue's plan family (#731) - mirrors deliverableText's own branching so
-// mark-and-collapse is keyed on the SAME classification the answer was asked
-// for, never on how the run was triggered or what the answer says. True for
-// the quack:plan label, and for a comment-triggered issue ask that mentions
-// planning and the classifier (or its fallback heuristic) doesn't read as
-// IMPLEMENT. Always false for a PR and for the quack:implement label.
+// deliverableIsPlan mirrors deliverableText's branching so mark-and-collapse keys on the same classification:
+// true for quack:plan, or an issue comment mentioning planning that doesn't classify as IMPLEMENT.
 func (e *Extension) deliverableIsPlan(ctx context.Context, p issueCommentPayload, task string, allowedKinds []string, isPR bool) bool {
 	switch {
 	case p.planOnly:

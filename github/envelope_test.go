@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 )
 
 // pullCommentBody is issueCommentBody-shaped but the issue is a pull request
@@ -21,24 +22,14 @@ func pullCommentBody(commentBody string) []byte {
 	}`, commentBody))
 }
 
-// seedGC builds a first-load githubContext from a snapshot - buildEnvelope's
-// most common test fixture (no store, no prior snapshot to diff against, so
-// delta stays nil and the envelope seeds everything).
+// seedGC builds a first-load githubContext: no prior snapshot, so delta stays nil and the envelope seeds everything.
 func seedGC(snap Snapshot, excludeCommentID int64) githubContext {
-	_ = excludeCommentID // exclusion is now the caller's issueCommentPayload.Comment.ID, read by commentsBlock
+	_ = excludeCommentID // commentsBlock reads exclusion from issueCommentPayload.Comment.ID
 	return githubContext{snap: snap, firstLoad: true}
 }
 
-// fakeIntentClassifier is a fixed-verdict IntentClassifier double: tests set
-// verdict directly instead of tuning prose to trip a regex. errAlways
-// simulates the classifier failing outright. The three prompts it answers
-// (isWorkRequest's WORK/CONVERSATIONAL, classifyGrantedPRDeliverable's
-// REPLY/REVIEW/COMMIT, and classifyIssueDeliverable's IMPLEMENT/COMMENT) are
-// distinguished by content; grantedDeliverable/grantedDeliverableErr and
-// issueDeliverable/issueDeliverableErr let a test degrade one classifier
-// independently of the others. (The original's fourth prompt,
-// classifyPRDeliverable's REVIEW/COMMIT, is gone in this port -
-// classifyPRDeliverable no longer calls a model at all, see intent.go.)
+// fakeIntentClassifier returns fixed verdicts; errAlways fails outright. Its three prompts are told apart by content,
+// and the granted*/issue* fields degrade one classifier independently of the others.
 type fakeIntentClassifier struct {
 	verdict               string // "WORK" or "CONVERSATIONAL", or any other/blank to test the unparseable path
 	grantedDeliverable    string // "REPLY", "REVIEW", or "COMMIT", or any other/blank to test the unparseable path
@@ -69,9 +60,7 @@ func (f *fakeIntentClassifier) Classify(_ context.Context, prompt string) (strin
 	return f.verdict, nil
 }
 
-// TestBuildEnvelopeLargeIssueBodyReachesIntact pins #666's test case 1: a
-// 12,000-char issue body (well under seedCap) reaches the envelope whole, no
-// ellipsis anywhere.
+// A 12,000-char issue body (under seedCap) reaches the envelope whole, no ellipsis.
 func TestBuildEnvelopeLargeIssueBodyReachesIntact(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	body := strings.Repeat("a", 12000)
@@ -89,9 +78,7 @@ func TestBuildEnvelopeLargeIssueBodyReachesIntact(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeTruncatesOversizedDescription pins the seed ceiling
-// (#666): a description over seedCap is marked truncated and points at the
-// untruncated file - the ONE sanctioned truncation in the trigger path.
+// A description over seedCap is marked truncated and points at the full file: the one sanctioned truncation.
 func TestBuildEnvelopeTruncatesOversizedDescription(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	body := strings.Repeat("x", seedCap+5000)
@@ -129,10 +116,7 @@ func TestBuildEnvelopeTruncatesOversizedPRDescription(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeCommentDeletionVisibleInDelta pins #666's test case: a
-// comment deleted between two dispatches is visible in the delta - computed
-// by the existing snapshot diff (diffSnapshots), never GitHub's ?since=,
-// which can express no signal for a deletion at all.
+// A comment deleted between dispatches shows in the delta (diffSnapshots); GitHub's ?since= can't express deletions.
 func TestBuildEnvelopeCommentDeletionVisibleInDelta(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	old := Snapshot{Comments: []snapshotComment{{ID: 1, User: "bob", Body: "will be deleted", CreatedAt: "t0"}}}
@@ -153,9 +137,7 @@ func TestBuildEnvelopeCommentDeletionVisibleInDelta(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeTitleChangeMarking pins #666: an edited title re-seeds
-// marked as changed, quoting the old value; an unchanged title is not
-// re-marked.
+// An edited title re-seeds marked as changed, quoting the old value; an unchanged title is not marked.
 func TestBuildEnvelopeTitleChangeMarking(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	var issue issueCommentPayload
@@ -179,75 +161,8 @@ func TestBuildEnvelopeTitleChangeMarking(t *testing.T) {
 	}
 }
 
-// TestFilterGitHubJSONDropsNoiseKeepsShape pins #659's core promise: the
-// filter is a DROP-LIST, never a rename - GitHub's own field names and
-// nesting survive exactly (pull_request.head.ref stays put), while node_id,
-// the *_url family, avatar_url and bare "url" are gone at EVERY nesting
-// level, not just the top one.
-func TestFilterGitHubJSONDropsNoiseKeepsShape(t *testing.T) {
-	raw := []byte(`{
-		"action":"opened",
-		"pull_request":{
-			"number":97,"node_id":"PR_abc","url":"https://api.github.com/x",
-			"head":{"ref":"feat/x","sha":"abc123","repo":{"full_name":"acme/widgets"}},
-			"base":{"ref":"main"},
-			"user":{"login":"alice","avatar_url":"https://x","node_id":"U_1"}
-		},
-		"repository":{"full_name":"acme/widgets","html_url":"https://x"},
-		"sender":{"login":"alice","avatar_url":"https://x"},
-		"reactions":{"total_count":0},
-		"performed_via_github_app":null
-	}`)
-	filtered := filterGitHubJSON(raw)
-
-	var v map[string]any
-	if err := json.Unmarshal([]byte(filtered), &v); err != nil {
-		t.Fatalf("filtered output is not valid JSON: %v\n%s", err, filtered)
-	}
-	pr, ok := v["pull_request"].(map[string]any)
-	if !ok {
-		t.Fatalf("pull_request missing from filtered output:\n%s", filtered)
-	}
-	head, ok := pr["head"].(map[string]any)
-	if !ok || head["ref"] != "feat/x" || head["sha"] != "abc123" {
-		t.Errorf("pull_request.head.ref/sha not preserved with GitHub's own names/nesting:\n%s", filtered)
-	}
-	if base, ok := pr["base"].(map[string]any); !ok || base["ref"] != "main" {
-		t.Errorf("pull_request.base.ref not preserved:\n%s", filtered)
-	}
-	for _, dropped := range []string{`"node_id"`, `"avatar_url"`, `"html_url"`, `"reactions"`, `"performed_via_github_app"`} {
-		if strings.Contains(filtered, dropped) {
-			t.Errorf("filtered event still contains dropped key %s:\n%s", dropped, filtered)
-		}
-	}
-	// A bare "url" key is dropped too, everywhere - but "full_name" (which
-	// merely CONTAINS no "url" substring at a word boundary) must survive.
-	if _, ok := pr["url"]; ok {
-		t.Errorf("pull_request.url should have been dropped:\n%s", filtered)
-	}
-	if repo, ok := v["repository"].(map[string]any); !ok || repo["full_name"] != "acme/widgets" {
-		t.Errorf("repository.full_name not preserved:\n%s", filtered)
-	}
-}
-
-// TestFilterGitHubJSONUnknownFieldSurvives pins the drop-list-not-allow-list
-// promise: adding an unknown field to a fixture payload does not break the
-// filter, and the field is NOT dropped (only the named drop-list is) - a
-// drop-list needs no maintenance when GitHub adds a field.
-func TestFilterGitHubJSONUnknownFieldSurvives(t *testing.T) {
-	raw := []byte(`{"action":"opened","brand_new_field_from_github":"some value"}`)
-	filtered := filterGitHubJSON(raw)
-	if !strings.Contains(filtered, "brand_new_field_from_github") {
-		t.Errorf("an unrecognised GitHub field should survive the drop-list filter unchanged:\n%s", filtered)
-	}
-}
-
-// TestPermissionsTextRendersAllowedKinds pins that <permissions> states
-// EXACTLY the closed vocabulary (pull_request, review, comment) staged
-// delivery and the trust gate's allowlist use - the port's replacement for
-// vetting.Grant with a flat allowedKinds slice (computeGrant, grant.go), so
-// permissionsText is now a straight join rather than a field-by-field
-// translation.
+// <permissions> states exactly the closed vocabulary (pull_request, review, comment) that staged delivery
+// and the trust gate's allowlist use.
 func TestPermissionsTextRendersAllowedKinds(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
@@ -267,10 +182,7 @@ func TestPermissionsTextRendersAllowedKinds(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeReviewOnlyPermissionsNeverNameStagePR pins #659's test
-// case 3: the envelope for a review-only run never grants pull_request -
-// permissions state only what THIS run is allowed, not what a broader
-// trigger on the same thread might be.
+// A review-only run's envelope never grants pull_request: permissions state only what this run may do.
 func TestBuildEnvelopeReviewOnlyPermissionsNeverNameStagePR(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	allowedKinds := []string{"review", "comment"} // PR-scoped: post_review + join_pr_conversation, no push
@@ -290,9 +202,7 @@ func TestBuildEnvelopeReviewOnlyPermissionsNeverNameStagePR(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeArtifactsManifestListsEntries pins #1010's wiring into the
-// envelope: buildEnvelope renders one <artifact> line per input artifact
-// this dispatch wrote, naming its revision and new/unchanged status.
+// buildEnvelope renders one <artifact> line per input artifact, with its revision and new/unchanged status.
 func TestBuildEnvelopeArtifactsManifestListsEntries(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	var issue issueCommentPayload
@@ -312,9 +222,7 @@ func TestBuildEnvelopeArtifactsManifestListsEntries(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeNoArtifactsBlockWithoutEntries pins the degrade path: a
-// dispatch with no input artifacts written gets no <artifacts> block at all,
-// rather than an empty or malformed one.
+// No input artifacts means no <artifacts> block at all, not an empty or malformed one.
 func TestBuildEnvelopeNoArtifactsBlockWithoutEntries(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	var issue issueCommentPayload
@@ -325,11 +233,8 @@ func TestBuildEnvelopeNoArtifactsBlockWithoutEntries(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeFortyFilePRHasChurnAndFullListNoContentButFullDescription
-// pins #664's test case 1: the orchestrator's envelope for a large PR carries
-// the churn summary and the full file list (names only, no patch content -
-// changedFile has no patch field to begin with), while the PR description
-// still reaches it in full - the split applies to evidence, never the ask.
+// A large PR's envelope carries churn summary and full file list (names only) while the description
+// still arrives in full: the split applies to evidence, never the ask.
 func TestBuildEnvelopeFortyFilePRHasChurnAndFullListNoContentButFullDescription(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	body := strings.Repeat("this PR description matters. ", 50)
@@ -357,9 +262,7 @@ func TestBuildEnvelopeFortyFilePRHasChurnAndFullListNoContentButFullDescription(
 	}
 }
 
-// TestChecksBlockRendersStatusAndSummary pins #876/#880/#882: a reviewer must
-// see CI status as compact lines (name: status[, conclusion]) plus a
-// failing/pending/passing summary line.
+// A reviewer sees CI status as compact lines (name: status[, conclusion]) plus a failing/pending/passing summary.
 func TestChecksBlockRendersStatusAndSummary(t *testing.T) {
 	checks := []checkRunView{
 		{Name: "go-test", Status: "completed", Conclusion: "failure"},
@@ -380,9 +283,7 @@ func TestChecksBlockRendersStatusAndSummary(t *testing.T) {
 	}
 }
 
-// TestChecksBlockRendersWhyLinesForFailures pins that a failing check's
-// enriched detail (annotations or output title) reaches the envelope as
-// indented why-lines, so the agent sees what broke, not just that it did.
+// A failing check's annotations or output title reach the envelope as indented why-lines.
 func TestChecksBlockRendersWhyLinesForFailures(t *testing.T) {
 	checks := []checkRunView{
 		{Name: "go-test", Status: "completed", Conclusion: "failure",
@@ -412,9 +313,7 @@ func TestChecksBlockEmptyWhenNoChecks(t *testing.T) {
 	}
 }
 
-// TestChecksBlockTruncatesAtCap pins the ~20-check ceiling: a PR with a huge
-// matrix build still gets a bounded envelope, marked truncated, while the
-// summary line still counts every check, not just the shown ones.
+// A huge matrix build is capped and marked truncated, while the summary still counts every check.
 func TestChecksBlockTruncatesAtCap(t *testing.T) {
 	checks := make([]checkRunView, 35)
 	for i := range checks {
@@ -440,9 +339,7 @@ func TestChecksBlockTruncatesAtCap(t *testing.T) {
 	}
 }
 
-// TestBuildEnvelopeIncludesChecksSection pins the orchestrator-envelope half
-// of #876/#880/#882's fix: a PR's check runs reach <checks>, positioned right
-// after <changed_files>. A non-PR envelope never carries the section.
+// A PR's check runs reach <checks> right after <changed_files>; a non-PR envelope never has the section.
 func TestBuildEnvelopeIncludesChecksSection(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	checks := []checkRunView{{Name: "go-test", Status: "completed", Conclusion: "failure"}}
@@ -468,10 +365,7 @@ func TestBuildEnvelopeIncludesChecksSection(t *testing.T) {
 	}
 }
 
-// TestBuildWorkerAskIncludesChecksSection pins the node-ask half: unlike
-// changed_files (deliberately withheld, see TestBuildWorkerAskOmitsEvidenceKeepsAsk),
-// CI status is compact enough that a review node needs it directly rather
-// than crowding out its own task.
+// Unlike changed_files, CI status is compact enough that a review node gets it directly.
 func TestBuildWorkerAskIncludesChecksSection(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	checks := []checkRunView{{Name: "go-test", Status: "completed", Conclusion: "failure"}}
@@ -488,9 +382,7 @@ func TestBuildWorkerAskIncludesChecksSection(t *testing.T) {
 	}
 }
 
-// TestBuildWorkerAskOmitsEvidenceKeepsAsk pins #664's other half: a node's
-// background (buildWorkerAsk) carries permissions, deliverable and the ask in
-// full, but never the orchestrator's changed_files evidence.
+// A node's background carries permissions, deliverable and the full ask, never changed_files evidence.
 func TestBuildWorkerAskOmitsEvidenceKeepsAsk(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	body := "the worker still needs the full description"
@@ -523,9 +415,8 @@ func truncateForLog(s string) string {
 	return s[:max] + "…(truncated for log)"
 }
 
-// A deleted comment's body reads exactly like a live one, so the delta must
-// mark each item rather than leaving the split positional: miscount the
-// attribute counts once and a RETRACTED statement is treated as current.
+// A deleted comment reads like a live one, so the delta must mark each item: miscount once and a
+// retracted statement is treated as current.
 func TestCommentsBlockMarksEachDeltaItem(t *testing.T) {
 	gh := githubContext{delta: &Delta{
 		CommentsAdded:   []snapshotComment{{ID: 1, User: "a", Body: "new one"}},
@@ -553,10 +444,8 @@ func TestCommentsBlockSeedHasNoStatus(t *testing.T) {
 	}
 }
 
-// TestNoTriggerOutputNamesSkillOrToolMechanics pins #662: constant
-// instructions - which skill to load, how stage_pr/stage_review work - are
-// bundle-prompt content now, never trigger prose. Covers every deliverableText
-// branch (plan-only, label-implement, review-only, conversational reply).
+// Constant instructions (which skill to load, how stage_pr/stage_review work) belong in the bundle prompt,
+// never trigger prose; covers every deliverableText branch.
 func TestNoTriggerOutputNamesSkillOrToolMechanics(t *testing.T) {
 	ext, _ := newTestExtension(t, "http://unused", nil)
 	ext.intentClassifier = &fakeIntentClassifier{verdict: "WORK"}
@@ -594,7 +483,14 @@ func TestNoTriggerOutputNamesSkillOrToolMechanics(t *testing.T) {
 	}
 }
 
-// The original's TestOrchestratorPromptCarriesMovedPlanOnlyCautions pinned
-// agents/orchestrator/prompt.md, a quack-repo file this module never owns or
-// ships (this package never imports quack, and quack-extensions carries no
-// agents/ bundles) - genuinely inapplicable here, not ported.
+func TestTruncatedTextCutsOnRuneBoundary(t *testing.T) {
+	s := strings.Repeat("a", seedCap-1) + "é" + "tail" // é's two bytes straddle seedCap
+	got := truncatedText(s, "issue.json")
+	if !utf8.ValidString(got) {
+		t.Fatal("truncated text is not valid UTF-8")
+	}
+	body := got[strings.Index(got, "\n\n")+2:]
+	if len(body) != seedCap-1 || !strings.Contains(got, fmt.Sprintf("showing the first %d", seedCap-1)) {
+		t.Fatalf("kept %d bytes; note: %q", len(body), got[:strings.Index(got, "\n\n")])
+	}
+}
