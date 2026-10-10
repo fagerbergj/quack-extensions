@@ -3,7 +3,7 @@ import { renderDraftBoard } from '../../static/render.js'
 import draft from '../../fixtures/draft.json'
 import history from '../../fixtures/history.json'
 
-const boardEnvelope = { job: 'draft', title: 'Draft analysis', agent: 'draft-analyst', found: true, example: true, status: 'done', chatHref: '/chat/ext:sleeper:demo', data: draft }
+const boardEnvelope = { job: 'draft', title: 'Draft analysis', agent: 'draft-analyst', found: true, status: 'done', chatHref: '/chat/ext:sleeper:demo', data: draft }
 const reportCardEnvelope = { ...boardEnvelope, data: { ...draft, report_card: history.report_card, pos_alloc: history.pos_alloc } }
 
 export default { title: 'Cards/DraftBoard' }

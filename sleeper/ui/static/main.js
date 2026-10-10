@@ -99,7 +99,7 @@ function jobEnvelope(job, title) {
   return {
     job: job.id, title: title || job.name, agent: job.agent, what,
     running: state.running.has(job.id), found, runnable: state.runnableJobs.has(job.id),
-    example: !!a?.example, status: state.running.has(job.id) ? 'running' : found ? 'done' : 'not_run',
+    status: state.running.has(job.id) ? 'running' : found ? 'done' : 'not_run',
     chatHref: found ? `/chat/ext:sleeper:${state.leagueID}:${state.stop}:${job.id}` : undefined,
     data: a?.data,
     invalid: !!a?.invalid,
@@ -208,7 +208,7 @@ function currentSide() {
   const notes = state.artifacts.season_notes
   const found = !!notes?.found
   const running = state.running.has('season-notes')
-  const notesEnv = { title: 'Season notes', agent: 'trend-scout', found, example: !!notes?.example, data: notes?.data, invalid: !!notes?.invalid, text: notes?.text, running, status: running ? 'running' : found ? 'done' : 'not_run', chatHref: found ? `/chat/ext:sleeper:${state.leagueID}:season-notes` : undefined }
+  const notesEnv = { title: 'Season notes', agent: 'trend-scout', found, data: notes?.data, invalid: !!notes?.invalid, text: notes?.text, running, status: running ? 'running' : found ? 'done' : 'not_run', chatHref: found ? `/chat/ext:sleeper:${state.leagueID}:season-notes` : undefined }
   return R.renderStandingsSide(state.season) + R.renderSeasonNotes(notesEnv) + R.renderMovesSide(state.season)
 }
 

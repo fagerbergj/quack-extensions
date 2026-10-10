@@ -5,7 +5,7 @@ import tradeFinder from '../../fixtures/trade-finder.json'
 
 const envelope = { job: 'trade', title: 'Trade talks', agent: 'trade-analyst', found: true, status: 'done', chatHref: '/chat/ext:sleeper:demo' }
 const talks = [
-  { partner: trade.partner, partner_id: trade.partner_id, found: true, example: true, status: trade.status, data: trade },
+  { partner: trade.partner, partner_id: trade.partner_id, found: true, status: trade.status, data: trade },
   { partner: 'Jockstrappers', partner_id: '859928030787866624', found: false, status: 'declined', data: null },
 ]
 const partners = [
@@ -14,7 +14,7 @@ const partners = [
   { id: '860265672989609984', name: 'Pitts and Giggles' },
   { id: '860209887672635392', name: 'Achane Magic' },
 ]
-const finder = { found: true, example: true, running: false, data: tradeFinder, runnable: true }
+const finder = { found: true, running: false, data: tradeFinder, runnable: true }
 
 export default { title: 'Cards/TradeTalks' }
 

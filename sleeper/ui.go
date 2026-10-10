@@ -488,7 +488,6 @@ func (e *extension) handleSeasons(w http.ResponseWriter, r *http.Request) {
 
 type artifactEnvelope struct {
 	Found   bool            `json:"found"`
-	Example bool            `json:"example"`
 	Running bool            `json:"running"`
 	Data    json.RawMessage `json:"data,omitempty"`
 	// Invalid marks a non-JSON artifact (agent wrote prose); Text carries the raw content and Data is omitted.

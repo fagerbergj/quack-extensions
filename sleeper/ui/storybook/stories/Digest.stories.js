@@ -3,7 +3,7 @@ import { renderDigest } from '../../static/render.js'
 import digest from '../../fixtures/digest.json'
 
 const MY_TEAM = 'Substation Supremacy'
-const envelope = { job: 'digest', title: 'Week 2 preview', agent: 'league-reporter', found: true, example: true, status: 'done', chatHref: '/chat/ext:sleeper:demo', data: digest }
+const envelope = { job: 'digest', title: 'Week 2 preview', agent: 'league-reporter', found: true, status: 'done', chatHref: '/chat/ext:sleeper:demo', data: digest }
 
 export default { title: 'Cards/Digest' }
 

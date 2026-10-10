@@ -24,15 +24,15 @@ function poisonNumbers(data) {
   return data
 }
 
-const doneEnvelope = data => ({ job: 'x', title: 'x', agent: 'x', found: true, example: false, status: 'done', chatHref: '/chat/x', data })
-const invalidEnvelope = text => ({ job: 'x', title: 'x', agent: 'x', found: true, invalid: true, example: false, status: 'done', text })
+const doneEnvelope = data => ({ job: 'x', title: 'x', agent: 'x', found: true, status: 'done', chatHref: '/chat/x', data })
+const invalidEnvelope = text => ({ job: 'x', title: 'x', agent: 'x', found: true, invalid: true, status: 'done', text })
 
 async function checks() {
   const out = []
 
   // Invalid-artifact raw text lands in a <pre> via esc(); covered via both the job-card and per-talk shapes.
   out.push(['renderLineup (invalid)', R.renderLineup(invalidEnvelope(PAYLOAD))])
-  out.push(['renderTrade (invalid)', R.renderTrade(doneEnvelope(null), [{ partner: 'x', partner_id: '1', found: true, example: false, invalid: true, text: PAYLOAD }], 0, [{ id: '1', name: 'Team' }])])
+  out.push(['renderTrade (invalid)', R.renderTrade(doneEnvelope(null), [{ partner: 'x', partner_id: '1', found: true, invalid: true, text: PAYLOAD }], 0, [{ id: '1', name: 'Team' }])])
 
   const lineup = poisonNumbers(await loadFixture('lineup'))
   out.push(['renderLineup', R.renderLineup(doneEnvelope(lineup))])
@@ -41,7 +41,7 @@ async function checks() {
   out.push(['renderWaivers', R.renderWaivers(doneEnvelope(waivers))])
 
   const trade = poisonNumbers(await loadFixture('trade'))
-  const talks = [{ partner: trade.partner, partner_id: String(trade.partner_id), found: true, example: false, status: 'open', data: trade }]
+  const talks = [{ partner: trade.partner, partner_id: String(trade.partner_id), found: true, status: 'open', data: trade }]
   const partners = [{ id: '1', name: 'Team' }]
   out.push(['renderTrade', R.renderTrade(doneEnvelope(null), talks, 0, partners)])
 
