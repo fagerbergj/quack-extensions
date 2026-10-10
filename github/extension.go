@@ -67,7 +67,6 @@ type config struct {
 	WebhookSecret      string   `yaml:"webhook_secret"`
 	Mention            string   `yaml:"mention"`
 	Triggers           []string `yaml:"triggers"`
-	AutoReviewLabel    string   `yaml:"auto_review_label"`
 	AllowedUsers       []string `yaml:"allowed_users"`
 	Labels             Labels   `yaml:"labels"`
 	RunTimeoutMinutes  int      `yaml:"run_timeout_minutes"`
@@ -127,9 +126,6 @@ func (c *config) applyLabelDefaults(log func(string, ...any)) error {
 		if !validTriggers[t] {
 			return fmt.Errorf("github: triggers has unknown entry %q (want mention, pr_opened, label, issue_plan, issue_implement, merge, ci_fix, or explain)", t)
 		}
-	}
-	if c.Labels.Review == "" {
-		c.Labels.Review = c.AutoReviewLabel
 	}
 	if c.Labels.Review == "" {
 		c.Labels.Review = defaultAutoReviewLabel
