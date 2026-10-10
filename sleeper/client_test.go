@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // mockServer replays testdata/get fixtures the same way cmd/qa-mock does,
@@ -305,5 +306,21 @@ func mustUnmarshalFixture(t *testing.T, url string, dst any) {
 	data := readFixture(t, url)
 	if err := json.Unmarshal(data, dst); err != nil {
 		t.Fatalf("unmarshal fixture for %s: %v", url, err)
+	}
+}
+
+func TestCachedDropsExpiredEntriesOnInsert(t *testing.T) {
+	c := newTestClient(t)
+	c.mu.Lock()
+	c.cache["stale"] = cacheEntry{value: struct{}{}, expires: time.Now().Add(-time.Minute)}
+	c.mu.Unlock()
+	if _, err := c.State(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	_, stale := c.cache["stale"]
+	c.mu.Unlock()
+	if stale {
+		t.Error("expired entry survived a cache insert")
 	}
 }
