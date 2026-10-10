@@ -240,7 +240,9 @@ func (e *Extension) handlePullRequest(w http.ResponseWriter, body []byte, delive
 		}
 		e.refreshChatOrigin(p.Repository.Owner.Login, p.Repository.Name, true, p.Number, badge, state)
 		if p.Action == "closed" {
-			e.clearMergeIntent(context.Background(), globalChatID(issueSessionID(p.Repository.Owner.Login, p.Repository.Name, p.Number)))
+			chatID := globalChatID(issueSessionID(p.Repository.Owner.Login, p.Repository.Name, p.Number))
+			e.clearMergeIntent(context.Background(), chatID)
+			e.forgetChatHistory(chatID)
 		}
 		w.WriteHeader(http.StatusOK)
 		return
@@ -429,6 +431,7 @@ func (e *Extension) handleIssues(w http.ResponseWriter, body []byte) {
 		badge, state := "open", sdk.SubjectOpen
 		if p.Action == "closed" {
 			badge, state = "closed", sdk.SubjectClosed
+			e.forgetChatHistory(globalChatID(issueSessionID(p.Repository.Owner.Login, p.Repository.Name, p.Issue.Number)))
 		}
 		e.refreshChatOrigin(p.Repository.Owner.Login, p.Repository.Name, false, p.Issue.Number, badge, state)
 		w.WriteHeader(http.StatusOK)
@@ -1021,6 +1024,14 @@ func (e *Extension) refreshChatOrigin(owner, repo string, isPR bool, number int,
 			"repo", owner+"/"+repo, "number", number)
 	default:
 		e.host.Log.Warn("github: origin refresh failed", "repo", owner+"/"+repo, "number", number, "err", err)
+	}
+}
+
+// forgetChatHistory drops a closed chat's snapshot and baseline; a reopen starts from a first load.
+// ponytail: a run finishing after the close re-persists its row; sweep by age if that ever piles up.
+func (e *Extension) forgetChatHistory(chatID string) {
+	if err := e.store.DeleteChatHistory(context.Background(), chatID); err != nil {
+		e.host.Log.Warn("github: chat history cleanup failed", "chat", chatID, "err", err)
 	}
 }
 

@@ -196,6 +196,19 @@ func (s *ghStore) SetReviewBaseline(ctx context.Context, chatID, patchIDsJSON st
 	return err
 }
 
+// DeleteChatHistory drops a chat's snapshot and review baseline once its issue/PR closes.
+func (s *ghStore) DeleteChatHistory(ctx context.Context, chatID string) error {
+	for _, q := range []string{
+		`DELETE FROM github_snapshot WHERE chat_id = ?`,
+		`DELETE FROM github_review_baseline WHERE chat_id = ?`,
+	} {
+		if _, err := s.exec(ctx, q, chatID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // FixState tracks the CI auto-heal loop bound for one PR chat.
 type FixState struct {
 	ChatID  string

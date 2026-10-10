@@ -906,6 +906,35 @@ func TestChatOriginDistinguishesIssueFromPR(t *testing.T) {
 	}
 }
 
+// seedChatHistory stores a snapshot and review baseline for acme/widgets#7's chat.
+func seedChatHistory(t *testing.T, ext *Extension) {
+	t.Helper()
+	ctx, chatID := context.Background(), globalChatID("github-acme-widgets-7")
+	if err := ext.store.SetSnapshot(ctx, chatID, "{}"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ext.store.SetReviewBaseline(ctx, chatID, "[]"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// assertChatHistory checks whether acme/widgets#7's snapshot and baseline survived: a close drops both.
+func assertChatHistory(t *testing.T, ext *Extension, want bool) {
+	t.Helper()
+	ctx, chatID := context.Background(), globalChatID("github-acme-widgets-7")
+	_, snap, err := ext.store.GetSnapshot(ctx, chatID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, base, err := ext.store.GetReviewBaseline(ctx, chatID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap != want || base != want {
+		t.Errorf("snapshot kept=%v baseline kept=%v, want both %v", snap, base, want)
+	}
+}
+
 // A plain issue's close/reopen maps to the right badge and state.
 func TestHandleWebhookIssueStateChangeRefreshesOrigin(t *testing.T) {
 	tests := []struct {
@@ -921,12 +950,14 @@ func TestHandleWebhookIssueStateChangeRefreshesOrigin(t *testing.T) {
 			srv := stubGitHub(t, make(chan string, 1))
 			defer srv.Close()
 			ext, fh := newTestExtension(t, srv.URL, nil)
+			seedChatHistory(t, ext)
 
 			rec := httptest.NewRecorder()
 			ext.handleWebhook(rec, signedRequest("issues", issuesBody(tt.action, "", "alice", false)))
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 			}
+			assertChatHistory(t, ext, tt.action != "closed")
 
 			calls := fh.originCalls()
 			if len(calls) != 1 {
@@ -980,12 +1011,14 @@ func TestHandleWebhookPullRequestStateChangeRefreshesOrigin(t *testing.T) {
 			srv := stubGitHub(t, make(chan string, 1))
 			defer srv.Close()
 			ext, fh := newTestExtension(t, srv.URL, nil)
+			seedChatHistory(t, ext)
 
 			rec := httptest.NewRecorder()
 			ext.handleWebhook(rec, signedRequest("pull_request", pullRequestStateBody(tt.action, tt.merged)))
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 			}
+			assertChatHistory(t, ext, tt.action != "closed")
 
 			calls := fh.originCalls()
 			if len(calls) != 1 {
