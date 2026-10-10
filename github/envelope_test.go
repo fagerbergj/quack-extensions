@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 )
 
 // pullCommentBody is issueCommentBody-shaped but the issue is a pull request
@@ -479,5 +480,17 @@ func TestNoTriggerOutputNamesSkillOrToolMechanics(t *testing.T) {
 				t.Errorf("%s envelope names %q - tool/skill mechanics belong in the agent bundle prompt, not the trigger:\n%s", name, banned, truncateForLog(env))
 			}
 		}
+	}
+}
+
+func TestTruncatedTextCutsOnRuneBoundary(t *testing.T) {
+	s := strings.Repeat("a", seedCap-1) + "é" + "tail" // é's two bytes straddle seedCap
+	got := truncatedText(s, "issue.json")
+	if !utf8.ValidString(got) {
+		t.Fatal("truncated text is not valid UTF-8")
+	}
+	body := got[strings.Index(got, "\n\n")+2:]
+	if len(body) != seedCap-1 || !strings.Contains(got, fmt.Sprintf("showing the first %d", seedCap-1)) {
+		t.Fatalf("kept %d bytes; note: %q", len(body), got[:strings.Index(got, "\n\n")])
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/golang-jwt/jwt/v5"
 
@@ -480,5 +481,38 @@ func TestFactoryRequiresClientID(t *testing.T) {
 	_, err := factory(sdk.Host{DataDir: t.TempDir()}, []byte("app_id: 1\nprivate_key: k\nwebhook_secret: s\n"))
 	if err == nil || !strings.Contains(err.Error(), "client_id is required") {
 		t.Fatalf("factory err = %v, want client_id is required", err)
+	}
+}
+
+func TestEnrichFailingChecksCapsWhyAtRunes(t *testing.T) {
+	keyPEM, _ := testKeyPEM(t)
+	long := strings.Repeat("é", 300)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			fmt.Fprint(w, `{"id":99}`)
+		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			fmt.Fprintf(w, `{"token":"t","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		case strings.HasSuffix(r.URL.Path, "/check-runs/7/annotations"):
+			fmt.Fprintf(w, `[{"path":"a.go","start_line":3,"annotation_level":"failure","message":%q}]`, long)
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	app, err := NewApp("1", keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.apiBase = srv.URL
+
+	runs := []checkRunView{{ID: 7, Conclusion: "failure"}}
+	app.enrichFailingChecks(context.Background(), "o", "r", runs)
+	if len(runs[0].Why) != 1 {
+		t.Fatalf("Why = %v, want one line", runs[0].Why)
+	}
+	why := runs[0].Why[0]
+	if n := utf8.RuneCountInString(why); n != 201 || !strings.HasSuffix(why, "…") || !utf8.ValidString(why) {
+		t.Fatalf("Why = %d runes, valid=%v, suffix ellipsis=%v", n, utf8.ValidString(why), strings.HasSuffix(why, "…"))
 	}
 }
