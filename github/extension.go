@@ -4,7 +4,6 @@ package github
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -61,7 +60,6 @@ var validTriggers = map[string]bool{
 // config is this extension's YAML shape under extensions.github in quack.yaml.
 type config struct {
 	ClientID           string   `yaml:"client_id"`
-	AppID              int64    `yaml:"app_id"`
 	PrivateKey         string   `yaml:"private_key"`
 	PrivateKeyPath     string   `yaml:"private_key_path"`
 	WebhookSecret      string   `yaml:"webhook_secret"`
@@ -75,13 +73,6 @@ type config struct {
 	APIBase string `yaml:"api_base"`
 }
 
-func (c *config) issuer() string {
-	if c.ClientID != "" {
-		return c.ClientID
-	}
-	return strconv.FormatInt(c.AppID, 10)
-}
-
 // applyDefaults validates and fills in defaults.
 func (c *config) applyDefaults(log func(string, ...any)) error {
 	if err := c.validateCredentials(); err != nil {
@@ -90,14 +81,10 @@ func (c *config) applyDefaults(log func(string, ...any)) error {
 	return c.applyLabelDefaults(log)
 }
 
-// validateCredentials: exactly one of client_id/app_id, exactly one of private_key/private_key_path,
-// and a webhook_secret.
+// validateCredentials: client_id, exactly one of private_key/private_key_path, and a webhook_secret.
 func (c *config) validateCredentials() error {
-	switch {
-	case c.ClientID == "" && c.AppID == 0:
-		return fmt.Errorf("github: needs one of client_id (recommended) or app_id")
-	case c.ClientID != "" && c.AppID != 0:
-		return fmt.Errorf("github: sets both client_id and app_id; use one (client_id recommended)")
+	if c.ClientID == "" {
+		return fmt.Errorf("github: client_id is required")
 	}
 	if c.PrivateKey == "" && c.PrivateKeyPath == "" {
 		return fmt.Errorf("github: needs one of private_key or private_key_path")
@@ -175,7 +162,7 @@ func factory(host sdk.Host, raw []byte) (sdk.Extension, error) {
 	if err != nil {
 		return nil, err
 	}
-	app, err := NewApp(cfg.issuer(), pem)
+	app, err := NewApp(cfg.ClientID, pem)
 	if err != nil {
 		return nil, fmt.Errorf("github: init: %w", err)
 	}

@@ -474,3 +474,11 @@ func TestGateCaveatFailingNodeIgnoresChecksSkipNote(t *testing.T) {
 		t.Errorf("the existing failing-gate banner must be unchanged; got %q", got)
 	}
 }
+
+// client_id is the only issuer: a config still using the removed app_id fails to load.
+func TestFactoryRequiresClientID(t *testing.T) {
+	_, err := factory(sdk.Host{DataDir: t.TempDir()}, []byte("app_id: 1\nprivate_key: k\nwebhook_secret: s\n"))
+	if err == nil || !strings.Contains(err.Error(), "client_id is required") {
+		t.Fatalf("factory err = %v, want client_id is required", err)
+	}
+}
