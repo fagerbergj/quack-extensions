@@ -352,7 +352,7 @@ func (s *ghStore) PendingClaims(ctx context.Context) (map[string]time.Time, erro
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	claims := map[string]time.Time{}
 	for rows.Next() {
 		var id string
