@@ -1,3 +1,5 @@
+> **Moved.** This repository is archived. quack's extensions, the extension SDK and their agent plugins now live in [fagerbergj/quack under `extensions/`](https://github.com/fagerbergj/quack/tree/main/extensions) (moved in [quack#1658](https://github.com/fagerbergj/quack/pull/1658)). Plugins are seeded from `github:fagerbergj/quack@plugin/<name>/vX#extensions/<name>/plugin`. History before the move stays here; the old module and plugin tags are kept for existing pins.
+
 # quack-extensions
 
 The extension SDK for [quack](https://github.com/fagerbergj/quack), plus quack's first-party extensions. Full design: [issue #275](https://github.com/fagerbergj/quack/issues/275#issuecomment-5245275574) in the quack repo.
